@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Rust port of [HyperDHT](https://github.com/holepunchto/hyperdht) — a
 //! Kademlia distributed hash table with NAT hole-punching, Noise-encrypted
 //! connections, and blind-relay fallback.

@@ -10,6 +10,10 @@ readme = "README.md"
 keywords = ["dht", "kademlia", "p2p", "holepunch", "hyperswarm"]
 categories = ["network-programming", "asynchronous"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 libudx = { path = "../libudx", version = "1.0.0" }
 tokio = { workspace = true }

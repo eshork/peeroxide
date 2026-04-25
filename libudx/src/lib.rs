@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Pure Rust implementation of the UDX reliable UDP transport protocol.
 //!
 //! `libudx` provides ordered, reliable byte streams over UDP with BBR
