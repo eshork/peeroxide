@@ -57,22 +57,36 @@
 pub mod blind_relay;
 pub mod compact_encoding;
 pub mod crypto;
-pub mod holepuncher;
 pub mod hyperdht;
 pub mod hyperdht_messages;
-pub mod io;
 pub mod messages;
-pub mod nat;
 pub mod noise;
 pub mod noise_wrap;
-pub mod peer;
-pub mod persistent;
 pub mod protomux;
-pub mod query;
-pub mod routing_table;
-pub mod router;
 pub mod rpc;
 pub mod secret_stream;
+
+// Internal protocol modules — public for advanced use but hidden from
+// top-level docs. Access via `peeroxide_dht::<module>` if needed.
+#[doc(hidden)]
+pub mod holepuncher;
+#[doc(hidden)]
+pub mod io;
+#[doc(hidden)]
+pub mod nat;
+#[doc(hidden)]
+pub mod peer;
+#[doc(hidden)]
+pub mod persistent;
+#[doc(hidden)]
+pub mod query;
+#[doc(hidden)]
+pub mod router;
+#[doc(hidden)]
+pub mod routing_table;
+#[doc(hidden)]
 pub mod secretstream;
+#[doc(hidden)]
 pub mod secure_payload;
+#[doc(hidden)]
 pub mod socket_pool;
