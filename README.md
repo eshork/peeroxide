@@ -1,5 +1,8 @@
 # peeroxide
 
+[![CI](https://github.com/eshork/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/eshork/peeroxide/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+
 Rust implementation of the Hyperswarm P2P networking stack, wire-compatible with the existing Node.js network.
 
 This project is a faithful port targeting full interoperability with the existing Hyperswarm network. Node.js peers can discover and connect to Rust peers and vice versa.

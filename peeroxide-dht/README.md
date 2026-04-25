@@ -1,5 +1,9 @@
 # peeroxide-dht
 
+[![crates.io](https://img.shields.io/crates/v/peeroxide-dht.svg)](https://crates.io/crates/peeroxide-dht)
+[![docs.rs](https://docs.rs/peeroxide-dht/badge.svg)](https://docs.rs/peeroxide-dht)
+[![CI](https://github.com/eshork/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/eshork/peeroxide/actions/workflows/ci.yml)
+
 Rust port of HyperDHT — Kademlia DHT with hole-punching, Noise-encrypted connections, and relay.
 
 This crate implements the full HyperDHT protocol stack. It is wire-compatible with the Node.js implementation on the public Hyperswarm network.

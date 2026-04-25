@@ -1,5 +1,9 @@
 # libudx
 
+[![crates.io](https://img.shields.io/crates/v/libudx.svg)](https://crates.io/crates/libudx)
+[![docs.rs](https://docs.rs/libudx/badge.svg)](https://docs.rs/libudx)
+[![CI](https://github.com/eshork/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/eshork/peeroxide/actions/workflows/ci.yml)
+
 Pure Rust implementation of the UDX reliable UDP transport protocol, wire-compatible with C libudx.
 
 This crate provides ordered, reliable byte streams over UDP. It implements BBR congestion control, SACK-based loss recovery, and MTU path discovery. Built on tokio, it's designed for high-performance P2P networking and maintains wire compatibility with the [C libudx](https://github.com/holepunchto/libudx) implementation used by the Hyperswarm network.

@@ -1,5 +1,9 @@
 # peeroxide
 
+[![crates.io](https://img.shields.io/crates/v/peeroxide.svg)](https://crates.io/crates/peeroxide)
+[![docs.rs](https://docs.rs/peeroxide/badge.svg)](https://docs.rs/peeroxide)
+[![CI](https://github.com/eshork/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/eshork/peeroxide/actions/workflows/ci.yml)
+
 Rust port of Hyperswarm — topic-based P2P peer discovery and encrypted connections.
 
 Peeroxide provides a high-level entry point for P2P networking. It discovers peers by topic on the public HyperDHT network, establishes Noise-encrypted connections, and manages connection lifecycles. It is wire-compatible with the Node.js Hyperswarm network.
