@@ -179,6 +179,7 @@ impl CipherState {
         };
         let nonce_bytes = Self::build_nonce(self.nonce);
         let cipher = ChaCha20Poly1305::new_from_slice(&key)
+            // SAFETY: CipherState.key is Option<[u8; 32]>; ChaCha20Poly1305 requires 32 bytes.
             .expect("key is always 32 bytes");
         let nonce = Nonce::from(nonce_bytes);
         let ciphertext = cipher
@@ -197,6 +198,7 @@ impl CipherState {
         };
         let nonce_bytes = Self::build_nonce(self.nonce);
         let cipher = ChaCha20Poly1305::new_from_slice(&key)
+            // SAFETY: CipherState.key is Option<[u8; 32]>; ChaCha20Poly1305 requires 32 bytes.
             .expect("key is always 32 bytes");
         let nonce = Nonce::from(nonce_bytes);
         let plaintext = cipher

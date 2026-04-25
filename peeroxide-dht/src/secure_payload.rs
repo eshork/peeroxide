@@ -122,6 +122,7 @@ impl SecurePayload {
     /// Mirrors `sodium.crypto_generichash(out, Buffer.from(addr.host), localSecret)`.
     pub fn token(&self, host: &str) -> [u8; 32] {
         let mut mac: Blake2bMac256 =
+            // SAFETY: BLAKE2b accepts keys from 1..=64 bytes; local_secret is always 32 bytes.
             KeyInit::new_from_slice(&self.local_secret).expect("32-byte key valid for BLAKE2b");
         mac.update(host.as_bytes());
         let output = mac.finalize().into_bytes();

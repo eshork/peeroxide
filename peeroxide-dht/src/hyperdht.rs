@@ -1382,6 +1382,7 @@ pub async fn establish_stream(
     tracing::debug!(local_id = result.local_stream_id, remote_id, %addr, "establishing UDX stream");
     let socket = runtime.create_socket().await?;
     socket
+        // SAFETY: "0.0.0.0:0" is a valid socket address literal.
         .bind("0.0.0.0:0".parse().expect("valid addr"))
         .await?;
     let stream = runtime.create_stream(result.local_stream_id).await?;

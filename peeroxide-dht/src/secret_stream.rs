@@ -188,6 +188,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SecretStream<T> {
         // Initialize decryptor with remote's secretstream header.
         let remote_header: [u8; HEADERBYTES] = remote_msg[32..56]
             .try_into()
+            // SAFETY: remote_msg.len() == IDHEADERBYTES (56) verified above; [32..56] is 24 bytes == HEADERBYTES.
             .expect("slice length verified above");
         let rx_key: [u8; KEYBYTES] = hr.rx;
         let decrypt = secretstream::Pull::new(&rx_key, &remote_header);
@@ -243,6 +244,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SecretStream<T> {
 
         let remote_header: [u8; HEADERBYTES] = remote_msg[32..56]
             .try_into()
+            // SAFETY: remote_msg.len() == IDHEADERBYTES (56) verified above; [32..56] is 24 bytes == HEADERBYTES.
             .expect("slice length verified above");
         let decrypt = secretstream::Pull::new(&rx, &remote_header);
 
@@ -394,6 +396,7 @@ fn stream_id(handshake_hash: &[u8; 64], is_initiator: bool) -> [u8; 32] {
         ns_responder()
     };
     let mut mac: Blake2bMac256 =
+        // SAFETY: BLAKE2b accepts keys from 1..=64 bytes; handshake_hash is always 64 bytes.
         KeyInit::new_from_slice(handshake_hash).expect("64-byte key is valid for BLAKE2b");
     mac.update(ns);
     let output = mac.finalize().into_bytes();

@@ -234,6 +234,7 @@ pub struct Push {
 impl Push {
     pub fn new(key: &[u8; KEYBYTES]) -> (Self, [u8; HEADERBYTES]) {
         let mut header = [0u8; HEADERBYTES];
+        // SAFETY: OsRng is the OS CSPRNG; failure indicates a fatal platform issue.
         OsRng.try_fill_bytes(&mut header).expect("OsRng should not fail");
         let state = Self::with_header(key, &header);
         (state, header)

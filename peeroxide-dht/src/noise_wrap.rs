@@ -165,6 +165,7 @@ impl NoiseWrap {
 /// a key is supplied, libsodium uses BLAKE2b in keyed MAC mode.
 fn derive_holepunch_secret(handshake_hash: &[u8; 64]) -> [u8; 32] {
     let mut mac: Blake2bMac256 =
+        // SAFETY: BLAKE2b accepts keys from 1..=64 bytes; handshake_hash is always 64 bytes.
         KeyInit::new_from_slice(handshake_hash).expect("64-byte key valid for BLAKE2b");
     Mac::update(&mut mac, &*NS_PEER_HOLEPUNCH);
     let output = mac.finalize().into_bytes();

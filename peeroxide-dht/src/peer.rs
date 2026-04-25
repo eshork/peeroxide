@@ -34,6 +34,7 @@ pub fn peer_id(host: &str, port: u16) -> NodeId {
     compact_encoding::preencode_ipv4_address(&mut enc, host, port);
     enc.alloc();
     compact_encoding::encode_ipv4_address(&mut enc, host, port)
+        // SAFETY: caller provides host/port; encoding to buffer cannot fail for valid inputs.
         .expect("valid ipv4 address");
 
     let mut hasher = Blake2b256::new();

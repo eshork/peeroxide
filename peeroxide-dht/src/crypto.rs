@@ -31,6 +31,7 @@ pub fn hash_batch(parts: &[&[u8]]) -> [u8; 32] {
 /// Mirrors `sodium.crypto_generichash(out, HYPERCORE, publicKey)`.
 pub fn discovery_key(public_key: &[u8; 32]) -> [u8; 32] {
     let mut mac: Blake2bMac256 = KeyInit::new_from_slice(public_key.as_slice())
+        // SAFETY: BLAKE2b accepts keys from 1..=64 bytes; input is always 32 bytes.
         .expect("32-byte key is always valid for BLAKE2b");
     mac.update(b"hypercore");
     let output = mac.finalize().into_bytes();
