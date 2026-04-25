@@ -25,13 +25,13 @@
 //! ```rust,no_run
 //! use libudx::{UdxRuntime, UdxSocket, UdxStream};
 //!
-//! # async fn example() -> libudx::Result<()> {
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = UdxRuntime::new()?;
 //! let socket = runtime.create_socket().await?;
-//! socket.bind("0.0.0.0:0".parse().unwrap()).await?;
+//! socket.bind("0.0.0.0:0".parse()?).await?;
 //!
 //! let stream = runtime.create_stream(1).await?;
-//! stream.connect(&socket, 1, "127.0.0.1:9000".parse().unwrap()).await?;
+//! stream.connect(&socket, 1, "127.0.0.1:9000".parse()?).await?;
 //! stream.write(b"hello").await?;
 //! # Ok(())
 //! # }
