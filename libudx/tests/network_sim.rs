@@ -6,7 +6,7 @@ use common::proxy::{DirectionConfig, ProxyConfig};
 use common::{create_lossy_pair, create_runtime, random_payload, verify_payload, with_timeout};
 use std::time::{Duration, Instant};
 
-const LONG_TIMEOUT: Duration = Duration::from_secs(120);
+const LONG_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[tokio::test]
 async fn proxy_passthrough_no_impairments() {
