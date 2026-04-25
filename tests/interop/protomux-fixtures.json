@@ -1,0 +1,257 @@
+{
+  "generated_by": "protomux golden fixture generator",
+  "protomux_version": "3.10.1",
+  "compact_encoding_version": "2.19.2",
+  "fixtures": {
+    "frames": [
+      {
+        "label": "open: basic channel",
+        "type": "open",
+        "hex": "0001010a746573742d70726f746f00",
+        "decoded": {
+          "local_id": 1,
+          "protocol": "test-proto",
+          "id": null,
+          "handshake": null
+        }
+      },
+      {
+        "label": "open: with id",
+        "type": "open",
+        "hex": "0001010a746573742d70726f746f0b7375622d6368616e6e656c",
+        "decoded": {
+          "local_id": 1,
+          "protocol": "test-proto",
+          "id": "7375622d6368616e6e656c",
+          "handshake": null
+        }
+      },
+      {
+        "label": "open: with handshake",
+        "type": "open",
+        "hex": "0001010a746573742d70726f746f0068656c6c6f",
+        "decoded": {
+          "local_id": 1,
+          "protocol": "test-proto",
+          "id": null,
+          "handshake": "68656c6c6f"
+        }
+      },
+      {
+        "label": "open: with id and handshake",
+        "type": "open",
+        "hex": "0001010a746573742d70726f746f02deadbeef",
+        "decoded": {
+          "local_id": 1,
+          "protocol": "test-proto",
+          "id": "dead",
+          "handshake": "beef"
+        }
+      },
+      {
+        "label": "open: large local_id (253)",
+        "type": "open",
+        "hex": "0001fdfd00066269672d696400",
+        "decoded": {
+          "local_id": 253,
+          "protocol": "big-id",
+          "id": null,
+          "handshake": null
+        }
+      },
+      {
+        "label": "open: large local_id (1000)",
+        "type": "open",
+        "hex": "0001fde803066269672d696400",
+        "decoded": {
+          "local_id": 1000,
+          "protocol": "big-id",
+          "id": null,
+          "handshake": null
+        }
+      },
+      {
+        "label": "open: blind-relay protocol",
+        "type": "open",
+        "hex": "0001010b626c696e642d72656c617900",
+        "decoded": {
+          "local_id": 1,
+          "protocol": "blind-relay",
+          "id": null,
+          "handshake": null
+        }
+      },
+      {
+        "label": "open: empty protocol",
+        "type": "open",
+        "hex": "0001010000",
+        "decoded": {
+          "local_id": 1,
+          "protocol": "",
+          "id": null,
+          "handshake": null
+        }
+      },
+      {
+        "label": "close: channel 1",
+        "type": "close",
+        "hex": "000301",
+        "decoded": {
+          "local_id": 1
+        }
+      },
+      {
+        "label": "close: channel 5",
+        "type": "close",
+        "hex": "000305",
+        "decoded": {
+          "local_id": 5
+        }
+      },
+      {
+        "label": "close: large id (300)",
+        "type": "close",
+        "hex": "0003fd2c01",
+        "decoded": {
+          "local_id": 300
+        }
+      },
+      {
+        "label": "reject: channel 1",
+        "type": "reject",
+        "hex": "000201",
+        "decoded": {
+          "remote_id": 1
+        }
+      },
+      {
+        "label": "reject: channel 42",
+        "type": "reject",
+        "hex": "00022a",
+        "decoded": {
+          "remote_id": 42
+        }
+      },
+      {
+        "label": "message: simple",
+        "type": "message",
+        "hex": "010068656c6c6f20776f726c64",
+        "decoded": {
+          "channel_id": 1,
+          "message_type": 0,
+          "payload": "68656c6c6f20776f726c64"
+        }
+      },
+      {
+        "label": "message: type 1",
+        "type": "message",
+        "hex": "010170696e67",
+        "decoded": {
+          "channel_id": 1,
+          "message_type": 1,
+          "payload": "70696e67"
+        }
+      },
+      {
+        "label": "message: empty payload",
+        "type": "message",
+        "hex": "0100",
+        "decoded": {
+          "channel_id": 1,
+          "message_type": 0,
+          "payload": ""
+        }
+      },
+      {
+        "label": "message: channel 3, type 2",
+        "type": "message",
+        "hex": "0302ff00aa55",
+        "decoded": {
+          "channel_id": 3,
+          "message_type": 2,
+          "payload": "ff00aa55"
+        }
+      },
+      {
+        "label": "message: large channel id (300)",
+        "type": "message",
+        "hex": "fd2c010064617461",
+        "decoded": {
+          "channel_id": 300,
+          "message_type": 0,
+          "payload": "64617461"
+        }
+      },
+      {
+        "label": "batch: single channel, two messages",
+        "type": "batch",
+        "hex": "00000106006d73672d6106006d73672d62",
+        "decoded": {
+          "items": [
+            {
+              "channel_id": 1,
+              "inner_hex": "006d73672d61"
+            },
+            {
+              "channel_id": 1,
+              "inner_hex": "006d73672d62"
+            }
+          ]
+        }
+      },
+      {
+        "label": "batch: two channels",
+        "type": "batch",
+        "hex": "00000106006d73672d61000206016d73672d63",
+        "decoded": {
+          "items": [
+            {
+              "channel_id": 1,
+              "inner_hex": "006d73672d61"
+            },
+            {
+              "channel_id": 2,
+              "inner_hex": "016d73672d63"
+            }
+          ]
+        }
+      },
+      {
+        "label": "batch: three messages, channel switch in middle",
+        "type": "batch",
+        "hex": "00000106006d73672d6106006d73672d62000306016d73672d63",
+        "decoded": {
+          "items": [
+            {
+              "channel_id": 1,
+              "inner_hex": "006d73672d61"
+            },
+            {
+              "channel_id": 1,
+              "inner_hex": "006d73672d62"
+            },
+            {
+              "channel_id": 3,
+              "inner_hex": "016d73672d63"
+            }
+          ]
+        }
+      }
+    ],
+    "conversations": [
+      {
+        "label": "basic open-message-close exchange",
+        "protocol": "test-echo",
+        "a_to_b": [
+          "00010109746573742d6563686f00",
+          "01000c68656c6c6f2066726f6d2041",
+          "000301"
+        ],
+        "b_to_a": [
+          "00010109746573742d6563686f00",
+          "0100126563686f3a2068656c6c6f2066726f6d2041"
+        ]
+      }
+    ]
+  }
+}

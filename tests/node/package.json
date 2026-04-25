@@ -1,0 +1,21 @@
+{
+  "name": "node",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@hyperswarm/secret-stream": "^6.9.1",
+    "compact-encoding": "^2.19.2",
+    "dht-rpc": "^6.26.4",
+    "hyperdht": "^6.30.0",
+    "hyperswarm": "^4.17.0",
+    "protomux": "^3.10.1",
+    "udx-native": "^1.19.2"
+  }
+}

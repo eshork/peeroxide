@@ -1,0 +1,60 @@
+{
+  "generator": "generate-hyperdht-golden.js (manual)",
+  "description": "SecurePayload (XSalsa20-Poly1305) golden interop fixtures from Node.js hyperdht",
+  "key_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+  "local_secret_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "fixtures": [
+    {
+      "label": "minimal",
+      "nonce_hex": "010101010101010101010101010101010101010101010101",
+      "encrypted_hex": "01010101010101010101010101010101010101010101010191ce0e6ed93092e7b8a92f57d0146372624b024f",
+      "payload": {
+        "error": 0,
+        "firewall": 0,
+        "round": 0,
+        "connected": false,
+        "punching": false,
+        "addresses": null,
+        "remoteAddress": null,
+        "token": null,
+        "remoteToken": null
+      }
+    },
+    {
+      "label": "with_addresses",
+      "nonce_hex": "020202020202020202020202020202020202020202020202",
+      "encrypted_hex": "02020202020202020202020202020202020202020202020252129700a92e1e9f6657ed09e2ff92a13d45be0d0f13ac8c7b07b6",
+      "payload": {
+        "error": 0,
+        "firewall": 1,
+        "round": 3,
+        "connected": false,
+        "punching": true,
+        "addresses": [{"host": "1.2.3.4", "port": 1000}],
+        "remoteAddress": null,
+        "token": null,
+        "remoteToken": null
+      }
+    },
+    {
+      "label": "all_fields",
+      "nonce_hex": "030303030303030303030303030303030303030303030303",
+      "encrypted_hex": "0303030303030303030303030303030303030303030303035b0bb14cee1b9eb66f678b83ca69514eca6ad29c3bb14d09f540d8b185f8166d64992e3d02fa56022fe23c96e2835137d186f22accbd77e0f8fd15e68269a5c017a56d4e2f15c27bf8dfc3873f9679cf44b4dfea1b25626c88678b9ab5aed9681f8c15ee21d4d4",
+      "payload": {
+        "error": 1,
+        "firewall": 2,
+        "round": 10,
+        "connected": true,
+        "punching": true,
+        "addresses": [{"host": "192.168.1.1", "port": 3000}, {"host": "10.0.0.1", "port": 8080}],
+        "remoteAddress": {"host": "5.6.7.8", "port": 4000},
+        "token": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "remoteToken": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    }
+  ],
+  "tokens": {
+    "1.2.3.4": "78e3021cb11b405d4769cd90a4e08a03aac1d32588fa9ada97b86bdc4169a29b",
+    "5.6.7.8": "b272ac78eff7b5c89b4c9a24752c32d7f4fdbee973d5aa5ef4526b781c56231e"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "fixtures": [
+    {
+      "index": 0,
+      "hex": "ff0101002a00000000004000000000000000000068656c6c6f",
+      "length": 25,
+      "header": {
+        "magic": 255,
+        "version": 1,
+        "typeFlags": 1,
+        "typeFlagsNames": ["DATA"],
+        "dataOffset": 0,
+        "remoteId": 42,
+        "recvWindow": 4194304,
+        "seq": 0,
+        "ack": 0
+      },
+      "payloadHex": "68656c6c6f"
+    },
+    {
+      "index": 1,
+      "hex": "ff0102002a000000000040000100000000000000",
+      "length": 20,
+      "header": {
+        "magic": 255,
+        "version": 1,
+        "typeFlags": 2,
+        "typeFlagsNames": ["END"],
+        "dataOffset": 0,
+        "remoteId": 42,
+        "recvWindow": 4194304,
+        "seq": 1,
+        "ack": 0
+      },
+      "payloadHex": null
+    }
+  ],
+  "remoteId": 42,
+  "localId": 99
+}

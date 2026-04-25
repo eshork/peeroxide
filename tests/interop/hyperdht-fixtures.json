@@ -1,0 +1,622 @@
+{
+  "generator": "generate-hyperdht-golden.js",
+  "hyperdht_version": "6.30.0",
+  "fixtures": [
+    {
+      "type": "hyper_peer",
+      "label": "peer_no_relay",
+      "fields": {
+        "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "relayAddresses": []
+      },
+      "hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00"
+    },
+    {
+      "type": "hyper_peer",
+      "label": "peer_with_relay",
+      "fields": {
+        "publicKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "relayAddresses": [
+          {
+            "host": "10.0.0.1",
+            "port": 8080
+          }
+        ]
+      },
+      "hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb010a000001901f"
+    },
+    {
+      "type": "hyper_peer",
+      "label": "peer_multi_relay",
+      "fields": {
+        "publicKey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "relayAddresses": [
+          {
+            "host": "192.168.1.1",
+            "port": 3000
+          },
+          {
+            "host": "10.0.0.2",
+            "port": 9090
+          }
+        ]
+      },
+      "hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc02c0a80101b80b0a0000028223"
+    },
+    {
+      "type": "announce",
+      "label": "announce_empty",
+      "fields": {
+        "peer": null,
+        "refresh": null,
+        "signature": null,
+        "bump": 0
+      },
+      "hex": "00"
+    },
+    {
+      "type": "announce",
+      "label": "announce_peer_only",
+      "fields": {
+        "peer": {
+          "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "relayAddresses": []
+        },
+        "refresh": null,
+        "signature": null,
+        "bump": 0
+      },
+      "hex": "01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00"
+    },
+    {
+      "type": "announce",
+      "label": "announce_peer_refresh",
+      "fields": {
+        "peer": {
+          "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "relayAddresses": []
+        },
+        "refresh": "1111111111111111111111111111111111111111111111111111111111111111",
+        "signature": null,
+        "bump": 0
+      },
+      "hex": "03aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa001111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "type": "announce",
+      "label": "announce_peer_signature",
+      "fields": {
+        "peer": {
+          "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "relayAddresses": []
+        },
+        "refresh": null,
+        "signature": "22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222",
+        "bump": 0
+      },
+      "hex": "05aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0022222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "type": "announce",
+      "label": "announce_peer_bump",
+      "fields": {
+        "peer": {
+          "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "relayAddresses": []
+        },
+        "refresh": null,
+        "signature": null,
+        "bump": 5
+      },
+      "hex": "09aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0005"
+    },
+    {
+      "type": "announce",
+      "label": "announce_all_flags",
+      "fields": {
+        "peer": {
+          "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "relayAddresses": []
+        },
+        "refresh": "3333333333333333333333333333333333333333333333333333333333333333",
+        "signature": "44444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+        "bump": 99
+      },
+      "hex": "0faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0033333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444463"
+    },
+    {
+      "type": "announce",
+      "label": "announce_bump_only",
+      "fields": {
+        "peer": null,
+        "refresh": null,
+        "signature": null,
+        "bump": 42
+      },
+      "hex": "082a"
+    },
+    {
+      "type": "lookup_raw_reply",
+      "label": "lookup_raw_reply_one_peer",
+      "fields": {
+        "peers": [
+          {
+            "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "relayAddresses": []
+          }
+        ],
+        "bump": 0
+      },
+      "hex": "01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000"
+    },
+    {
+      "type": "lookup_raw_reply",
+      "label": "lookup_raw_reply_two_peers_bump",
+      "fields": {
+        "peers": [
+          {
+            "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "relayAddresses": []
+          },
+          {
+            "publicKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "relayAddresses": [
+              {
+                "host": "10.0.0.1",
+                "port": 8080
+              }
+            ]
+          }
+        ],
+        "bump": 7
+      },
+      "hex": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb010a000001901f07"
+    },
+    {
+      "type": "lookup_raw_reply",
+      "label": "lookup_raw_reply_empty",
+      "fields": {
+        "peers": [],
+        "bump": 0
+      },
+      "hex": "0000"
+    },
+    {
+      "type": "mutable_put_request",
+      "label": "mutable_put_request_basic",
+      "fields": {
+        "publicKey": "dededededededededededededededededededededededededededededededede",
+        "seq": 3,
+        "value": "68656c6c6f20776f726c64",
+        "signature": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+      },
+      "hex": "dededededededededededededededededededededededededededededededede030b68656c6c6f20776f726c64efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+    },
+    {
+      "type": "mutable_put_request",
+      "label": "mutable_put_request_high_seq",
+      "fields": {
+        "publicKey": "0101010101010101010101010101010101010101010101010101010101010101",
+        "seq": 65536,
+        "value": "010203",
+        "signature": "99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "hex": "0101010101010101010101010101010101010101010101010101010101010101fe000001000301020399999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999"
+    },
+    {
+      "type": "mutable_get_response",
+      "label": "mutable_get_response_basic",
+      "fields": {
+        "seq": 5,
+        "value": "726573706f6e73652076616c7565",
+        "signature": "77777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "hex": "050e726573706f6e73652076616c756577777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777"
+    },
+    {
+      "type": "mutable_signable",
+      "label": "mutable_signable_basic",
+      "fields": {
+        "seq": 10,
+        "value": "7369676e61626c652064617461"
+      },
+      "hex": "0a0d7369676e61626c652064617461"
+    },
+    {
+      "type": "mutable_signable",
+      "label": "mutable_signable_seq_zero",
+      "fields": {
+        "seq": 0,
+        "value": "ff"
+      },
+      "hex": "0001ff"
+    },
+    {
+      "type": "namespace",
+      "label": "NS_ANNOUNCE",
+      "hex": "36386adddf9f6fd60db83a6f42fc159d1146aa8644037664230aaa1f0179d497"
+    },
+    {
+      "type": "namespace",
+      "label": "NS_UNANNOUNCE",
+      "hex": "ded293cd93fb395e756ecf5fff426529e72c36eacc22e5ed944d9099a2561e32"
+    },
+    {
+      "type": "namespace",
+      "label": "NS_MUTABLE_PUT",
+      "hex": "668e823edd5ce7f5338d68bf1161f4a3c28ce437ee2ab49efd30d99366039b1e"
+    },
+    {
+      "type": "namespace",
+      "label": "NS_PEER_HANDSHAKE",
+      "hex": "14d6d4b49214ab1033ed204976caa258bae9e1e8543b9ad1fd996a910b0c4e3a"
+    },
+    {
+      "type": "namespace",
+      "label": "NS_PEER_HOLEPUNCH",
+      "hex": "f1191cd5e67b10b54a507033280ed1ff0e12278268d5679c8f93d417210d168b"
+    },
+    {
+      "type": "handshake",
+      "label": "handshake_no_addr",
+      "fields": {
+        "mode": 0,
+        "noise": "abababababababababababababababababababababababababababababababababababababababababababababababab",
+        "peerAddress": null,
+        "relayAddress": null
+      },
+      "hex": "000030abababababababababababababababababababababababababababababababababababababababababababababababab"
+    },
+    {
+      "type": "handshake",
+      "label": "handshake_peer_addr",
+      "fields": {
+        "mode": 1,
+        "noise": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "peerAddress": {
+          "host": "192.168.1.1",
+          "port": 3000
+        },
+        "relayAddress": null
+      },
+      "hex": "010120cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc0a80101b80b"
+    },
+    {
+      "type": "handshake",
+      "label": "handshake_relay_addr",
+      "fields": {
+        "mode": 2,
+        "noise": "efefefefefefefefefefefefefefefef",
+        "peerAddress": null,
+        "relayAddress": {
+          "host": "10.0.0.1",
+          "port": 8080
+        }
+      },
+      "hex": "020210efefefefefefefefefefefefefefefef0a000001901f"
+    },
+    {
+      "type": "handshake",
+      "label": "handshake_both_addr",
+      "fields": {
+        "mode": 4,
+        "noise": "11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+        "peerAddress": {
+          "host": "1.2.3.4",
+          "port": 1234
+        },
+        "relayAddress": {
+          "host": "5.6.7.8",
+          "port": 5678
+        }
+      },
+      "hex": "0304401111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111101020304d204050607082e16"
+    },
+    {
+      "type": "holepunch",
+      "label": "holepunch_no_addr",
+      "fields": {
+        "mode": 0,
+        "id": 42,
+        "payload": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "peerAddress": null
+      },
+      "hex": "00002a18aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "type": "holepunch",
+      "label": "holepunch_with_addr",
+      "fields": {
+        "mode": 2,
+        "id": 9999,
+        "payload": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "peerAddress": {
+          "host": "10.0.0.5",
+          "port": 4000
+        }
+      },
+      "hex": "0102fd0f2730bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0a000005a00f"
+    },
+    {
+      "type": "holepunch",
+      "label": "holepunch_empty_payload",
+      "fields": {
+        "mode": 4,
+        "id": 0,
+        "payload": "",
+        "peerAddress": null
+      },
+      "hex": "00040000"
+    },
+    {
+      "type": "noise_payload",
+      "label": "noise_payload_minimal",
+      "fields": {
+        "version": 1,
+        "error": 0,
+        "firewall": 0,
+        "addresses4": [],
+        "addresses6": [],
+        "holepunch": null,
+        "udx": null,
+        "secretStream": null,
+        "relayThrough": null,
+        "relayAddresses": null
+      },
+      "hex": "01000000"
+    },
+    {
+      "type": "noise_payload",
+      "label": "noise_payload_addresses4",
+      "fields": {
+        "version": 1,
+        "error": 0,
+        "firewall": 1,
+        "addresses4": [
+          {
+            "host": "1.2.3.4",
+            "port": 1000
+          },
+          {
+            "host": "5.6.7.8",
+            "port": 2000
+          }
+        ],
+        "addresses6": [],
+        "holepunch": null,
+        "udx": null,
+        "secretStream": null,
+        "relayThrough": null,
+        "relayAddresses": null
+      },
+      "hex": "010200010201020304e80305060708d007"
+    },
+    {
+      "type": "noise_payload",
+      "label": "noise_payload_holepunch",
+      "fields": {
+        "version": 1,
+        "error": 0,
+        "firewall": 2,
+        "addresses4": [],
+        "addresses6": [],
+        "holepunch": {
+          "id": 7,
+          "relays": [
+            {
+              "relayAddress": {
+                "host": "10.0.0.1",
+                "port": 8080
+              },
+              "peerAddress": {
+                "host": "192.168.1.1",
+                "port": 3000
+              }
+            }
+          ]
+        },
+        "udx": null,
+        "secretStream": null,
+        "relayThrough": null,
+        "relayAddresses": null
+      },
+      "hex": "0101000207010a000001901fc0a80101b80b"
+    },
+    {
+      "type": "noise_payload",
+      "label": "noise_payload_udx_ss",
+      "fields": {
+        "version": 1,
+        "error": 0,
+        "firewall": 3,
+        "addresses4": [
+          {
+            "host": "1.2.3.4",
+            "port": 1000
+          }
+        ],
+        "addresses6": [],
+        "holepunch": null,
+        "udx": {
+          "version": 1,
+          "reusableSocket": true,
+          "id": 100,
+          "seq": 200
+        },
+        "secretStream": {
+          "version": 1
+        },
+        "relayThrough": null,
+        "relayAddresses": null
+      },
+      "hex": "011a00030101020304e803010164c801"
+    },
+    {
+      "type": "noise_payload",
+      "label": "noise_payload_all_fields",
+      "fields": {
+        "version": 1,
+        "error": 1,
+        "firewall": 2,
+        "addresses4": [
+          {
+            "host": "1.2.3.4",
+            "port": 1000
+          }
+        ],
+        "addresses6": [
+          {
+            "host": "2001:db8::1",
+            "port": 2000
+          }
+        ],
+        "holepunch": {
+          "id": 42,
+          "relays": []
+        },
+        "udx": {
+          "version": 1,
+          "reusableSocket": false,
+          "id": 1,
+          "seq": 0
+        },
+        "secretStream": {
+          "version": 1
+        },
+        "relayThrough": {
+          "version": 1,
+          "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "relayAddresses": [
+          {
+            "host": "10.0.0.1",
+            "port": 8080
+          }
+        ]
+      },
+      "hex": "017f01022a000101020304e8030120010db8000000000000000000000001d00701000100010100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb010a000001901f"
+    },
+    {
+      "type": "noise_payload",
+      "label": "noise_payload_relay_through",
+      "fields": {
+        "version": 1,
+        "error": 0,
+        "firewall": 1,
+        "addresses4": [],
+        "addresses6": [],
+        "holepunch": null,
+        "udx": null,
+        "secretStream": null,
+        "relayThrough": {
+          "version": 1,
+          "publicKey": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "relayAddresses": null
+      },
+      "hex": "012000010100ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "type": "holepunch_payload",
+      "label": "holepunch_payload_minimal",
+      "fields": {
+        "error": 0,
+        "firewall": 0,
+        "round": 0,
+        "connected": false,
+        "punching": false,
+        "addresses": null,
+        "remoteAddress": null,
+        "token": null,
+        "remoteToken": null
+      },
+      "hex": "00000000"
+    },
+    {
+      "type": "holepunch_payload",
+      "label": "holepunch_payload_connected_punching",
+      "fields": {
+        "error": 0,
+        "firewall": 2,
+        "round": 3,
+        "connected": true,
+        "punching": true,
+        "addresses": null,
+        "remoteAddress": null,
+        "token": null,
+        "remoteToken": null
+      },
+      "hex": "03000203"
+    },
+    {
+      "type": "holepunch_payload",
+      "label": "holepunch_payload_with_addresses",
+      "fields": {
+        "error": 0,
+        "firewall": 1,
+        "round": 1,
+        "connected": false,
+        "punching": true,
+        "addresses": [
+          {
+            "host": "1.2.3.4",
+            "port": 1000
+          },
+          {
+            "host": "5.6.7.8",
+            "port": 2000
+          }
+        ],
+        "remoteAddress": {
+          "host": "10.0.0.1",
+          "port": 8080
+        },
+        "token": null,
+        "remoteToken": null
+      },
+      "hex": "0e0001010201020304e80305060708d0070a000001901f"
+    },
+    {
+      "type": "holepunch_payload",
+      "label": "holepunch_payload_with_tokens",
+      "fields": {
+        "error": 0,
+        "firewall": 3,
+        "round": 5,
+        "connected": false,
+        "punching": false,
+        "addresses": null,
+        "remoteAddress": null,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "remoteToken": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "hex": "30000305aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "type": "holepunch_payload",
+      "label": "holepunch_payload_all_fields",
+      "fields": {
+        "error": 1,
+        "firewall": 2,
+        "round": 10,
+        "connected": true,
+        "punching": true,
+        "addresses": [
+          {
+            "host": "192.168.1.1",
+            "port": 3000
+          }
+        ],
+        "remoteAddress": {
+          "host": "10.0.0.5",
+          "port": 4000
+        },
+        "token": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "remoteToken": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "hex": "3f01020a01c0a80101b80b0a000005a00fccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ]
+}

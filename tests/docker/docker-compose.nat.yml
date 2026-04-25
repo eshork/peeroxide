@@ -1,0 +1,101 @@
+# M6 NAT simulation: 3 containers (bootstrap, rust-peer, node-peer)
+# on separate networks with NAT gateways.
+#
+# Requires: docker compose, NET_ADMIN capability
+# Run: docker compose -f docker-compose.nat.yml up --build
+
+networks:
+  public:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  nat-a:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.1.0/24
+  nat-b:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.2.0/24
+
+services:
+  bootstrap:
+    build:
+      context: ../../../
+      dockerfile: peeroxide/tests/docker/Dockerfile.node-peer
+    networks:
+      public:
+        ipv4_address: 172.30.0.10
+    command: ["node", "hyperdht-peer.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  nat-gateway-a:
+    image: debian:bookworm-slim
+    cap_add:
+      - NET_ADMIN
+    networks:
+      public:
+        ipv4_address: 172.30.0.20
+      nat-a:
+        ipv4_address: 10.0.1.1
+    command: >
+      bash -c "
+        apt-get update && apt-get install -y iptables iproute2 &&
+        echo 1 > /proc/sys/net/ipv4/ip_forward &&
+        iptables -t nat -A POSTROUTING -s 10.0.1.0/24 -o eth0 -j MASQUERADE &&
+        iptables -A FORWARD -j ACCEPT &&
+        tail -f /dev/null
+      "
+
+  nat-gateway-b:
+    image: debian:bookworm-slim
+    cap_add:
+      - NET_ADMIN
+    networks:
+      public:
+        ipv4_address: 172.30.0.30
+      nat-b:
+        ipv4_address: 10.0.2.1
+    command: >
+      bash -c "
+        apt-get update && apt-get install -y iptables iproute2 &&
+        echo 1 > /proc/sys/net/ipv4/ip_forward &&
+        iptables -t nat -A POSTROUTING -s 10.0.2.0/24 -o eth0 -j MASQUERADE &&
+        iptables -A FORWARD -j ACCEPT &&
+        tail -f /dev/null
+      "
+
+  rust-peer:
+    build:
+      context: ../../../
+      dockerfile: peeroxide/tests/docker/Dockerfile.rust-peer
+    cap_add:
+      - NET_ADMIN
+    networks:
+      nat-a:
+        ipv4_address: 10.0.1.100
+    depends_on:
+      - nat-gateway-a
+      - bootstrap
+    command: ["bash", "/app/scripts/run-peer.sh", "rust"]
+
+  node-peer:
+    build:
+      context: ../../../
+      dockerfile: peeroxide/tests/docker/Dockerfile.node-peer
+    cap_add:
+      - NET_ADMIN
+    networks:
+      nat-b:
+        ipv4_address: 10.0.2.100
+    depends_on:
+      - nat-gateway-b
+      - bootstrap
+    command: ["bash", "/app/scripts/run-peer.sh", "node"]

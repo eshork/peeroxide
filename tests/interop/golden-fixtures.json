@@ -1,0 +1,662 @@
+{
+  "generated_by": "compact-encoding npm package",
+  "version": "2.19.2",
+  "fixtures": [
+    {
+      "type": "uint8",
+      "label": "uint8 zero",
+      "value": 0,
+      "hex": "00"
+    },
+    {
+      "type": "uint8",
+      "label": "uint8 one",
+      "value": 1,
+      "hex": "01"
+    },
+    {
+      "type": "uint8",
+      "label": "uint8 127",
+      "value": 127,
+      "hex": "7f"
+    },
+    {
+      "type": "uint8",
+      "label": "uint8 128",
+      "value": 128,
+      "hex": "80"
+    },
+    {
+      "type": "uint8",
+      "label": "uint8 max",
+      "value": 255,
+      "hex": "ff"
+    },
+    {
+      "type": "uint16",
+      "label": "uint16 zero",
+      "value": 0,
+      "hex": "0000"
+    },
+    {
+      "type": "uint16",
+      "label": "uint16 one",
+      "value": 1,
+      "hex": "0100"
+    },
+    {
+      "type": "uint16",
+      "label": "uint16 0x0102",
+      "value": 258,
+      "hex": "0201"
+    },
+    {
+      "type": "uint16",
+      "label": "uint16 max",
+      "value": 65535,
+      "hex": "ffff"
+    },
+    {
+      "type": "uint24",
+      "label": "uint24 zero",
+      "value": 0,
+      "hex": "000000"
+    },
+    {
+      "type": "uint24",
+      "label": "uint24 0x010203",
+      "value": 66051,
+      "hex": "030201"
+    },
+    {
+      "type": "uint24",
+      "label": "uint24 max",
+      "value": 16777215,
+      "hex": "ffffff"
+    },
+    {
+      "type": "uint32",
+      "label": "uint32 zero",
+      "value": 0,
+      "hex": "00000000"
+    },
+    {
+      "type": "uint32",
+      "label": "uint32 one",
+      "value": 1,
+      "hex": "01000000"
+    },
+    {
+      "type": "uint32",
+      "label": "uint32 0x01020304",
+      "value": 16909060,
+      "hex": "04030201"
+    },
+    {
+      "type": "uint32",
+      "label": "uint32 max",
+      "value": 4294967295,
+      "hex": "ffffffff"
+    },
+    {
+      "type": "uint64",
+      "label": "uint64 zero",
+      "value": "0",
+      "hex": "0000000000000000"
+    },
+    {
+      "type": "uint64",
+      "label": "uint64 one",
+      "value": "1",
+      "hex": "0100000000000000"
+    },
+    {
+      "type": "uint64",
+      "label": "uint64 0x0102030405060708",
+      "value": "72623859790382856",
+      "hex": "0807060504030201"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint zero",
+      "value": 0,
+      "hex": "00"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint one",
+      "value": 1,
+      "hex": "01"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 100",
+      "value": 100,
+      "hex": "64"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 252",
+      "value": 252,
+      "hex": "fc"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 253",
+      "value": 253,
+      "hex": "fdfd00"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 1000",
+      "value": 1000,
+      "hex": "fde803"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 65535",
+      "value": 65535,
+      "hex": "fdffff"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 65536",
+      "value": 65536,
+      "hex": "fe00000100"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 100000",
+      "value": 100000,
+      "hex": "fea0860100"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 0xffffffff",
+      "value": 4294967295,
+      "hex": "feffffffff"
+    },
+    {
+      "type": "uint",
+      "label": "uint varint 0x100000000",
+      "value": 4294967296,
+      "hex": "ff0000000001000000"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag zero",
+      "value": 0,
+      "hex": "00"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag one",
+      "value": 1,
+      "hex": "02"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag -1",
+      "value": -1,
+      "hex": "01"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag two",
+      "value": 2,
+      "hex": "04"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag -2",
+      "value": -2,
+      "hex": "03"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag 127",
+      "value": 127,
+      "hex": "fdfe00"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag -128",
+      "value": -128,
+      "hex": "fdff00"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag 1000",
+      "value": 1000,
+      "hex": "fdd007"
+    },
+    {
+      "type": "int",
+      "label": "int zigzag -1000",
+      "value": -1000,
+      "hex": "fdcf07"
+    },
+    {
+      "type": "int8",
+      "label": "int8 zero",
+      "value": 0,
+      "hex": "00"
+    },
+    {
+      "type": "int8",
+      "label": "int8 one",
+      "value": 1,
+      "hex": "02"
+    },
+    {
+      "type": "int8",
+      "label": "int8 -1",
+      "value": -1,
+      "hex": "01"
+    },
+    {
+      "type": "int8",
+      "label": "int8 max",
+      "value": 127,
+      "hex": "fe"
+    },
+    {
+      "type": "int8",
+      "label": "int8 min",
+      "value": -128,
+      "hex": "ff"
+    },
+    {
+      "type": "int16",
+      "label": "int16 zero",
+      "value": 0,
+      "hex": "0000"
+    },
+    {
+      "type": "int16",
+      "label": "int16 one",
+      "value": 1,
+      "hex": "0200"
+    },
+    {
+      "type": "int16",
+      "label": "int16 -1",
+      "value": -1,
+      "hex": "0100"
+    },
+    {
+      "type": "int16",
+      "label": "int16 max",
+      "value": 32767,
+      "hex": "feff"
+    },
+    {
+      "type": "int16",
+      "label": "int16 min",
+      "value": -32768,
+      "hex": "ffff"
+    },
+    {
+      "type": "int32",
+      "label": "int32 zero",
+      "value": 0,
+      "hex": "00000000"
+    },
+    {
+      "type": "int32",
+      "label": "int32 one",
+      "value": 1,
+      "hex": "02000000"
+    },
+    {
+      "type": "int32",
+      "label": "int32 -1",
+      "value": -1,
+      "hex": "01000000"
+    },
+    {
+      "type": "int32",
+      "label": "int32 max",
+      "value": 2147483647,
+      "hex": "feffffff"
+    },
+    {
+      "type": "int32",
+      "label": "int32 min",
+      "value": -2147483648,
+      "hex": "ffffffff"
+    },
+    {
+      "type": "int64",
+      "label": "int64 zero",
+      "value": "0",
+      "hex": "0000000000000000"
+    },
+    {
+      "type": "int64",
+      "label": "int64 one",
+      "value": "1",
+      "hex": "0200000000000000"
+    },
+    {
+      "type": "int64",
+      "label": "int64 -1",
+      "value": "-1",
+      "hex": "0100000000000000"
+    },
+    {
+      "type": "int64",
+      "label": "int64 large positive",
+      "value": "9223372036854775807",
+      "hex": "feffffffffffffff"
+    },
+    {
+      "type": "int64",
+      "label": "int64 large negative",
+      "value": "-9223372036854775808",
+      "hex": "ffffffffffffffff"
+    },
+    {
+      "type": "float32",
+      "label": "float32 zero",
+      "value": 0,
+      "hex": "00000000"
+    },
+    {
+      "type": "float32",
+      "label": "float32 1.5",
+      "value": 1.5,
+      "hex": "0000c03f"
+    },
+    {
+      "type": "float32",
+      "label": "float32 -1.5",
+      "value": -1.5,
+      "hex": "0000c0bf"
+    },
+    {
+      "type": "float32",
+      "label": "float32 3.14",
+      "value": 3.14,
+      "hex": "c3f54840"
+    },
+    {
+      "type": "float64",
+      "label": "float64 zero",
+      "value": 0,
+      "hex": "0000000000000000"
+    },
+    {
+      "type": "float64",
+      "label": "float64 1.5",
+      "value": 1.5,
+      "hex": "000000000000f83f"
+    },
+    {
+      "type": "float64",
+      "label": "float64 -1.5",
+      "value": -1.5,
+      "hex": "000000000000f8bf"
+    },
+    {
+      "type": "float64",
+      "label": "float64 pi",
+      "value": 3.141592653589793,
+      "hex": "182d4454fb210940"
+    },
+    {
+      "type": "float64",
+      "label": "float64 MAX_VALUE",
+      "value": 1.7976931348623157e+308,
+      "hex": "ffffffffffffef7f"
+    },
+    {
+      "type": "float64",
+      "label": "float64 MIN_VALUE",
+      "value": 5e-324,
+      "hex": "0100000000000000"
+    },
+    {
+      "type": "bool",
+      "label": "bool true",
+      "value": true,
+      "hex": "01"
+    },
+    {
+      "type": "bool",
+      "label": "bool false",
+      "value": false,
+      "hex": "00"
+    },
+    {
+      "type": "buffer",
+      "label": "buffer null",
+      "value": null,
+      "hex": "00"
+    },
+    {
+      "type": "buffer",
+      "label": "buffer empty",
+      "value": "",
+      "hex": "00"
+    },
+    {
+      "type": "buffer",
+      "label": "buffer hello world",
+      "value": "68656c6c6f20776f726c64",
+      "hex": "0b68656c6c6f20776f726c64"
+    },
+    {
+      "type": "buffer",
+      "label": "buffer binary 0xff00ff",
+      "value": "ff00ff",
+      "hex": "03ff00ff"
+    },
+    {
+      "type": "string",
+      "label": "string empty",
+      "value": "",
+      "hex": "00"
+    },
+    {
+      "type": "string",
+      "label": "string hello",
+      "value": "hello",
+      "hex": "0568656c6c6f"
+    },
+    {
+      "type": "string",
+      "label": "string hello world emoji",
+      "value": "hello world 🌍",
+      "hex": "1068656c6c6f20776f726c6420f09f8c8d"
+    },
+    {
+      "type": "string",
+      "label": "string 1000 a chars",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hex": "fde80361616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161"
+    },
+    {
+      "type": "fixed32",
+      "label": "fixed32 all-42",
+      "value": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+    },
+    {
+      "type": "fixed32",
+      "label": "fixed32 all-zero",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "type": "fixed32",
+      "label": "fixed32 all-0xff",
+      "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "type": "fixed64",
+      "label": "fixed64 all-99",
+      "value": "63636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363",
+      "hex": "63636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363"
+    },
+    {
+      "type": "fixed64",
+      "label": "fixed64 all-zero",
+      "value": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "type": "ipv4",
+      "label": "ipv4 loopback",
+      "value": "127.0.0.1",
+      "hex": "7f000001"
+    },
+    {
+      "type": "ipv4",
+      "label": "ipv4 private",
+      "value": "192.168.1.1",
+      "hex": "c0a80101"
+    },
+    {
+      "type": "ipv4",
+      "label": "ipv4 zero",
+      "value": "0.0.0.0",
+      "hex": "00000000"
+    },
+    {
+      "type": "ipv4",
+      "label": "ipv4 broadcast",
+      "value": "255.255.255.255",
+      "hex": "ffffffff"
+    },
+    {
+      "type": "ipv6",
+      "label": "ipv6 loopback",
+      "value": "::1",
+      "hex": "00000000000000000000000000000001"
+    },
+    {
+      "type": "ipv6",
+      "label": "ipv6 mapped ipv4",
+      "value": "::ffff:c0a8:0101",
+      "hex": "00000000000000000000ffffc0a80101"
+    },
+    {
+      "type": "ipv6",
+      "label": "ipv6 link-local",
+      "value": "fe80::1",
+      "hex": "fe800000000000000000000000000001"
+    },
+    {
+      "type": "ipv6",
+      "label": "ipv6 documentation",
+      "value": "2001:db8::1",
+      "hex": "20010db8000000000000000000000001"
+    },
+    {
+      "type": "ip",
+      "label": "ip ipv4 private",
+      "value": "192.168.1.1",
+      "hex": "04c0a80101"
+    },
+    {
+      "type": "ip",
+      "label": "ip ipv6 loopback",
+      "value": "::1",
+      "hex": "0600000000000000000000000000000001"
+    },
+    {
+      "type": "ip",
+      "label": "ip ipv4 10.0.0.1",
+      "value": "10.0.0.1",
+      "hex": "040a000001"
+    },
+    {
+      "type": "ip",
+      "label": "ip ipv6 documentation",
+      "value": "2001:db8::1",
+      "hex": "0620010db8000000000000000000000001"
+    },
+    {
+      "type": "ipv4Address",
+      "label": "ipv4Address 10.0.0.1:8080",
+      "value": {
+        "host": "10.0.0.1",
+        "port": 8080
+      },
+      "hex": "0a000001901f"
+    },
+    {
+      "type": "ipv4Address",
+      "label": "ipv4Address 0.0.0.0:0",
+      "value": {
+        "host": "0.0.0.0",
+        "port": 0
+      },
+      "hex": "000000000000"
+    },
+    {
+      "type": "ipv4Address",
+      "label": "ipv4Address 255.255.255.255:65535",
+      "value": {
+        "host": "255.255.255.255",
+        "port": 65535
+      },
+      "hex": "ffffffffffff"
+    },
+    {
+      "type": "uint_array",
+      "label": "uint array empty",
+      "value": [],
+      "hex": "00"
+    },
+    {
+      "type": "uint_array",
+      "label": "uint array single zero",
+      "value": [
+        0
+      ],
+      "hex": "0100"
+    },
+    {
+      "type": "uint_array",
+      "label": "uint array diverse",
+      "value": [
+        0,
+        1,
+        252,
+        253,
+        65535,
+        65536,
+        4294967295
+      ],
+      "hex": "070001fcfdfd00fdfffffe00000100feffffffff"
+    },
+    {
+      "type": "string_array",
+      "label": "string array empty",
+      "value": [],
+      "hex": "00"
+    },
+    {
+      "type": "string_array",
+      "label": "string array single",
+      "value": [
+        "hello"
+      ],
+      "hex": "010568656c6c6f"
+    },
+    {
+      "type": "string_array",
+      "label": "string array diverse",
+      "value": [
+        "hello",
+        "world",
+        "",
+        "🌍"
+      ],
+      "hex": "040568656c6c6f05776f726c640004f09f8c8d"
+    }
+  ]
+}

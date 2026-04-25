@@ -1,0 +1,169 @@
+{
+  "generator": "generate-dht-golden.js",
+  "dht_rpc_version": "6.26.4",
+  "fixtures": [
+    {
+      "type": "request",
+      "label": "req_minimal",
+      "fields": {
+        "tid": 1,
+        "to_host": "127.0.0.1",
+        "to_port": 8080,
+        "id": null,
+        "token": null,
+        "internal": false,
+        "command": 0,
+        "target": null,
+        "value": null
+      },
+      "hex": "030001007f000001901f00"
+    },
+    {
+      "type": "request",
+      "label": "req_internal_ping",
+      "fields": {
+        "tid": 42,
+        "to_host": "10.0.0.1",
+        "to_port": 49737,
+        "id": null,
+        "token": null,
+        "internal": true,
+        "command": 0,
+        "target": null,
+        "value": null
+      },
+      "hex": "03042a000a00000149c200"
+    },
+    {
+      "type": "request",
+      "label": "req_find_node",
+      "fields": {
+        "tid": 100,
+        "to_host": "192.168.1.1",
+        "to_port": 3000,
+        "id": null,
+        "token": null,
+        "internal": true,
+        "command": 2,
+        "target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "value": null
+      },
+      "hex": "030c6400c0a80101b80b02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "type": "request",
+      "label": "req_full",
+      "fields": {
+        "tid": 1000,
+        "to_host": "10.0.0.1",
+        "to_port": 8080,
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "token": "2222222222222222222222222222222222222222222222222222222222222222",
+        "internal": true,
+        "command": 2,
+        "target": "3333333333333333333333333333333333333333333333333333333333333333",
+        "value": "01020304"
+      },
+      "hex": "031fe8030a000001901f111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220233333333333333333333333333333333333333333333333333333333333333330401020304"
+    },
+    {
+      "type": "request",
+      "label": "req_external_with_value",
+      "fields": {
+        "tid": 500,
+        "to_host": "172.16.0.1",
+        "to_port": 9999,
+        "id": null,
+        "token": null,
+        "internal": false,
+        "command": 5,
+        "target": "4444444444444444444444444444444444444444444444444444444444444444",
+        "value": "68656c6c6f"
+      },
+      "hex": "0318f401ac1000010f270544444444444444444444444444444444444444444444444444444444444444440568656c6c6f"
+    },
+    {
+      "type": "response",
+      "label": "res_minimal",
+      "fields": {
+        "tid": 1,
+        "to_host": "127.0.0.1",
+        "to_port": 8080,
+        "id": null,
+        "token": null,
+        "closer_nodes": [],
+        "error": 0,
+        "value": null
+      },
+      "hex": "130001007f000001901f"
+    },
+    {
+      "type": "response",
+      "label": "res_with_error",
+      "fields": {
+        "tid": 100,
+        "to_host": "10.0.0.1",
+        "to_port": 5000,
+        "id": null,
+        "token": null,
+        "closer_nodes": [],
+        "error": 42,
+        "value": null
+      },
+      "hex": "130864000a00000188132a"
+    },
+    {
+      "type": "response",
+      "label": "res_with_closer_nodes",
+      "fields": {
+        "tid": 200,
+        "to_host": "192.168.1.1",
+        "to_port": 3000,
+        "id": "5555555555555555555555555555555555555555555555555555555555555555",
+        "token": "6666666666666666666666666666666666666666666666666666666666666666",
+        "closer_nodes": [
+          {
+            "host": "10.0.0.1",
+            "port": 8080
+          },
+          {
+            "host": "10.0.0.2",
+            "port": 9090
+          }
+        ],
+        "error": 0,
+        "value": "68656c6c6f"
+      },
+      "hex": "1317c800c0a80101b80b55555555555555555555555555555555555555555555555555555555555555556666666666666666666666666666666666666666666666666666666666666666020a000001901f0a00000282230568656c6c6f"
+    },
+    {
+      "type": "response",
+      "label": "res_full",
+      "fields": {
+        "tid": 65535,
+        "to_host": "10.0.0.1",
+        "to_port": 8080,
+        "id": "7777777777777777777777777777777777777777777777777777777777777777",
+        "token": "8888888888888888888888888888888888888888888888888888888888888888",
+        "closer_nodes": [
+          {
+            "host": "192.168.1.1",
+            "port": 3000
+          }
+        ],
+        "error": 0,
+        "value": "deadbeef"
+      },
+      "hex": "1317ffff0a000001901f7777777777777777777777777777777777777777777777777777777777777777888888888888888888888888888888888888888888888888888888888888888801c0a80101b80b04deadbeef"
+    },
+    {
+      "type": "peer_id",
+      "label": "peer_id_127.0.0.1:8080",
+      "fields": {
+        "host": "127.0.0.1",
+        "port": 8080
+      },
+      "hex": "bf42a8b5657a7c676be38b8f8ebd9194d08bc76d249557db5327e1d6d9392081"
+    }
+  ]
+}

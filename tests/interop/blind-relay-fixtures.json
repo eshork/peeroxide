@@ -1,0 +1,85 @@
+{
+  "generated_by": "blind-relay golden fixture generator",
+  "blind_relay_version": "1.4.0",
+  "fixtures": [
+    {
+      "label": "pair: initiator, small ids",
+      "type": "pair",
+      "hex": "0142424242424242424242424242424242424242424242424242424242424242420102",
+      "decoded": {
+        "is_initiator": true,
+        "token": "4242424242424242424242424242424242424242424242424242424242424242",
+        "id": 1,
+        "seq": 2
+      }
+    },
+    {
+      "label": "pair: responder, zero ids",
+      "type": "pair",
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000000000",
+      "decoded": {
+        "is_initiator": false,
+        "token": "0000000000000000000000000000000000000000000000000000000000000000",
+        "id": 0,
+        "seq": 0
+      }
+    },
+    {
+      "label": "pair: initiator, large ids",
+      "type": "pair",
+      "hex": "01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaafea0860100fe00000100",
+      "decoded": {
+        "is_initiator": true,
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "id": 100000,
+        "seq": 65536
+      }
+    },
+    {
+      "label": "pair: responder, all-ff token",
+      "type": "pair",
+      "hex": "00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff2a07",
+      "decoded": {
+        "is_initiator": false,
+        "token": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "id": 42,
+        "seq": 7
+      }
+    },
+    {
+      "label": "pair: initiator, id=253 (multi-byte varint)",
+      "type": "pair",
+      "hex": "01bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbfdfd00fdfd00",
+      "decoded": {
+        "is_initiator": true,
+        "token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "id": 253,
+        "seq": 253
+      }
+    },
+    {
+      "label": "unpair: all-aa token",
+      "type": "unpair",
+      "hex": "00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "decoded": {
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "label": "unpair: zero token",
+      "type": "unpair",
+      "hex": "000000000000000000000000000000000000000000000000000000000000000000",
+      "decoded": {
+        "token": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "label": "unpair: all-ff token",
+      "type": "unpair",
+      "hex": "00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "decoded": {
+        "token": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    }
+  ]
+}
