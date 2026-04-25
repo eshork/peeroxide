@@ -75,4 +75,4 @@ stack, wire-compatible with the existing Node.js network.
 - Rust edition 2024, MSRV 1.85
 - Dual-licensed: MIT OR Apache-2.0
 
-[1.0.0]: https://github.com/eshork/peeroxide/releases/tag/v1.0.0
+[1.0.0]: https://github.com/Rightbracket/peeroxide/releases/tag/v1.0.0

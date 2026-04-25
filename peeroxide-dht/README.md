@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/peeroxide-dht.svg)](https://crates.io/crates/peeroxide-dht)
 [![docs.rs](https://docs.rs/peeroxide-dht/badge.svg)](https://docs.rs/peeroxide-dht)
-[![CI](https://github.com/eshork/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/eshork/peeroxide/actions/workflows/ci.yml)
+[![CI](https://github.com/Rightbracket/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/Rightbracket/peeroxide/actions/workflows/ci.yml)
 
 Rust port of HyperDHT — Kademlia DHT with hole-punching, Noise-encrypted connections, and relay.
 
@@ -46,7 +46,7 @@ dht.announce(topic, &key_pair, &[]).await?;
 
 ### Project
 
-Part of the [peeroxide](https://github.com/eshork/peeroxide) project.
+Part of the [peeroxide](https://github.com/Rightbracket/peeroxide) project.
 
 ### License
 

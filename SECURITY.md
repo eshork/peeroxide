@@ -12,7 +12,7 @@ The following versions are currently supported with security updates:
 
 We use GitHub's private vulnerability reporting system. To report a security issue, please follow these steps:
 
-1. Go to https://github.com/eshork/peeroxide/security/advisories
+1. Go to https://github.com/Rightbracket/peeroxide/security/advisories
 2. Click "New draft advisory"
 3. Fill in the details of the vulnerability
 

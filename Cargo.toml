@@ -10,7 +10,7 @@ members = [
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
-repository = "https://github.com/eshork/peeroxide"
+repository = "https://github.com/Rightbracket/peeroxide"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

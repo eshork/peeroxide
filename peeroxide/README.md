@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/peeroxide.svg)](https://crates.io/crates/peeroxide)
 [![docs.rs](https://docs.rs/peeroxide/badge.svg)](https://docs.rs/peeroxide)
-[![CI](https://github.com/eshork/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/eshork/peeroxide/actions/workflows/ci.yml)
+[![CI](https://github.com/Rightbracket/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/Rightbracket/peeroxide/actions/workflows/ci.yml)
 
 Rust port of Hyperswarm — topic-based P2P peer discovery and encrypted connections.
 
@@ -52,7 +52,7 @@ peeroxide          <- this crate
     └── libudx     <- reliable UDP with BBR congestion control
 ```
 
-Peeroxide is part of the [peeroxide workspace](https://github.com/eshork/peeroxide) and joins the same network as Node.js Hyperswarm peers.
+Peeroxide is part of the [peeroxide workspace](https://github.com/Rightbracket/peeroxide) and joins the same network as Node.js Hyperswarm peers.
 
 ## License
 

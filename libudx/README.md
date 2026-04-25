@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/libudx.svg)](https://crates.io/crates/libudx)
 [![docs.rs](https://docs.rs/libudx/badge.svg)](https://docs.rs/libudx)
-[![CI](https://github.com/eshork/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/eshork/peeroxide/actions/workflows/ci.yml)
+[![CI](https://github.com/Rightbracket/peeroxide/actions/workflows/ci.yml/badge.svg)](https://github.com/Rightbracket/peeroxide/actions/workflows/ci.yml)
 
 Pure Rust implementation of the UDX reliable UDP transport protocol, wire-compatible with C libudx.
 
@@ -47,7 +47,7 @@ congestion control details, and protocol constants.
 
 - Pure Rust with no C dependencies
 - tokio async runtime
-- Part of the [peeroxide](https://github.com/eshork/peeroxide) workspace
+- Part of the [peeroxide](https://github.com/Rightbracket/peeroxide) workspace
 
 ## License
 
