@@ -67,6 +67,11 @@ We enforce high standards for code quality and documentation:
 3. Keep PRs focused on a single change or feature.
 4. Update or add tests for any new functionality or bug fixes.
 5. All commits must be clear and descriptive.
+6. For API changes, run `cargo-semver-checks` to verify SemVer compliance:
+   ```bash
+   cargo install cargo-semver-checks
+   cargo semver-checks check-release -p <crate>
+   ```
 
 ## Licensing
 
