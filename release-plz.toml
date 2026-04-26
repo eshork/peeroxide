@@ -1,0 +1,19 @@
+[workspace]
+release_always = false
+semver_check = true
+git_release_enable = true
+git_tag_enable = true
+changelog_update = true
+pr_labels = ["release"]
+
+[[package]]
+name = "libudx"
+version_group = "peeroxide"
+
+[[package]]
+name = "peeroxide-dht"
+version_group = "peeroxide"
+
+[[package]]
+name = "peeroxide"
+version_group = "peeroxide"
