@@ -41,9 +41,14 @@ const FLAG_TARGET_OR_ERROR: u8 = 0b0000_1000;
 const FLAG_VALUE: u8 = 0b0001_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// An IPv4 peer address.
+/// A peer network address (host and port).
+///
+/// Despite the name, this type may carry either an IPv4 or IPv6 address
+/// depending on context—for example, `addresses6` fields decode into
+/// `Vec<Ipv4Peer>`. The name is inherited from the upstream JavaScript
+/// implementation.
 pub struct Ipv4Peer {
-    /// The peer host.
+    /// The peer host (IPv4 or IPv6 address string).
     pub host: String,
     /// The peer port.
     pub port: u16,
