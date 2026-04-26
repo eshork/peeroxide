@@ -40,15 +40,21 @@ const ERR_UNKNOWN_COMMAND: u64 = 1;
 // ── Error ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Error)]
+/// Errors returned by [`DhtHandle`] and [`spawn`].
 pub enum DhtError {
+    /// Underlying I/O failed.
     #[error("IO error: {0}")]
     Io(#[from] crate::io::IoError),
+    /// The DHT node has been destroyed.
     #[error("node destroyed")]
     Destroyed,
+    /// The internal command channel is closed.
     #[error("command channel closed")]
     ChannelClosed,
+    /// Bootstrapping did not complete successfully.
     #[error("bootstrap failed")]
     BootstrapFailed,
+    /// A request failed with the given message.
     #[error("request failed: {0}")]
     RequestFailed(String),
 }
@@ -58,12 +64,19 @@ pub enum DhtError {
 /// Configuration for creating a DHT node.
 #[derive(Debug, Clone)]
 pub struct DhtConfig {
+    /// Bootstrap node addresses.
     pub bootstrap: Vec<String>,
+    /// Local port to bind.
     pub port: u16,
+    /// Local host to bind.
     pub host: String,
+    /// Whether to force ephemeral mode.
     pub ephemeral: Option<bool>,
+    /// Whether to advertise as firewalled.
     pub firewalled: bool,
+    /// Query concurrency limit.
     pub concurrency: usize,
+    /// Maximum query window size.
     pub max_window: usize,
 }
 
@@ -82,57 +95,89 @@ impl Default for DhtConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Response to a ping request.
 pub struct PingResponse {
+    /// Remote peer that replied.
     pub from: Ipv4Peer,
+    /// Optional peer id reported by the remote node.
     pub id: Option<NodeId>,
+    /// Round-trip time for the ping.
     pub rtt: Duration,
 }
 
 #[derive(Debug, Clone)]
+/// Data returned from a DHT request.
 pub struct ResponseData {
+    /// Remote peer that replied.
     pub from: Ipv4Peer,
+    /// Optional peer id reported by the remote node.
     pub id: Option<NodeId>,
+    /// Optional response token.
     pub token: Option<[u8; 32]>,
+    /// Nodes returned by the remote peer.
     pub closer_nodes: Vec<Ipv4Peer>,
+    /// Response error code.
     pub error: u64,
+    /// Optional response value.
     pub value: Option<Vec<u8>>,
+    /// Round-trip time for the request.
     pub rtt: Duration,
 }
 
 #[derive(Debug, Clone)]
+/// Parameters for a user-driven DHT query.
 pub struct UserQueryParams {
+    /// Query target node id.
     pub target: NodeId,
+    /// RPC command to send.
     pub command: u64,
+    /// Optional query payload.
     pub value: Option<Vec<u8>>,
+    /// Whether the query is a commit.
     pub commit: bool,
+    /// Optional per-query concurrency override.
     pub concurrency: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
+/// Parameters for a user-driven DHT request.
 pub struct UserRequestParams {
+    /// Optional request token.
     pub token: Option<[u8; 32]>,
+    /// RPC command to send.
     pub command: u64,
+    /// Optional target node id.
     pub target: Option<NodeId>,
+    /// Optional request payload.
     pub value: Option<Vec<u8>>,
 }
 
+/// An incoming user-facing request forwarded from the DHT.
 pub struct UserRequest {
+    /// Origin peer for the request.
     pub from: Ipv4Peer,
+    /// Optional origin peer id.
     pub id: Option<NodeId>,
+    /// Optional request token.
     pub token: Option<[u8; 32]>,
+    /// RPC command received.
     pub command: u64,
+    /// Optional target node id.
     pub target: Option<NodeId>,
+    /// Optional request payload.
     pub value: Option<Vec<u8>>,
     reply_tx: Option<oneshot::Sender<(u64, Option<Vec<u8>>)>>,
 }
 
 impl UserRequest {
+    /// Replies to the request with a value and success code.
     pub fn reply(&mut self, value: Option<Vec<u8>>) {
         if let Some(tx) = self.reply_tx.take() {
             let _ = tx.send((0, value));
         }
     }
 
+    /// Replies to the request with an error code.
     pub fn error(&mut self, code: u64) {
         if let Some(tx) = self.reply_tx.take() {
             let _ = tx.send((code, None));
@@ -212,12 +257,14 @@ struct DeferredReply {
 
 // ── DhtHandle (user-facing, Send + Sync + Clone) ──────────────────────────────
 
+/// Handle for interacting with a running DHT node.
 #[derive(Clone)]
 pub struct DhtHandle {
     cmd_tx: mpsc::UnboundedSender<DhtCommand>,
 }
 
 impl DhtHandle {
+    /// Waits until the node has finished bootstrapping.
     pub async fn bootstrapped(&self) -> Result<(), DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -226,6 +273,7 @@ impl DhtHandle {
         rx.await.map_err(|_| DhtError::ChannelClosed)?
     }
 
+    /// Sends a ping to `host:port`.
     pub async fn ping(&self, host: &str, port: u16) -> Result<PingResponse, DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -238,6 +286,7 @@ impl DhtHandle {
         rx.await.map_err(|_| DhtError::ChannelClosed)?
     }
 
+    /// Runs a `find_node` query for `target`.
     pub async fn find_node(&self, target: NodeId) -> Result<Vec<QueryReply>, DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -249,6 +298,7 @@ impl DhtHandle {
         rx.await.map_err(|_| DhtError::ChannelClosed)?
     }
 
+    /// Runs a custom DHT query.
     pub async fn query(&self, params: UserQueryParams) -> Result<Vec<QueryReply>, DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -260,6 +310,7 @@ impl DhtHandle {
         rx.await.map_err(|_| DhtError::ChannelClosed)?
     }
 
+    /// Sends a request to a remote peer.
     pub async fn request(
         &self,
         params: UserRequestParams,
@@ -279,6 +330,7 @@ impl DhtHandle {
     }
 
     /// Fire-and-forget relay send (no response tracking).
+    /// Relays an RPC command to `to` without waiting for a reply.
     pub fn relay(
         &self,
         command: u64,
@@ -296,6 +348,7 @@ impl DhtHandle {
             .map_err(|_| DhtError::ChannelClosed)
     }
 
+    /// Subscribes to forwarded user requests.
     pub async fn subscribe_requests(&self) -> Option<mpsc::UnboundedReceiver<UserRequest>> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -304,6 +357,7 @@ impl DhtHandle {
         rx.await.ok()
     }
 
+    /// Returns the current routing table size.
     pub async fn table_size(&self) -> Result<usize, DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -312,6 +366,7 @@ impl DhtHandle {
         rx.await.map_err(|_| DhtError::ChannelClosed)
     }
 
+    /// Destroys the running DHT node.
     pub async fn destroy(&self) -> Result<(), DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -320,6 +375,7 @@ impl DhtHandle {
         rx.await.map_err(|_| DhtError::ChannelClosed)?
     }
 
+    /// Returns the local bound port.
     pub async fn local_port(&self) -> Result<u16, DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -1311,6 +1367,7 @@ impl DhtNode {
 
 // ── Spawn ─────────────────────────────────────────────────────────────────────
 
+/// Spawns a DHT node and returns its join handle and public handle.
 pub async fn spawn(
     runtime: &UdxRuntime,
     config: DhtConfig,

@@ -29,15 +29,20 @@ use tracing::debug;
 /// Pair message — requests relay pairing with a 32-byte token.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairMessage {
+    /// Indicates whether this peer initiated the pair request.
     pub is_initiator: bool,
+    /// Relay token used to match the pair and unpair messages.
     pub token: [u8; 32],
+    /// Stream identifier assigned by the local peer.
     pub id: u64,
+    /// Sequence number for the pair request.
     pub seq: u64,
 }
 
 /// Unpair message — cancels a relay pairing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnpairMessage {
+    /// Relay token used to cancel a pending pair request.
     pub token: [u8; 32],
 }
 
@@ -50,6 +55,7 @@ pub const MSG_TYPE_PAIR: u32 = 0;
 /// Protomux message type index for unpair.
 pub const MSG_TYPE_UNPAIR: u32 = 1;
 
+/// Pre-encodes a [`PairMessage`], advancing the state cursor.
 pub fn preencode_pair(state: &mut State, msg: &PairMessage) {
     state.end += 1; // bitfield(7) = 1 byte
     state.end += 32; // fixed32 token
@@ -57,6 +63,7 @@ pub fn preencode_pair(state: &mut State, msg: &PairMessage) {
     c::preencode_uint(state, msg.seq);
 }
 
+/// Encodes a [`PairMessage`] into the state buffer.
 pub fn encode_pair(state: &mut State, msg: &PairMessage) {
     let flags: u8 = if msg.is_initiator { 1 } else { 0 };
     c::encode_uint8(state, flags);
@@ -65,6 +72,7 @@ pub fn encode_pair(state: &mut State, msg: &PairMessage) {
     c::encode_uint(state, msg.seq);
 }
 
+/// Decodes a [`PairMessage`] from the state buffer.
 pub fn decode_pair(state: &mut State) -> c::Result<PairMessage> {
     let flags = c::decode_uint8(state)?;
     let is_initiator = flags & 1 != 0;
@@ -79,16 +87,19 @@ pub fn decode_pair(state: &mut State) -> c::Result<PairMessage> {
     })
 }
 
+/// Pre-encodes a [`UnpairMessage`], advancing the state cursor.
 pub fn preencode_unpair(state: &mut State, _msg: &UnpairMessage) {
     state.end += 1; // bitfield(7) = 1 byte
     state.end += 32; // fixed32 token
 }
 
+/// Encodes a [`UnpairMessage`] into the state buffer.
 pub fn encode_unpair(state: &mut State, msg: &UnpairMessage) {
     c::encode_uint8(state, 0); // flags = 0
     c::encode_fixed32(state, &msg.token);
 }
 
+/// Decodes a [`UnpairMessage`] from the state buffer.
 pub fn decode_unpair(state: &mut State) -> c::Result<UnpairMessage> {
     let _flags = c::decode_uint8(state)?;
     let token = c::decode_fixed32(state)?;
@@ -127,20 +138,26 @@ pub fn decode_unpair_from_slice(data: &[u8]) -> c::Result<UnpairMessage> {
 
 // ── Client ───────────────────────────────────────────────────────────────────
 
+/// Errors that can occur while using the blind relay client.
 #[derive(Debug, Error)]
 pub enum RelayError {
+    /// A Protomux operation failed while opening, sending, or receiving.
     #[error("protomux error: {0}")]
     Protomux(#[from] protomux::ProtomuxError),
 
+    /// Encoding or decoding of relay messages failed.
     #[error("encoding error: {0}")]
     Encoding(#[from] c::EncodingError),
 
+    /// The channel closed before a matching pair response arrived.
     #[error("channel closed before pair response")]
     ChannelClosed,
 
+    /// The client was destroyed before the operation could complete.
     #[error("relay client destroyed")]
     Destroyed,
 
+    /// A pair request with this token is already in flight.
     #[error("already pairing with this token")]
     AlreadyPairing,
 }
@@ -148,6 +165,7 @@ pub enum RelayError {
 /// Response from a successful relay pairing.
 #[derive(Debug, Clone)]
 pub struct PairResponse {
+    /// Relay-assigned remote stream identifier.
     pub remote_id: u64,
 }
 

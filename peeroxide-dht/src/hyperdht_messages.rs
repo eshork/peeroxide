@@ -4,63 +4,95 @@ use crate::compact_encoding::{
 };
 use crate::messages::Ipv4Peer;
 
+/// Type alias for results returned by encoding and decoding functions in this module.
 pub type Result<T> = std::result::Result<T, EncodingError>;
 
 // ── HyperDHT command IDs ────────────────────────────────────────────────────
 
+/// Command ID for peer handshake messages.
 pub const PEER_HANDSHAKE: u64 = 0;
+/// Command ID for peer hole-punch messages.
 pub const PEER_HOLEPUNCH: u64 = 1;
+/// Command ID for find-peer queries.
 pub const FIND_PEER: u64 = 2;
+/// Command ID for DHT lookup queries.
 pub const LOOKUP: u64 = 3;
+/// Command ID for announce messages.
 pub const ANNOUNCE: u64 = 4;
+/// Command ID for unannounce messages.
 pub const UNANNOUNCE: u64 = 5;
+/// Command ID for mutable put requests.
 pub const MUTABLE_PUT: u64 = 6;
+/// Command ID for mutable get requests.
 pub const MUTABLE_GET: u64 = 7;
+/// Command ID for immutable put requests.
 pub const IMMUTABLE_PUT: u64 = 8;
+/// Command ID for immutable get requests.
 pub const IMMUTABLE_GET: u64 = 9;
 
 // ── Handshake routing modes ─────────────────────────────────────────────────
 
+/// Routing mode indicating the message originates from the client.
 pub const MODE_FROM_CLIENT: u64 = 0;
+/// Routing mode indicating the message originates from the server.
 pub const MODE_FROM_SERVER: u64 = 1;
+/// Routing mode indicating the message originates from a relay node.
 pub const MODE_FROM_RELAY: u64 = 2;
+/// Routing mode indicating the message originates from a second relay node.
 pub const MODE_FROM_SECOND_RELAY: u64 = 3;
+/// Routing mode indicating this is a reply message.
 pub const MODE_REPLY: u64 = 4;
 
 // ── Firewall constants ──────────────────────────────────────────────────────
 
+/// Firewall state is unknown.
 pub const FIREWALL_UNKNOWN: u64 = 0;
+/// Firewall is open — NAT maps all connections to the same public address and port.
 pub const FIREWALL_OPEN: u64 = 1;
+/// Firewall uses a consistent port mapping for the same destination IP.
 pub const FIREWALL_CONSISTENT: u64 = 2;
+/// Firewall uses random port mapping for each new destination.
 pub const FIREWALL_RANDOM: u64 = 3;
 
 // ── Error constants ─────────────────────────────────────────────────────────
 
+/// No error.
 pub const ERROR_NONE: u64 = 0;
+/// The operation was aborted.
 pub const ERROR_ABORTED: u64 = 1;
+/// Protocol version mismatch between peers.
 pub const ERROR_VERSION_MISMATCH: u64 = 2;
+/// The remote is busy; try again later.
 pub const ERROR_TRY_LATER: u64 = 3;
+/// The sequence number has already been used.
 pub const ERROR_SEQ_REUSED: u64 = 16;
+/// The sequence number is too low.
 pub const ERROR_SEQ_TOO_LOW: u64 = 17;
 
 // ── HyperPeer ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+/// A HyperDHT peer identified by its public key and optional relay addresses.
 pub struct HyperPeer {
+    /// The 32-byte Ed25519 public key identifying this peer.
     pub public_key: [u8; 32],
+    /// IPv4 relay addresses through which this peer can be reached.
     pub relay_addresses: Vec<Ipv4Peer>,
 }
 
+/// Pre-encodes a [`HyperPeer`] to calculate the required buffer size.
 pub fn preencode_hyper_peer(state: &mut State, peer: &HyperPeer) {
     state.end += 32;
     preencode_ipv4_peer_array(state, &peer.relay_addresses);
 }
 
+/// Encodes a [`HyperPeer`] into the compact-encoding buffer.
 pub fn encode_hyper_peer(state: &mut State, peer: &HyperPeer) -> Result<()> {
     encode_fixed32(state, &peer.public_key);
     encode_ipv4_peer_array(state, &peer.relay_addresses)
 }
 
+/// Decodes a [`HyperPeer`] from the compact-encoding buffer.
 pub fn decode_hyper_peer(state: &mut State) -> Result<HyperPeer> {
     let public_key = decode_fixed32(state)?;
     let relay_addresses = decode_ipv4_peer_array(state)?;
@@ -70,6 +102,7 @@ pub fn decode_hyper_peer(state: &mut State) -> Result<HyperPeer> {
     })
 }
 
+/// Serializes a [`HyperPeer`] to a byte vector.
 pub fn encode_hyper_peer_to_bytes(peer: &HyperPeer) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_hyper_peer(&mut state, peer);
@@ -78,6 +111,7 @@ pub fn encode_hyper_peer_to_bytes(peer: &HyperPeer) -> Result<Vec<u8>> {
     Ok(state.buffer)
 }
 
+/// Deserializes a [`HyperPeer`] from bytes.
 pub fn decode_hyper_peer_from_bytes(buf: &[u8]) -> Result<HyperPeer> {
     let mut state = State::from_buffer(buf);
     decode_hyper_peer(&mut state)
@@ -91,13 +125,19 @@ const FLAG_SIGNATURE: u64 = 0x4;
 const FLAG_BUMP: u64 = 0x8;
 
 #[derive(Debug, Clone)]
+/// Wire message for announcing a peer on the DHT.
 pub struct AnnounceMessage {
+    /// The peer being announced, if present.
     pub peer: Option<HyperPeer>,
+    /// A 32-byte refresh token, if present.
     pub refresh: Option<[u8; 32]>,
+    /// A 64-byte signature over the announcement, if present.
     pub signature: Option<[u8; 64]>,
+    /// Bump counter used to force re-announcement.
     pub bump: u64,
 }
 
+/// Pre-encodes an [`AnnounceMessage`] to calculate the required buffer size.
 pub fn preencode_announce(state: &mut State, m: &AnnounceMessage) {
     state.end += 1; // flags byte (always fits in 1 byte, max 15)
     if let Some(peer) = &m.peer {
@@ -114,6 +154,7 @@ pub fn preencode_announce(state: &mut State, m: &AnnounceMessage) {
     }
 }
 
+/// Encodes an [`AnnounceMessage`] into the compact-encoding buffer.
 pub fn encode_announce(state: &mut State, m: &AnnounceMessage) -> Result<()> {
     let flags = (if m.peer.is_some() { FLAG_PEER } else { 0 })
         | (if m.refresh.is_some() { FLAG_REFRESH } else { 0 })
@@ -135,6 +176,7 @@ pub fn encode_announce(state: &mut State, m: &AnnounceMessage) -> Result<()> {
     Ok(())
 }
 
+/// Decodes an [`AnnounceMessage`] from the compact-encoding buffer.
 pub fn decode_announce(state: &mut State) -> Result<AnnounceMessage> {
     let flags = decode_uint(state)?;
     let peer = if flags & FLAG_PEER != 0 {
@@ -165,6 +207,7 @@ pub fn decode_announce(state: &mut State) -> Result<AnnounceMessage> {
     })
 }
 
+/// Serializes an [`AnnounceMessage`] to a byte vector.
 pub fn encode_announce_to_bytes(m: &AnnounceMessage) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_announce(&mut state, m);
@@ -173,6 +216,7 @@ pub fn encode_announce_to_bytes(m: &AnnounceMessage) -> Result<Vec<u8>> {
     Ok(state.buffer)
 }
 
+/// Deserializes an [`AnnounceMessage`] from bytes.
 pub fn decode_announce_from_bytes(buf: &[u8]) -> Result<AnnounceMessage> {
     let mut state = State::from_buffer(buf);
     decode_announce(&mut state)
@@ -181,11 +225,15 @@ pub fn decode_announce_from_bytes(buf: &[u8]) -> Result<AnnounceMessage> {
 // ── LookupRawReply ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+/// Raw reply message returned from a DHT lookup containing matching peers.
 pub struct LookupRawReply {
+    /// The list of peers returned by the lookup.
     pub peers: Vec<HyperPeer>,
+    /// Bump counter echoed from the corresponding announce.
     pub bump: u64,
 }
 
+/// Pre-encodes a [`LookupRawReply`] to calculate the required buffer size.
 pub fn preencode_lookup_raw_reply(state: &mut State, m: &LookupRawReply) {
     preencode_uint(state, m.peers.len() as u64);
     for peer in &m.peers {
@@ -194,6 +242,7 @@ pub fn preencode_lookup_raw_reply(state: &mut State, m: &LookupRawReply) {
     preencode_uint(state, m.bump);
 }
 
+/// Encodes a [`LookupRawReply`] into the compact-encoding buffer.
 pub fn encode_lookup_raw_reply(state: &mut State, m: &LookupRawReply) -> Result<()> {
     encode_uint(state, m.peers.len() as u64);
     for peer in &m.peers {
@@ -203,6 +252,7 @@ pub fn encode_lookup_raw_reply(state: &mut State, m: &LookupRawReply) -> Result<
     Ok(())
 }
 
+/// Decodes a [`LookupRawReply`] from the compact-encoding buffer.
 pub fn decode_lookup_raw_reply(state: &mut State) -> Result<LookupRawReply> {
     let count = decode_uint(state)? as usize;
     let mut peers = Vec::with_capacity(count);
@@ -217,6 +267,7 @@ pub fn decode_lookup_raw_reply(state: &mut State) -> Result<LookupRawReply> {
     Ok(LookupRawReply { peers, bump })
 }
 
+/// Serializes a [`LookupRawReply`] to a byte vector.
 pub fn encode_lookup_raw_reply_to_bytes(m: &LookupRawReply) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_lookup_raw_reply(&mut state, m);
@@ -225,6 +276,7 @@ pub fn encode_lookup_raw_reply_to_bytes(m: &LookupRawReply) -> Result<Vec<u8>> {
     Ok(state.buffer)
 }
 
+/// Deserializes a [`LookupRawReply`] from bytes.
 pub fn decode_lookup_raw_reply_from_bytes(buf: &[u8]) -> Result<LookupRawReply> {
     let mut state = State::from_buffer(buf);
     decode_lookup_raw_reply(&mut state)
@@ -233,13 +285,19 @@ pub fn decode_lookup_raw_reply_from_bytes(buf: &[u8]) -> Result<LookupRawReply> 
 // ── MutablePutRequest ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Request to store a mutable value on the DHT.
 pub struct MutablePutRequest {
+    /// The 32-byte public key of the value's owner.
     pub public_key: [u8; 32],
+    /// Monotonically increasing sequence number for this value.
     pub seq: u64,
+    /// The value payload to store.
     pub value: Vec<u8>,
+    /// A 64-byte Ed25519 signature over `(seq, value)`.
     pub signature: [u8; 64],
 }
 
+/// Pre-encodes a [`MutablePutRequest`] to calculate the required buffer size.
 pub fn preencode_mutable_put_request(state: &mut State, m: &MutablePutRequest) {
     state.end += 32;
     preencode_uint(state, m.seq);
@@ -247,6 +305,7 @@ pub fn preencode_mutable_put_request(state: &mut State, m: &MutablePutRequest) {
     state.end += 64;
 }
 
+/// Encodes a [`MutablePutRequest`] into the compact-encoding buffer.
 pub fn encode_mutable_put_request(state: &mut State, m: &MutablePutRequest) -> Result<()> {
     encode_fixed32(state, &m.public_key);
     encode_uint(state, m.seq);
@@ -255,6 +314,7 @@ pub fn encode_mutable_put_request(state: &mut State, m: &MutablePutRequest) -> R
     Ok(())
 }
 
+/// Decodes a [`MutablePutRequest`] from the compact-encoding buffer.
 pub fn decode_mutable_put_request(state: &mut State) -> Result<MutablePutRequest> {
     let public_key = decode_fixed32(state)?;
     let seq = decode_uint(state)?;
@@ -268,6 +328,7 @@ pub fn decode_mutable_put_request(state: &mut State) -> Result<MutablePutRequest
     })
 }
 
+/// Serializes a [`MutablePutRequest`] to a byte vector.
 pub fn encode_mutable_put_request_to_bytes(m: &MutablePutRequest) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_mutable_put_request(&mut state, m);
@@ -276,6 +337,7 @@ pub fn encode_mutable_put_request_to_bytes(m: &MutablePutRequest) -> Result<Vec<
     Ok(state.buffer)
 }
 
+/// Deserializes a [`MutablePutRequest`] from bytes.
 pub fn decode_mutable_put_request_from_bytes(buf: &[u8]) -> Result<MutablePutRequest> {
     let mut state = State::from_buffer(buf);
     decode_mutable_put_request(&mut state)
@@ -284,18 +346,24 @@ pub fn decode_mutable_put_request_from_bytes(buf: &[u8]) -> Result<MutablePutReq
 // ── MutableGetResponse ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Response carrying the current value for a mutable DHT entry.
 pub struct MutableGetResponse {
+    /// Sequence number of the stored value.
     pub seq: u64,
+    /// The stored value payload.
     pub value: Vec<u8>,
+    /// A 64-byte Ed25519 signature over `(seq, value)`.
     pub signature: [u8; 64],
 }
 
+/// Pre-encodes a [`MutableGetResponse`] to calculate the required buffer size.
 pub fn preencode_mutable_get_response(state: &mut State, m: &MutableGetResponse) {
     preencode_uint(state, m.seq);
     compact_encoding::preencode_buffer(state, Some(&m.value));
     state.end += 64;
 }
 
+/// Encodes a [`MutableGetResponse`] into the compact-encoding buffer.
 pub fn encode_mutable_get_response(state: &mut State, m: &MutableGetResponse) -> Result<()> {
     encode_uint(state, m.seq);
     compact_encoding::encode_buffer(state, Some(&m.value));
@@ -303,6 +371,7 @@ pub fn encode_mutable_get_response(state: &mut State, m: &MutableGetResponse) ->
     Ok(())
 }
 
+/// Decodes a [`MutableGetResponse`] from the compact-encoding buffer.
 pub fn decode_mutable_get_response(state: &mut State) -> Result<MutableGetResponse> {
     let seq = decode_uint(state)?;
     let value = compact_encoding::decode_buffer(state)?.unwrap_or_default();
@@ -314,6 +383,7 @@ pub fn decode_mutable_get_response(state: &mut State) -> Result<MutableGetRespon
     })
 }
 
+/// Serializes a [`MutableGetResponse`] to a byte vector.
 pub fn encode_mutable_get_response_to_bytes(m: &MutableGetResponse) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_mutable_get_response(&mut state, m);
@@ -322,6 +392,7 @@ pub fn encode_mutable_get_response_to_bytes(m: &MutableGetResponse) -> Result<Ve
     Ok(state.buffer)
 }
 
+/// Deserializes a [`MutableGetResponse`] from bytes.
 pub fn decode_mutable_get_response_from_bytes(buf: &[u8]) -> Result<MutableGetResponse> {
     let mut state = State::from_buffer(buf);
     decode_mutable_get_response(&mut state)
@@ -330,28 +401,35 @@ pub fn decode_mutable_get_response_from_bytes(buf: &[u8]) -> Result<MutableGetRe
 // ── MutableSignable ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// The signable payload for a mutable DHT entry, used to compute the signature.
 pub struct MutableSignable {
+    /// Sequence number being signed.
     pub seq: u64,
+    /// Value being signed.
     pub value: Vec<u8>,
 }
 
+/// Pre-encodes a [`MutableSignable`] to calculate the required buffer size.
 pub fn preencode_mutable_signable(state: &mut State, m: &MutableSignable) {
     preencode_uint(state, m.seq);
     compact_encoding::preencode_buffer(state, Some(&m.value));
 }
 
+/// Encodes a [`MutableSignable`] into the compact-encoding buffer.
 pub fn encode_mutable_signable(state: &mut State, m: &MutableSignable) -> Result<()> {
     encode_uint(state, m.seq);
     compact_encoding::encode_buffer(state, Some(&m.value));
     Ok(())
 }
 
+/// Decodes a [`MutableSignable`] from the compact-encoding buffer.
 pub fn decode_mutable_signable(state: &mut State) -> Result<MutableSignable> {
     let seq = decode_uint(state)?;
     let value = compact_encoding::decode_buffer(state)?.unwrap_or_default();
     Ok(MutableSignable { seq, value })
 }
 
+/// Serializes a [`MutableSignable`] to a byte vector.
 pub fn encode_mutable_signable_to_bytes(m: &MutableSignable) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_mutable_signable(&mut state, m);
@@ -360,6 +438,7 @@ pub fn encode_mutable_signable_to_bytes(m: &MutableSignable) -> Result<Vec<u8>> 
     Ok(state.buffer)
 }
 
+/// Deserializes a [`MutableSignable`] from bytes.
 pub fn decode_mutable_signable_from_bytes(buf: &[u8]) -> Result<MutableSignable> {
     let mut state = State::from_buffer(buf);
     decode_mutable_signable(&mut state)
@@ -422,13 +501,19 @@ fn decode_ipv6_peer_array(state: &mut State) -> Result<Vec<Ipv4Peer>> {
 // ── HandshakeMessage (PEER_HANDSHAKE wire format) ───────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Wire message exchanged during the PEER_HANDSHAKE phase.
 pub struct HandshakeMessage {
+    /// Routing mode for this handshake (one of the `MODE_*` constants).
     pub mode: u64,
+    /// Raw Noise protocol handshake bytes.
     pub noise: Vec<u8>,
+    /// Optional IPv4 address of the connecting peer.
     pub peer_address: Option<Ipv4Peer>,
+    /// Optional IPv4 address of the relay through which this message is routed.
     pub relay_address: Option<Ipv4Peer>,
 }
 
+/// Pre-encodes a [`HandshakeMessage`] to calculate the required buffer size.
 pub fn preencode_handshake(state: &mut State, m: &HandshakeMessage) {
     preencode_uint(state, 0); // flags
     preencode_uint(state, m.mode);
@@ -441,6 +526,7 @@ pub fn preencode_handshake(state: &mut State, m: &HandshakeMessage) {
     }
 }
 
+/// Encodes a [`HandshakeMessage`] into the compact-encoding buffer.
 pub fn encode_handshake(state: &mut State, m: &HandshakeMessage) -> Result<()> {
     let flags = (if m.peer_address.is_some() { 1u64 } else { 0 })
         | (if m.relay_address.is_some() { 2 } else { 0 });
@@ -456,6 +542,7 @@ pub fn encode_handshake(state: &mut State, m: &HandshakeMessage) -> Result<()> {
     Ok(())
 }
 
+/// Decodes a [`HandshakeMessage`] from the compact-encoding buffer.
 pub fn decode_handshake(state: &mut State) -> Result<HandshakeMessage> {
     let flags = decode_uint(state)?;
     let mode = decode_uint(state)?;
@@ -480,6 +567,7 @@ pub fn decode_handshake(state: &mut State) -> Result<HandshakeMessage> {
     })
 }
 
+/// Serializes a [`HandshakeMessage`] to a byte vector.
 pub fn encode_handshake_to_bytes(m: &HandshakeMessage) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_handshake(&mut state, m);
@@ -488,6 +576,7 @@ pub fn encode_handshake_to_bytes(m: &HandshakeMessage) -> Result<Vec<u8>> {
     Ok(state.buffer)
 }
 
+/// Deserializes a [`HandshakeMessage`] from bytes.
 pub fn decode_handshake_from_bytes(buf: &[u8]) -> Result<HandshakeMessage> {
     let mut state = State::from_buffer(buf);
     decode_handshake(&mut state)
@@ -496,13 +585,19 @@ pub fn decode_handshake_from_bytes(buf: &[u8]) -> Result<HandshakeMessage> {
 // ── HolepunchMessage (PEER_HOLEPUNCH wire format) ───────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Wire message exchanged during the PEER_HOLEPUNCH phase.
 pub struct HolepunchMessage {
+    /// Routing mode for this holepunch message (one of the `MODE_*` constants).
     pub mode: u64,
+    /// Session identifier for this holepunch attempt.
     pub id: u64,
+    /// Encrypted holepunch payload bytes.
     pub payload: Vec<u8>,
+    /// Optional IPv4 address of the peer involved in the holepunch.
     pub peer_address: Option<Ipv4Peer>,
 }
 
+/// Pre-encodes a [`HolepunchMessage`] to calculate the required buffer size.
 pub fn preencode_holepunch_msg(state: &mut State, m: &HolepunchMessage) {
     preencode_uint(state, 0); // flags
     preencode_uint(state, m.mode);
@@ -513,6 +608,7 @@ pub fn preencode_holepunch_msg(state: &mut State, m: &HolepunchMessage) {
     }
 }
 
+/// Encodes a [`HolepunchMessage`] into the compact-encoding buffer.
 pub fn encode_holepunch_msg(state: &mut State, m: &HolepunchMessage) -> Result<()> {
     let flags: u64 = if m.peer_address.is_some() { 1 } else { 0 };
     encode_uint(state, flags);
@@ -525,6 +621,7 @@ pub fn encode_holepunch_msg(state: &mut State, m: &HolepunchMessage) -> Result<(
     Ok(())
 }
 
+/// Decodes a [`HolepunchMessage`] from the compact-encoding buffer.
 pub fn decode_holepunch_msg(state: &mut State) -> Result<HolepunchMessage> {
     let flags = decode_uint(state)?;
     let mode = decode_uint(state)?;
@@ -544,6 +641,7 @@ pub fn decode_holepunch_msg(state: &mut State) -> Result<HolepunchMessage> {
     })
 }
 
+/// Serializes a [`HolepunchMessage`] to a byte vector.
 pub fn encode_holepunch_msg_to_bytes(m: &HolepunchMessage) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_holepunch_msg(&mut state, m);
@@ -552,6 +650,7 @@ pub fn encode_holepunch_msg_to_bytes(m: &HolepunchMessage) -> Result<Vec<u8>> {
     Ok(state.buffer)
 }
 
+/// Deserializes a [`HolepunchMessage`] from bytes.
 pub fn decode_holepunch_msg_from_bytes(buf: &[u8]) -> Result<HolepunchMessage> {
     let mut state = State::from_buffer(buf);
     decode_holepunch_msg(&mut state)
@@ -560,8 +659,11 @@ pub fn decode_holepunch_msg_from_bytes(buf: &[u8]) -> Result<HolepunchMessage> {
 // ── RelayInfo ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A pair of addresses describing a relay-assisted path between two peers.
 pub struct RelayInfo {
+    /// The IPv4 address of the relay node.
     pub relay_address: Ipv4Peer,
+    /// The IPv4 address of the remote peer as seen by the relay.
     pub peer_address: Ipv4Peer,
 }
 
@@ -620,8 +722,11 @@ fn decode_relay_info_array(state: &mut State) -> Result<Vec<RelayInfo>> {
 // ── HolepunchInfo ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Metadata for an ongoing hole-punch session, including relay candidates.
 pub struct HolepunchInfo {
+    /// Unique session identifier for this hole-punch attempt.
     pub id: u64,
+    /// List of relay-peer address pairs available for this hole-punch.
     pub relays: Vec<RelayInfo>,
 }
 
@@ -645,10 +750,15 @@ fn decode_holepunch_info(state: &mut State) -> Result<HolepunchInfo> {
 // ── UdxInfo ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// UDX transport parameters exchanged during the Noise handshake.
 pub struct UdxInfo {
+    /// UDX protocol version advertised by the sender.
     pub version: u64,
+    /// Whether the sender's UDP socket can be reused across connections.
     pub reusable_socket: bool,
+    /// Local UDX stream identifier chosen by the sender.
     pub id: u64,
+    /// Initial sequence number for the UDX stream.
     pub seq: u64,
 }
 
@@ -682,7 +792,9 @@ fn decode_udx_info(state: &mut State) -> Result<UdxInfo> {
 // ── SecretStreamInfo ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Secret stream parameters exchanged during the Noise handshake.
 pub struct SecretStreamInfo {
+    /// Secret stream protocol version advertised by the sender.
     pub version: u64,
 }
 
@@ -703,9 +815,13 @@ fn decode_secret_stream_info(state: &mut State) -> Result<SecretStreamInfo> {
 // ── RelayThroughInfo ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Information about a relay node through which a connection should be routed.
 pub struct RelayThroughInfo {
+    /// Protocol version for the relay-through capability.
     pub version: u64,
+    /// 32-byte public key of the relay node.
     pub public_key: [u8; 32],
+    /// 32-byte authorization token for connecting through the relay.
     pub token: [u8; 32],
 }
 
@@ -738,16 +854,27 @@ fn decode_relay_through_info(state: &mut State) -> Result<RelayThroughInfo> {
 // ── NoisePayload (exchanged inside Noise handshake) ─────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Payload carried inside the Noise protocol handshake messages.
 pub struct NoisePayload {
+    /// Protocol version of this payload (must be `1` for valid messages).
     pub version: u64,
+    /// Error code from the sender (one of the `ERROR_*` constants).
     pub error: u64,
+    /// Firewall type reported by the sender (one of the `FIREWALL_*` constants).
     pub firewall: u64,
+    /// Optional hole-punch session info, present when hole-punching is in progress.
     pub holepunch: Option<HolepunchInfo>,
+    /// IPv4 addresses the sender is reachable on.
     pub addresses4: Vec<Ipv4Peer>,
+    /// IPv6 addresses the sender is reachable on.
     pub addresses6: Vec<Ipv4Peer>,
+    /// Optional UDX transport parameters.
     pub udx: Option<UdxInfo>,
+    /// Optional secret stream parameters.
     pub secret_stream: Option<SecretStreamInfo>,
+    /// Optional relay-through info for relayed connections.
     pub relay_through: Option<RelayThroughInfo>,
+    /// Optional list of relay IPv4 addresses available for this peer.
     pub relay_addresses: Option<Vec<Ipv4Peer>>,
 }
 
@@ -759,6 +886,7 @@ const NP_FLAG_SECRET_STREAM: u64 = 16;
 const NP_FLAG_RELAY_THROUGH: u64 = 32;
 const NP_FLAG_RELAY_ADDRESSES: u64 = 64;
 
+/// Pre-encodes a [`NoisePayload`] to calculate the required buffer size.
 pub fn preencode_noise_payload(state: &mut State, m: &NoisePayload) {
     state.end += 4; // version + flags + error + firewall (each 1 byte for small values)
     if let Some(hp) = &m.holepunch {
@@ -784,6 +912,7 @@ pub fn preencode_noise_payload(state: &mut State, m: &NoisePayload) {
     }
 }
 
+/// Encodes a [`NoisePayload`] into the compact-encoding buffer.
 pub fn encode_noise_payload(state: &mut State, m: &NoisePayload) -> Result<()> {
     let mut flags = 0u64;
     if m.holepunch.is_some() {
@@ -837,6 +966,7 @@ pub fn encode_noise_payload(state: &mut State, m: &NoisePayload) -> Result<()> {
     Ok(())
 }
 
+/// Decodes a [`NoisePayload`] from the compact-encoding buffer.
 pub fn decode_noise_payload(state: &mut State) -> Result<NoisePayload> {
     let version = decode_uint(state)?;
     if version != 1 {
@@ -907,6 +1037,7 @@ pub fn decode_noise_payload(state: &mut State) -> Result<NoisePayload> {
     })
 }
 
+/// Serializes a [`NoisePayload`] to a byte vector.
 pub fn encode_noise_payload_to_bytes(m: &NoisePayload) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_noise_payload(&mut state, m);
@@ -915,6 +1046,7 @@ pub fn encode_noise_payload_to_bytes(m: &NoisePayload) -> Result<Vec<u8>> {
     Ok(state.buffer)
 }
 
+/// Deserializes a [`NoisePayload`] from bytes.
 pub fn decode_noise_payload_from_bytes(buf: &[u8]) -> Result<NoisePayload> {
     let mut state = State::from_buffer(buf);
     decode_noise_payload(&mut state)
@@ -923,15 +1055,25 @@ pub fn decode_noise_payload_from_bytes(buf: &[u8]) -> Result<NoisePayload> {
 // ── HolepunchPayload (encrypted, exchanged during hole-punch rounds) ────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Encrypted payload exchanged between peers during each hole-punch round.
 pub struct HolepunchPayload {
+    /// Error code from the sender (one of the `ERROR_*` constants).
     pub error: u64,
+    /// Firewall type reported by the sender (one of the `FIREWALL_*` constants).
     pub firewall: u64,
+    /// Current hole-punch round number.
     pub round: u64,
+    /// Whether the sender has already established a direct connection.
     pub connected: bool,
+    /// Whether the sender is actively sending hole-punch packets.
     pub punching: bool,
+    /// List of local IPv4 addresses the sender is reachable on, if present.
     pub addresses: Option<Vec<Ipv4Peer>>,
+    /// The remote address the sender is trying to punch to, if known.
     pub remote_address: Option<Ipv4Peer>,
+    /// A 32-byte token sent by the initiator to prove liveness.
     pub token: Option<[u8; 32]>,
+    /// A 32-byte token sent by the remote peer to prove liveness.
     pub remote_token: Option<[u8; 32]>,
 }
 
@@ -942,6 +1084,7 @@ const HP_FLAG_REMOTE_ADDRESS: u64 = 8;
 const HP_FLAG_TOKEN: u64 = 16;
 const HP_FLAG_REMOTE_TOKEN: u64 = 32;
 
+/// Pre-encodes a [`HolepunchPayload`] to calculate the required buffer size.
 pub fn preencode_holepunch_payload(state: &mut State, m: &HolepunchPayload) {
     state.end += 4; // flags + error + firewall + round
     if let Some(addrs) = &m.addresses {
@@ -958,6 +1101,7 @@ pub fn preencode_holepunch_payload(state: &mut State, m: &HolepunchPayload) {
     }
 }
 
+/// Encodes a [`HolepunchPayload`] into the compact-encoding buffer.
 pub fn encode_holepunch_payload(state: &mut State, m: &HolepunchPayload) -> Result<()> {
     let mut flags = 0u64;
     if m.connected {
@@ -999,6 +1143,7 @@ pub fn encode_holepunch_payload(state: &mut State, m: &HolepunchPayload) -> Resu
     Ok(())
 }
 
+/// Decodes a [`HolepunchPayload`] from the compact-encoding buffer.
 pub fn decode_holepunch_payload(state: &mut State) -> Result<HolepunchPayload> {
     let flags = decode_uint(state)?;
     let error = decode_uint(state)?;
@@ -1040,6 +1185,7 @@ pub fn decode_holepunch_payload(state: &mut State) -> Result<HolepunchPayload> {
     })
 }
 
+/// Serializes a [`HolepunchPayload`] to a byte vector.
 pub fn encode_holepunch_payload_to_bytes(m: &HolepunchPayload) -> Result<Vec<u8>> {
     let mut state = State::new();
     preencode_holepunch_payload(&mut state, m);
@@ -1048,6 +1194,7 @@ pub fn encode_holepunch_payload_to_bytes(m: &HolepunchPayload) -> Result<Vec<u8>
     Ok(state.buffer)
 }
 
+/// Deserializes a [`HolepunchPayload`] from bytes.
 pub fn decode_holepunch_payload_from_bytes(buf: &[u8]) -> Result<HolepunchPayload> {
     let mut state = State::from_buffer(buf);
     decode_holepunch_payload(&mut state)

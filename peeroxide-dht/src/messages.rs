@@ -2,15 +2,22 @@ use crate::compact_encoding::{self, EncodingError, State};
 use crate::peer::NodeId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+/// DHT RPC command kinds.
 pub enum Command {
+    /// Pings a peer.
     Ping = 0,
+    /// Pings a peer over NAT.
     PingNat = 1,
+    /// Finds the closest nodes to a target.
     FindNode = 2,
+    /// Reports a down-hint for a peer.
     DownHint = 3,
+    /// Sends a delayed ping.
     DelayedPing = 4,
 }
 
 impl Command {
+    /// Converts a numeric code into a [`Command`].
     pub fn from_u64(v: u64) -> Option<Self> {
         match v {
             0 => Some(Self::Ping),
@@ -34,37 +41,65 @@ const FLAG_TARGET_OR_ERROR: u8 = 0b0000_1000;
 const FLAG_VALUE: u8 = 0b0001_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A peer network address (host and port).
+///
+/// Despite the name, this type may carry either an IPv4 or IPv6 address
+/// depending on context—for example, `addresses6` fields decode into
+/// `Vec<Ipv4Peer>`. The name is inherited from the upstream JavaScript
+/// implementation.
 pub struct Ipv4Peer {
+    /// The peer host (IPv4 or IPv6 address string).
     pub host: String,
+    /// The peer port.
     pub port: u16,
 }
 
 #[derive(Debug, Clone)]
+/// A DHT request message.
 pub struct Request {
+    /// The transaction identifier.
     pub tid: u16,
+    /// The destination peer.
     pub to: Ipv4Peer,
+    /// The optional sender id.
     pub id: Option<NodeId>,
+    /// The optional request token.
     pub token: Option<[u8; 32]>,
+    /// Whether the request is internal.
     pub internal: bool,
+    /// The numeric command code.
     pub command: u64,
+    /// The optional target node id.
     pub target: Option<NodeId>,
+    /// The optional payload value.
     pub value: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
+/// A DHT response message.
 pub struct Response {
+    /// The transaction identifier.
     pub tid: u16,
+    /// The destination peer.
     pub to: Ipv4Peer,
+    /// The optional sender id.
     pub id: Option<NodeId>,
+    /// The optional response token.
     pub token: Option<[u8; 32]>,
+    /// The closer peers returned by the lookup.
     pub closer_nodes: Vec<Ipv4Peer>,
+    /// The response error code.
     pub error: u64,
+    /// The optional payload value.
     pub value: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
+/// A decoded DHT wire message.
 pub enum Message {
+    /// A request message.
     Request(Request),
+    /// A response message.
     Response(Response),
 }
 
@@ -112,6 +147,7 @@ fn decode_ipv4_array(state: &mut State) -> Result<Vec<Ipv4Peer>, EncodingError> 
     Ok(peers)
 }
 
+/// Pre-encodes a [`Request`] to calculate the required buffer size.
 pub fn preencode_request(state: &mut State, req: &Request) {
     state.end += 1; // type_version
     state.end += 1; // flags
@@ -133,6 +169,7 @@ pub fn preencode_request(state: &mut State, req: &Request) {
     }
 }
 
+/// Encodes a [`Request`] into the compact-encoding buffer.
 pub fn encode_request(state: &mut State, req: &Request) -> Result<(), EncodingError> {
     compact_encoding::encode_uint8(state, REQUEST_ID);
 
@@ -174,6 +211,7 @@ pub fn encode_request(state: &mut State, req: &Request) -> Result<(), EncodingEr
     Ok(())
 }
 
+/// Pre-encodes a [`Response`] to calculate the required buffer size.
 pub fn preencode_response(state: &mut State, res: &Response) {
     state.end += 1; // type_version
     state.end += 1; // flags
@@ -197,6 +235,7 @@ pub fn preencode_response(state: &mut State, res: &Response) {
     }
 }
 
+/// Encodes a [`Response`] into the compact-encoding buffer.
 pub fn encode_response(state: &mut State, res: &Response) -> Result<(), EncodingError> {
     compact_encoding::encode_uint8(state, RESPONSE_ID);
 
@@ -240,6 +279,7 @@ pub fn encode_response(state: &mut State, res: &Response) -> Result<(), Encoding
     Ok(())
 }
 
+/// Decodes a [`Message`] from the compact-encoding buffer.
 pub fn decode_message(buf: &[u8]) -> Result<Message, EncodingError> {
     if buf.is_empty() {
         return Err(EncodingError::OutOfBounds {
@@ -333,6 +373,7 @@ pub fn decode_message(buf: &[u8]) -> Result<Message, EncodingError> {
     }
 }
 
+/// Serializes a [`Request`] to a byte vector.
 pub fn encode_request_to_bytes(req: &Request) -> Result<Vec<u8>, EncodingError> {
     let mut state = State::new();
     preencode_request(&mut state, req);
@@ -341,6 +382,7 @@ pub fn encode_request_to_bytes(req: &Request) -> Result<Vec<u8>, EncodingError> 
     Ok(state.buffer)
 }
 
+/// Serializes a [`Response`] to a byte vector.
 pub fn encode_response_to_bytes(res: &Response) -> Result<Vec<u8>, EncodingError> {
     let mut state = State::new();
     preencode_response(&mut state, res);

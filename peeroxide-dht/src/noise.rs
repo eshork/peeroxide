@@ -31,14 +31,19 @@ const PROTOCOL_NAME_IK: &[u8] = b"Noise_IK_Ed25519_ChaChaPoly_BLAKE2b";
 
 // ─── Error type ──────────────────────────────────────────────────────────────
 
+/// Errors that can occur during a Noise protocol handshake.
 #[derive(Debug, thiserror::Error)]
 pub enum NoiseError {
+    /// The provided public key could not be decompressed to a valid curve point.
     #[error("invalid public key")]
     InvalidPublicKey,
+    /// AEAD decryption or authentication failed.
     #[error("decryption failed")]
     DecryptionFailed,
+    /// A send or receive was attempted after the handshake already completed.
     #[error("handshake already complete")]
     HandshakeComplete,
+    /// The handshake state machine received a message out of order.
     #[error("unexpected handshake state")]
     UnexpectedState,
 }
@@ -298,6 +303,7 @@ impl SymmetricState {
 /// Ed25519 keypair in libsodium 64-byte format: `seed[32] || pubkey[32]`.
 #[derive(Clone)]
 pub struct Keypair {
+    /// Ed25519 public key (32-byte compressed Edwards Y point).
     pub public_key: [u8; 32],
     /// 64-byte libsodium format: first 32 bytes are the seed, last 32 are the
     /// compressed Edwards Y public key.
@@ -669,14 +675,17 @@ impl HandshakeIK {
         self.e = Some(keypair);
     }
 
+    /// Returns true after the handshake has completed.
     pub fn complete(&self) -> bool {
         self.result.is_some()
     }
 
+    /// Access the handshake result (available once [`complete`](Self::complete) returns true).
     pub fn result(&self) -> Option<&HandshakeResult> {
         self.result.as_ref()
     }
 
+    /// Returns the remote peer's static public key, if known.
     pub fn remote_static_key(&self) -> Option<&[u8; 32]> {
         self.rs.as_ref()
     }

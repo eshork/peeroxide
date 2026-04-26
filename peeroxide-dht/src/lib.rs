@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
 //! Rust port of [HyperDHT](https://github.com/holepunchto/hyperdht) — a
 //! Kademlia distributed hash table with NAT hole-punching, Noise-encrypted
@@ -56,16 +57,30 @@
 
 #![deny(clippy::all)]
 
+/// Blind relay for proxying encrypted traffic between peers behind restrictive NATs.
 pub mod blind_relay;
+/// Compact binary encoding primitives compatible with the
+/// [compact-encoding](https://github.com/holepunchto/compact-encoding) wire format.
 pub mod compact_encoding;
+/// BLAKE2b hashing, Ed25519 signing, and namespace derivation helpers.
 pub mod crypto;
+/// High-level HyperDHT node: peer discovery, announce/unannounce, mutable/immutable
+/// storage, and Noise-encrypted connections.
 pub mod hyperdht;
+/// Wire-format message types for HyperDHT peer handshake, holepunch, and relay
+/// operations.
 pub mod hyperdht_messages;
+/// DHT RPC request/response message encoding and decoding.
 pub mod messages;
+/// Noise IK handshake for establishing shared secrets between peers.
 pub mod noise;
+/// Noise handshake wrapper that adds framing and key splitting for stream encryption.
 pub mod noise_wrap;
+/// Lightweight multiplexer for running multiple channels over a single connection.
 pub mod protomux;
+/// DHT RPC transport layer: request dispatch, reply handling, and node communication.
 pub mod rpc;
+/// Noise-encrypted bidirectional byte stream over any `AsyncRead + AsyncWrite` transport.
 pub mod secret_stream;
 
 // Internal protocol modules — public for advanced use but hidden from

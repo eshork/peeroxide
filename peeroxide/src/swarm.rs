@@ -148,6 +148,7 @@ pub struct SwarmConnection {
 }
 
 impl SwarmConnection {
+    /// Returns the remote peer's static public key.
     pub fn remote_public_key(&self) -> &[u8; 32] {
         &self.peer.remote_public_key
     }
