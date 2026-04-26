@@ -4,6 +4,7 @@ semver_check = true
 git_release_enable = true
 git_tag_enable = true
 changelog_update = true
+pr_draft = true
 pr_labels = ["release"]
 
 [[package]]
