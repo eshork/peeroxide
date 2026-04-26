@@ -15,10 +15,15 @@ const PROVEN_THRESHOLD_SECS: u64 = 15;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Priority {
+    /// Lowest priority (4+ failed attempts).
     VeryLow = 0,
+    /// Low priority (3 attempts, or 2 unproven).
     Low = 1,
+    /// Default priority (0 attempts, or 1 unproven).
     Normal = 2,
+    /// High priority (2 attempts, proven).
     High = 3,
+    /// Highest priority (1 attempt, proven).
     VeryHigh = 4,
 }
 
@@ -26,22 +31,34 @@ pub enum Priority {
 ///
 /// Modelled after `lib/peer-info.js` in the Node.js Hyperswarm.
 pub struct PeerInfo {
+    /// The peer's Ed25519 public key.
     pub public_key: [u8; 32],
+    /// Relay addresses learned from DHT discovery.
     pub relay_addresses: Vec<Ipv4Peer>,
+    /// Whether we are reconnecting after a proven connection dropped.
     pub reconnecting: bool,
+    /// Whether this peer has had a successful connection lasting ≥ 15 seconds.
     pub proven: bool,
+    /// Whether this peer has been banned.
     pub banned: bool,
+    /// Whether this peer is queued for an outgoing connection attempt.
     pub queued: bool,
+    /// Whether a connection attempt is currently in progress.
     pub connecting: bool,
+    /// Whether this peer was explicitly added (not discovered via DHT).
     pub explicit: bool,
+    /// Topics this peer is associated with.
     pub topics: Vec<[u8; 32]>,
+    /// Number of connection attempts since the last successful connection.
     pub attempts: u32,
+    /// Current computed priority level for connection scheduling.
     pub priority: Priority,
     connected_at: Option<Instant>,
     waiting: bool,
 }
 
 impl PeerInfo {
+    /// Create a new [`PeerInfo`] for the given public key and relay addresses.
     pub fn new(public_key: [u8; 32], relay_addresses: Vec<Ipv4Peer>) -> Self {
         Self {
             public_key,
@@ -83,6 +100,7 @@ impl PeerInfo {
         }
     }
 
+    /// Record that a connection to this peer has been established.
     pub fn connected(&mut self) {
         self.reconnecting = false;
         self.connected_at = Some(Instant::now());
@@ -99,6 +117,7 @@ impl PeerInfo {
         }
     }
 
+    /// Returns `true` if this peer is eligible for garbage collection.
     pub fn should_gc(&self) -> bool {
         if self.banned || self.queued || self.explicit || self.waiting {
             return false;
@@ -106,10 +125,12 @@ impl PeerInfo {
         self.topics.is_empty()
     }
 
+    /// Returns `true` if this peer is in a retry-backoff waiting period.
     pub fn is_waiting(&self) -> bool {
         self.waiting
     }
 
+    /// Set whether this peer is in a retry-backoff waiting period.
     pub fn set_waiting(&mut self, w: bool) {
         self.waiting = w;
     }

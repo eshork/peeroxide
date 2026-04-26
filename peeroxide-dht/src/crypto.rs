@@ -9,6 +9,7 @@ type Blake2bMac256 = Blake2bMac<U32>;
 
 // ── BLAKE2b primitives ──────────────────────────────────────────────────────
 
+/// Computes a BLAKE2b-256 hash of the given data.
 pub fn hash(data: &[u8]) -> [u8; 32] {
     let output = Blake2b256::digest(data);
     let mut result = [0u8; 32];
@@ -16,6 +17,7 @@ pub fn hash(data: &[u8]) -> [u8; 32] {
     result
 }
 
+/// Computes a BLAKE2b-256 hash over multiple byte slices concatenated together.
 pub fn hash_batch(parts: &[&[u8]]) -> [u8; 32] {
     let mut h = Blake2b256::new();
     for part in parts {
@@ -60,14 +62,19 @@ pub fn namespace(name: &str, ids: &[u8]) -> Vec<[u8; 32]> {
     result
 }
 
+/// Precomputed namespace hash for announce operations.
 pub static NS_ANNOUNCE: LazyLock<[u8; 32]> =
     LazyLock::new(|| namespace("hyperswarm/dht", &[4])[0]);
+/// Precomputed namespace hash for unannounce operations.
 pub static NS_UNANNOUNCE: LazyLock<[u8; 32]> =
     LazyLock::new(|| namespace("hyperswarm/dht", &[5])[0]);
+/// Precomputed namespace hash for mutable put operations.
 pub static NS_MUTABLE_PUT: LazyLock<[u8; 32]> =
     LazyLock::new(|| namespace("hyperswarm/dht", &[6])[0]);
+/// Precomputed namespace hash for peer handshake operations.
 pub static NS_PEER_HANDSHAKE: LazyLock<[u8; 32]> =
     LazyLock::new(|| namespace("hyperswarm/dht", &[0])[0]);
+/// Precomputed namespace hash for peer holepunch operations.
 pub static NS_PEER_HOLEPUNCH: LazyLock<[u8; 32]> =
     LazyLock::new(|| namespace("hyperswarm/dht", &[1])[0]);
 
@@ -81,6 +88,7 @@ pub fn sign_detached(message: &[u8], secret_key: &[u8; 64]) -> [u8; 64] {
     signing_key.sign(message).to_bytes()
 }
 
+/// Verifies an Ed25519 detached signature against the given message and public key.
 pub fn verify_detached(signature: &[u8; 64], message: &[u8], public_key: &[u8; 32]) -> bool {
     let Ok(verifying_key) = VerifyingKey::from_bytes(public_key) else {
         return false;

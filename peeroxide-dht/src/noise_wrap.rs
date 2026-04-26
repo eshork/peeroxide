@@ -1,6 +1,6 @@
 //! NoiseWrap — IK-pattern handshake with typed payload encoding.
 //!
-//! Combines [`HandshakeIK`] with [`NoisePayload`] encoding/decoding,
+//! Combines [`HandshakeIK`](crate::noise::HandshakeIK) with [`NoisePayload`](crate::hyperdht_messages::NoisePayload) encoding/decoding,
 //! and derives the `holepunch_secret` after finalisation.
 //!
 //! Reference: `hyperdht/lib/noise-wrap.js`.
@@ -20,14 +20,18 @@ type Blake2bMac256 = Blake2bMac<U32>;
 
 // ─── Error type ──────────────────────────────────────────────────────────────
 
+/// Errors from the [`NoiseWrap`] handshake layer.
 #[derive(Debug, thiserror::Error)]
 pub enum NoiseWrapError {
+    /// The underlying Noise IK handshake failed.
     #[error("noise handshake failed: {0}")]
     Noise(#[from] crate::noise::NoiseError),
 
+    /// Payload compact-encoding or decoding failed.
     #[error("payload encoding failed: {0}")]
     Encoding(#[from] crate::compact_encoding::EncodingError),
 
+    /// [`NoiseWrap::finalize`] was called before both messages were exchanged.
     #[error("handshake not yet complete")]
     NotComplete,
 }

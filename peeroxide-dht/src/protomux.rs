@@ -68,26 +68,34 @@ const MAX_BATCH: usize = 8 * 1024 * 1024;
 // ── Errors ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Error)]
+/// Errors returned by the Protomux encoder, decoder, and channel runtime.
 pub enum ProtomuxError {
+    /// Encoding failed while serializing a frame.
     #[error("encoding error: {0}")]
     Encoding(#[from] c::EncodingError),
 
+    /// The underlying framed stream was closed.
     #[error("stream closed")]
     StreamClosed,
 
+    /// The incoming frame was malformed.
     #[error("invalid frame: {0}")]
     InvalidFrame(String),
 
+    /// The channel was already closed.
     #[error("channel closed")]
     ChannelClosed,
 
+    /// No local channel exists for the requested ID.
     #[error("channel not found: local_id={0}")]
     ChannelNotFound(u64),
 
+    /// An internal mux invariant was violated.
     #[error("internal error: {0}")]
     Internal(String),
 }
 
+/// Result type used by Protomux operations.
 pub type Result<T> = std::result::Result<T, ProtomuxError>;
 
 // ── Frame encoding ───────────────────────────────────────────────────────────
@@ -218,16 +226,25 @@ pub fn encode_batch(entries: &[(u64, Vec<u8>)]) -> Vec<u8> {
 /// Decoded control frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlFrame {
+    /// Opened channel metadata from the remote peer.
     Open {
+        /// Remote local channel ID.
         local_id: u64,
+        /// Protocol name.
         protocol: String,
+        /// Optional sub-channel identifier.
         id: Option<Vec<u8>>,
+        /// Optional handshake payload.
         handshake_state: Option<Vec<u8>>,
     },
+    /// Remote requested channel closure.
     Close {
+        /// Remote local channel ID.
         local_id: u64,
     },
+    /// Remote rejected the channel.
     Reject {
+        /// Remote channel ID.
         remote_id: u64,
     },
 }
@@ -235,7 +252,9 @@ pub enum ControlFrame {
 /// A single item from a decoded batch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchItem {
+    /// Channel ID that the batched message belongs to.
     pub channel_id: u64,
+    /// Raw inner batch payload.
     pub data: Vec<u8>,
 }
 
@@ -248,8 +267,11 @@ pub enum DecodedFrame {
     Batch(Vec<BatchItem>),
     /// A single data message on a channel.
     Message {
+        /// Channel ID.
         channel_id: u64,
+        /// Message type index.
         message_type: u64,
+        /// Message payload.
         payload: Vec<u8>,
     },
 }
@@ -361,15 +383,19 @@ pub trait FramedStream: Send + 'static {
 pub enum ChannelEvent {
     /// Remote opened the channel (with optional handshake data).
     Opened {
+        /// Optional handshake payload from the remote peer.
         handshake: Option<Vec<u8>>,
     },
     /// Received a message on this channel.
     Message {
+        /// Message type index.
         message_type: u32,
+        /// Message payload.
         data: Vec<u8>,
     },
     /// Channel was closed.
     Closed {
+        /// `true` if the remote peer initiated the close.
         is_remote: bool,
     },
 }

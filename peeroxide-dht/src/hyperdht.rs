@@ -67,45 +67,66 @@ fn is_addr_private(host: &str) -> bool {
 }
 
 #[derive(Debug, Error)]
+/// Errors returned by HyperDHT operations.
 pub enum HyperDhtError {
+    /// Error propagated from the underlying DHT client.
     #[error("DHT error: {0}")]
     Dht(#[from] DhtError),
+    /// Error while encoding or decoding protocol data.
     #[error("encoding error: {0}")]
     Encoding(#[from] crate::compact_encoding::EncodingError),
+    /// Error from Noise handshake or session setup.
     #[error("noise error: {0}")]
     Noise(#[from] crate::noise::NoiseError),
+    /// Error from the Noise wrapper layer.
     #[error("noise wrap error: {0}")]
     NoiseWrap(#[from] crate::noise_wrap::NoiseWrapError),
+    /// Error from the router state machine.
     #[error("router error: {0}")]
     Router(#[from] crate::router::RouterError),
+    /// Error while wrapping or unwrapping secure payloads.
     #[error("secure payload error: {0}")]
     SecurePayload(#[from] crate::secure_payload::SecurePayloadError),
+    /// This DHT instance has been destroyed.
     #[error("node destroyed")]
     Destroyed,
+    /// A signature did not verify.
     #[error("invalid signature")]
     InvalidSignature,
+    /// A content hash did not match.
     #[error("invalid hash")]
     InvalidHash,
+    /// The internal channel was closed.
     #[error("channel closed")]
     ChannelClosed,
+    /// No peer was found for the requested target.
     #[error("peer not found")]
     PeerNotFound,
+    /// No relay nodes were available for the operation.
     #[error("no relay nodes available")]
     NoRelayNodes,
+    /// The handshake failed with the given message.
     #[error("handshake failed: {0}")]
     HandshakeFailed(String),
+    /// Hole punching did not succeed.
     #[error("holepunch failed")]
     HolepunchFailed,
+    /// Hole punching was aborted by the remote side.
     #[error("holepunch aborted")]
     HolepunchAborted,
+    /// The remote firewall rejected the connection.
     #[error("firewall rejected")]
     FirewallRejected,
+    /// Error from the UDX transport layer.
     #[error("UDX error: {0}")]
     Udx(#[from] libudx::UdxError),
+    /// Error from the secret stream layer.
     #[error("secret stream error: {0}")]
     SecretStream(#[from] SecretStreamError),
+    /// Failed to establish a UDX stream.
     #[error("stream establishment failed: {0}")]
     StreamEstablishment(String),
+    /// Error from the relay subsystem.
     #[error("relay error: {0}")]
     Relay(#[from] RelayError),
 }
@@ -113,37 +134,53 @@ pub enum HyperDhtError {
 // ── Server events (forwarded to listen() subscribers) ────────────────────────
 
 #[derive(Debug)]
+/// Events forwarded to server-side listeners.
 pub enum ServerEvent {
+    /// A peer handshake request that may need local server handling.
     PeerHandshake {
+        /// The decoded handshake message.
         msg: HandshakeMessage,
+        /// Address of the peer that sent the request.
         from: Ipv4Peer,
+        /// Optional DHT target associated with the request.
         target: Option<NodeId>,
+        /// Reply channel for the generated response.
         reply_tx: oneshot::Sender<Option<Vec<u8>>>,
     },
+    /// A peer holepunch request that may need local server handling.
     PeerHolepunch {
+        /// The decoded holepunch message.
         msg: HolepunchMessage,
+        /// Address of the peer that sent the request.
         from: Ipv4Peer,
+        /// Address of the peer we should punch toward.
         peer_address: Ipv4Peer,
+        /// Optional DHT target associated with the request.
         target: Option<NodeId>,
+        /// Reply channel for the generated response.
         reply_tx: oneshot::Sender<Option<Vec<u8>>>,
     },
 }
 
 // ── KeyPair ───────────────────────────────────────────────────────────────────
 
-/// An Ed25519 key pair (libsodium layout: seed‖public_key).
 #[derive(Clone)]
+/// An Ed25519 key pair (libsodium layout: seed‖public_key).
 pub struct KeyPair {
+    /// The 32-byte public key.
     pub public_key: [u8; 32],
+    /// The 64-byte secret key in libsodium layout.
     pub secret_key: [u8; 64],
 }
 
 impl KeyPair {
+    /// Generate a new random key pair.
     pub fn generate() -> Self {
         let seed: [u8; 32] = random();
         Self::from_seed(seed)
     }
 
+    /// Derive a deterministic key pair from a 32-byte seed.
     pub fn from_seed(seed: [u8; 32]) -> Self {
         let signing_key = SigningKey::from_bytes(&seed);
         let pk: [u8; 32] = signing_key.verifying_key().to_bytes();
@@ -177,47 +214,74 @@ impl KeyPair {
 // ── Result types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+/// Result from a LOOKUP query.
 pub struct LookupResult {
+    /// Node that returned the lookup result.
     pub from: Ipv4Peer,
+    /// Optional intermediate hop used to reach the node.
     pub to: Option<Ipv4Peer>,
+    /// Peers advertised by the node.
     pub peers: Vec<HyperPeer>,
 }
 
 #[derive(Debug, Clone)]
+/// Result from an ANNOUNCE operation.
 pub struct AnnounceResult {
+    /// Closest nodes contacted during the announce.
     pub closest_nodes: Vec<Ipv4Peer>,
 }
 
 #[derive(Debug, Clone)]
+/// Result from an immutable put operation.
 pub struct ImmutablePutResult {
+    /// Content hash used as the target key.
     pub hash: [u8; 32],
+    /// Closest nodes contacted during the write.
     pub closest_nodes: Vec<Ipv4Peer>,
 }
 
 #[derive(Debug, Clone)]
+/// Result from a mutable put operation.
 pub struct MutablePutResult {
+    /// Public key used as the mutable record key.
     pub public_key: [u8; 32],
+    /// Closest nodes contacted during the write.
     pub closest_nodes: Vec<Ipv4Peer>,
+    /// Record sequence number that was written.
     pub seq: u64,
+    /// Signature over the stored value.
     pub signature: [u8; 64],
 }
 
 #[derive(Debug, Clone)]
+/// Result from a mutable get operation.
 pub struct MutableGetResult {
+    /// Retrieved value bytes.
     pub value: Vec<u8>,
+    /// Sequence number attached to the value.
     pub seq: u64,
+    /// Signature verifying the value.
     pub signature: [u8; 64],
+    /// Node that returned the value.
     pub from: Ipv4Peer,
 }
 
 #[derive(Debug, Clone)]
+/// Metadata needed to establish a peer connection.
 pub struct ConnectResult {
+    /// Remote peer's public key.
     pub remote_public_key: [u8; 32],
+    /// Address used to reach the server during handshake.
     pub server_address: Ipv4Peer,
+    /// Address of the client-side peer endpoint.
     pub client_address: Ipv4Peer,
+    /// Whether the connection was relayed through a third party.
     pub is_relayed: bool,
+    /// Final Noise state and negotiated keys.
     pub noise: NoiseWrapResult,
+    /// Local UDX stream id to use for the connection.
     pub local_stream_id: u32,
+    /// Remote UDX metadata advertised by the peer.
     pub remote_udx: Option<UdxInfo>,
 }
 
@@ -226,7 +290,9 @@ pub struct ConnectResult {
 /// Wraps a [`SecretStream`] over a UDX transport, keeping the underlying
 /// socket alive for the connection's lifetime.
 pub struct PeerConnection {
+    /// Encrypted bidirectional stream to the peer.
     pub stream: SecretStream<UdxAsyncStream>,
+    /// Remote peer's public key.
     pub remote_public_key: [u8; 32],
     /// Remote peer's network address (used by server-side relay to connect data streams).
     pub remote_addr: Option<std::net::SocketAddr>,
@@ -282,8 +348,11 @@ impl fmt::Debug for PeerConnection {
     }
 }
 
+/// Configuration used by the server-side handshake and holepunch handler.
 pub struct ServerConfig {
+    /// Server identity key pair.
     pub key_pair: KeyPair,
+    /// Firewall mode advertised to connecting peers.
     pub firewall: u64,
 }
 
@@ -302,8 +371,11 @@ pub const DEFAULT_BOOTSTRAP: [&str; 3] = [
 // ── Config ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
+/// Configuration for a HyperDHT instance.
 pub struct HyperDhtConfig {
+    /// DHT transport and bootstrap settings.
     pub dht: DhtConfig,
+    /// Persistent storage settings for stored records.
     pub persistent: PersistentConfig,
 }
 
@@ -327,6 +399,7 @@ impl HyperDhtConfig {
 // ── HyperDhtHandle ────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
+/// Main public HyperDHT API handle.
 pub struct HyperDhtHandle {
     dht: DhtHandle,
     router: Arc<Mutex<Router>>,
@@ -336,6 +409,7 @@ pub struct HyperDhtHandle {
 impl HyperDhtHandle {
     // ── LOOKUP ────────────────────────────────────────────────────────────────
 
+    /// Query the DHT for peers advertising the target.
     pub async fn lookup(&self, target: [u8; 32]) -> Result<Vec<LookupResult>, HyperDhtError> {
         let replies = self
             .dht
@@ -367,6 +441,7 @@ impl HyperDhtHandle {
 
     // ── ANNOUNCE ─────────────────────────────────────────────────────────────
 
+    /// Announce this peer under the given target.
     pub async fn announce(
         &self,
         target: [u8; 32],
@@ -440,6 +515,7 @@ impl HyperDhtHandle {
 
     // ── FIND_PEER ─────────────────────────────────────────────────────────────
 
+    /// Return the first peer record found for the target.
     pub async fn find_peer(
         &self,
         target: [u8; 32],
@@ -488,6 +564,7 @@ impl HyperDhtHandle {
 
     // ── UNANNOUNCE ────────────────────────────────────────────────────────────
 
+    /// Remove a previously announced peer record.
     pub async fn unannounce(
         &self,
         target: [u8; 32],
@@ -557,6 +634,7 @@ impl HyperDhtHandle {
 
     // ── IMMUTABLE_PUT ────────────────────────────────────────────────────────
 
+    /// Store immutable content under its content hash.
     pub async fn immutable_put(
         &self,
         value: &[u8],
@@ -607,6 +685,7 @@ impl HyperDhtHandle {
 
     // ── IMMUTABLE_GET ────────────────────────────────────────────────────────
 
+    /// Fetch immutable content by content hash.
     pub async fn immutable_get(
         &self,
         target: [u8; 32],
@@ -634,6 +713,7 @@ impl HyperDhtHandle {
 
     // ── MUTABLE_PUT ───────────────────────────────────────────────────────────
 
+    /// Store a signed mutable record for the given key pair.
     pub async fn mutable_put(
         &self,
         key_pair: &KeyPair,
@@ -700,6 +780,7 @@ impl HyperDhtHandle {
 
     // ── MUTABLE_GET ───────────────────────────────────────────────────────────
 
+    /// Fetch and verify a mutable record for the given public key.
     pub async fn mutable_get(
         &self,
         public_key: &[u8; 32],
@@ -740,10 +821,12 @@ impl HyperDhtHandle {
         Ok(None)
     }
 
+    /// Wait until the DHT is bootstrapped.
     pub async fn bootstrapped(&self) -> Result<(), HyperDhtError> {
         self.dht.bootstrapped().await.map_err(HyperDhtError::Dht)
     }
 
+    /// Destroy the underlying DHT instance.
     pub async fn destroy(&self) -> Result<(), HyperDhtError> {
         self.dht.destroy().await.map_err(HyperDhtError::Dht)
     }
@@ -758,14 +841,17 @@ impl HyperDhtHandle {
         self.dht.local_port().await.map_err(HyperDhtError::Dht)
     }
 
+    /// Access the shared router state.
     pub fn router(&self) -> &Arc<Mutex<Router>> {
         &self.router
     }
 
+    /// Access the underlying DHT handle.
     pub fn dht(&self) -> &DhtHandle {
         &self.dht
     }
 
+    /// Mark a target as having a local server available.
     pub fn register_server(&self, target: &[u8; 32]) {
         if let Ok(mut router) = self.router.lock() {
             router.set(
@@ -779,18 +865,21 @@ impl HyperDhtHandle {
         }
     }
 
+    /// Remove the local-server marker for a target.
     pub fn unregister_server(&self, target: &[u8; 32]) {
         if let Ok(mut router) = self.router.lock() {
             router.delete(target);
         }
     }
 
+    /// Access the server event sender.
     pub fn server_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.server_tx
     }
 
     // ── CONNECT (client-side holepunch orchestration) ─────────────────────
 
+    /// Connect to a remote peer using the DHT and relay fallback.
     pub async fn connect(
         &self,
         key_pair: &KeyPair,
@@ -1411,7 +1500,9 @@ pub async fn establish_stream(
 
 // ── Server-side event handler ─────────────────────────────────────────────────
 
+/// Per-server state for pending handshake and holepunch exchanges.
 pub struct ServerSession {
+    /// Cached holepunch secrets indexed by remote public key.
     holepunch_secrets: std::collections::HashMap<[u8; 32], ServerPeerState>,
 }
 
@@ -1424,6 +1515,7 @@ struct ServerPeerState {
     remote_udx: Option<UdxInfo>,
 }
 
+/// Run the server-side request loop for peer handshakes and holepunches.
 pub async fn run_server(
     mut event_rx: mpsc::UnboundedReceiver<ServerEvent>,
     config: ServerConfig,
@@ -1622,6 +1714,7 @@ async fn handle_server_holepunch(
 
 // ── Spawn ─────────────────────────────────────────────────────────────────────
 
+/// Create a HyperDHT instance and start its background tasks.
 pub async fn spawn(
     runtime: &UdxRuntime,
     config: HyperDhtConfig,

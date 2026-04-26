@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
 //! Rust port of [Hyperswarm](https://github.com/holepunchto/hyperswarm) —
 //! topic-based P2P peer discovery and encrypted connections over the
