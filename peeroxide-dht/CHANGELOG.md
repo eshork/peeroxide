@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/Rightbracket/peeroxide/compare/peeroxide-dht-v1.0.1...peeroxide-dht-v1.1.0) - 2026-04-28
+
+### Other
+
+- Add #[non_exhaustive] to public structs and enums ([#10](https://github.com/Rightbracket/peeroxide/pull/10))
+
 ## [1.0.1](https://github.com/Rightbracket/peeroxide/compare/peeroxide-dht-v1.0.0...peeroxide-dht-v1.0.1) - 2026-04-26
 
 ### Other
