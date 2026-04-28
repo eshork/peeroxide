@@ -10,6 +10,7 @@ pub const FLAG_DESTROY: u8 = 0x10;
 pub const FLAG_HEARTBEAT: u8 = 0x20;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum HeaderError {
     #[error("packet too short: {0} bytes (minimum {HEADER_SIZE})")]
     TooShort(usize),

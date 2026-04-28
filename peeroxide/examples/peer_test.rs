@@ -38,14 +38,12 @@ async fn main() {
     println!();
     println!("[*] bootstrapping...");
 
-    let config = SwarmConfig {
-        key_pair: Some(key_pair),
-        ..SwarmConfig::with_public_bootstrap()
-    };
+    let mut config = SwarmConfig::with_public_bootstrap();
+    config.key_pair = Some(key_pair);
     let (_join, handle, mut conn_rx) = spawn(config).await.expect("swarm spawn failed");
 
     handle
-        .join(topic, JoinOpts { server: true, client: true })
+        .join(topic, JoinOpts::default())
         .await
         .expect("join failed");
     handle.flush().await.expect("flush failed");

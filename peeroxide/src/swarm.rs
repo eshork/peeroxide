@@ -75,6 +75,7 @@ fn short_hex(bytes: &[u8]) -> String {
 // ── Public types ─────────────────────────────────────────────────────────────
 
 /// Configuration for a [`Hyperswarm`](SwarmHandle) instance.
+#[non_exhaustive]
 pub struct SwarmConfig {
     /// Ed25519 key pair. Auto-generated if `None`.
     pub key_pair: Option<KeyPair>,
@@ -120,6 +121,7 @@ impl SwarmConfig {
 }
 
 /// Options for joining a topic.
+#[non_exhaustive]
 pub struct JoinOpts {
     /// Announce on this topic (server mode).
     pub server: bool,
@@ -137,6 +139,7 @@ impl Default for JoinOpts {
 }
 
 /// An established swarm connection.
+#[non_exhaustive]
 pub struct SwarmConnection {
     /// The underlying encrypted peer connection.
     pub peer: PeerConnection,
@@ -685,6 +688,7 @@ impl SwarmActor {
                 // Acknowledge without creating a connection.
                 let _ = reply_tx.send(None);
             }
+            _ => {}
         }
     }
 

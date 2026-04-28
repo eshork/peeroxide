@@ -37,6 +37,7 @@ const MAX_RELAY_ADDRESSES: usize = 3;
 
 /// Configuration for the `Persistent` storage.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PersistentConfig {
     pub max_records: usize,
     pub max_record_age: Duration,
@@ -70,6 +71,7 @@ pub struct IncomingHyperRequest {
 }
 
 /// What the handler wants to send back.
+#[non_exhaustive]
 pub enum HandlerReply {
     /// Reply with an optional value and token / closer nodes.
     Value(Option<Vec<u8>>),

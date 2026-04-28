@@ -33,6 +33,7 @@ const PROTOCOL_NAME_IK: &[u8] = b"Noise_IK_Ed25519_ChaChaPoly_BLAKE2b";
 
 /// Errors that can occur during a Noise protocol handshake.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum NoiseError {
     /// The provided public key could not be decompressed to a valid curve point.
     #[error("invalid public key")]

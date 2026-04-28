@@ -8,6 +8,7 @@ const HOLEPUNCH_TTL: u32 = 5;
 const DEFAULT_TTL: u32 = 64;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SocketPoolError {
     #[error("udx error: {0}")]
     Udx(#[from] libudx::UdxError),

@@ -10,6 +10,7 @@ use crate::messages::Ipv4Peer;
 const DEFAULT_FORWARD_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RouterError {
     #[error("bad handshake reply")]
     BadHandshakeReply,
@@ -22,6 +23,7 @@ pub enum RouterError {
 pub type Result<T> = std::result::Result<T, RouterError>;
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct HandshakeResult {
     pub noise: Vec<u8>,
     pub relayed: bool,
@@ -30,6 +32,7 @@ pub struct HandshakeResult {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct HolepunchResult {
     pub from: Ipv4Peer,
     pub to: Ipv4Peer,
@@ -38,6 +41,7 @@ pub struct HolepunchResult {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum HandshakeAction {
     Reply(Vec<u8>),
     Relay { value: Vec<u8>, to: Ipv4Peer },
@@ -47,6 +51,7 @@ pub enum HandshakeAction {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum HolepunchAction {
     Reply { value: Vec<u8>, to: Ipv4Peer },
     Relay { value: Vec<u8>, to: Ipv4Peer },
@@ -57,6 +62,7 @@ pub enum HolepunchAction {
     Drop,
 }
 
+#[non_exhaustive]
 pub struct ForwardEntry {
     pub relay: Option<Ipv4Peer>,
     pub has_server: bool,

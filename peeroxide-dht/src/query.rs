@@ -34,6 +34,7 @@ pub(crate) struct QueryNode {
 
 /// A reply from a node that made it into the `closest_replies` set.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct QueryReply {
     /// The peer that replied.
     pub from: Ipv4Peer,
@@ -53,6 +54,7 @@ pub struct QueryReply {
 
 /// The final result of a completed query.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct QueryResult {
     /// Up to K closest nodes found, sorted by XOR distance to target.
     pub closest_replies: Vec<QueryReply>,

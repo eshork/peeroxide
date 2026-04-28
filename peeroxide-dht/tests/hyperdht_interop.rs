@@ -157,16 +157,14 @@ async fn run_interop() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime = UdxRuntime::new()?;
 
-    let config = HyperDhtConfig {
-        dht: DhtConfig {
-            bootstrap: vec![format!("127.0.0.1:{bs_port}")],
-            port: 0,
-            host: "127.0.0.1".to_string(),
-            firewalled: true,
-            ..DhtConfig::default()
-        },
-        ..HyperDhtConfig::default()
-    };
+    let mut dht_config = DhtConfig::default();
+    dht_config.bootstrap = vec![format!("127.0.0.1:{bs_port}")];
+    dht_config.port = 0;
+    dht_config.host = "127.0.0.1".to_string();
+    dht_config.firewalled = true;
+
+    let mut config = HyperDhtConfig::default();
+    config.dht = dht_config;
 
     let (task, handle, _server_rx) = spawn(&runtime, config).await?;
 

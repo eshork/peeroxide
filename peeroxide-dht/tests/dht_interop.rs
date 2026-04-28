@@ -52,13 +52,11 @@ async fn run_interop() -> Result<(), Box<dyn std::error::Error>> {
     // ── Create Rust DHT node that bootstraps from the JS node ────────────
     let runtime = UdxRuntime::new()?;
 
-    let config = DhtConfig {
-        bootstrap: vec![format!("127.0.0.1:{js_port}")],
-        port: 0,
-        host: "127.0.0.1".to_string(),
-        firewalled: true,
-        ..DhtConfig::default()
-    };
+    let mut config = DhtConfig::default();
+    config.bootstrap = vec![format!("127.0.0.1:{js_port}")];
+    config.port = 0;
+    config.host = "127.0.0.1".to_string();
+    config.firewalled = true;
 
     let (task, handle) = peeroxide_dht::rpc::spawn(&runtime, config).await?;
 

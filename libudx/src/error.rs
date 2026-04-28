@@ -1,5 +1,6 @@
 /// Errors returned by libudx operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum UdxError {
     /// A libuv/udx numeric error code. Retained for API compatibility with
     /// the former FFI backend; the native implementation returns [`Io`](Self::Io)

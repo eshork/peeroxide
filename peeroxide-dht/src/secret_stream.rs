@@ -58,6 +58,7 @@ fn ns_responder() -> &'static [u8; 32] {
 
 #[derive(Debug, Error)]
 /// Errors returned by `SecretStream` and its framing helpers.
+#[non_exhaustive]
 pub enum SecretStreamError {
     /// An underlying I/O operation failed.
     #[error("I/O error: {0}")]

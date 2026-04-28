@@ -69,6 +69,7 @@ const MAX_BATCH: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 /// Errors returned by the Protomux encoder, decoder, and channel runtime.
+#[non_exhaustive]
 pub enum ProtomuxError {
     /// Encoding failed while serializing a frame.
     #[error("encoding error: {0}")]
@@ -380,6 +381,7 @@ pub trait FramedStream: Send + 'static {
 
 /// Events dispatched to individual channel handles.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ChannelEvent {
     /// Remote opened the channel (with optional handshake data).
     Opened {

@@ -181,19 +181,17 @@ async fn run_interop() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let config = SwarmConfig {
-        dht: HyperDhtConfig {
-            dht: DhtConfig {
-                bootstrap: vec![format!("127.0.0.1:{bs_port}")],
-                port: 0,
-                host: "127.0.0.1".to_string(),
-                firewalled: true,
-                ..DhtConfig::default()
-            },
-            ..HyperDhtConfig::default()
-        },
-        ..SwarmConfig::default()
-    };
+    let mut dht_config = DhtConfig::default();
+    dht_config.bootstrap = vec![format!("127.0.0.1:{bs_port}")];
+    dht_config.port = 0;
+    dht_config.host = "127.0.0.1".to_string();
+    dht_config.firewalled = true;
+
+    let mut hyper_config = HyperDhtConfig::default();
+    hyper_config.dht = dht_config;
+
+    let mut config = SwarmConfig::default();
+    config.dht = hyper_config;
 
     let (_task, handle, mut conn_rx) = spawn(config).await?;
     tracing::info!("Rust swarm started");
@@ -201,9 +199,10 @@ async fn run_interop() -> Result<(), Box<dyn std::error::Error>> {
     handle
         .join(
             topic,
-            JoinOpts {
-                server: false,
-                client: true,
+            {
+                let mut opts = JoinOpts::default();
+                opts.server = false;
+                opts
             },
         )
         .await?;
