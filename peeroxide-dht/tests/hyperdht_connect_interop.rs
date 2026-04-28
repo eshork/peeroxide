@@ -40,16 +40,14 @@ async fn run_handshake_test() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Bootstrap node ─────────────────────────────────────────────────
     let rt = UdxRuntime::new()?;
 
-    let bs_config = HyperDhtConfig {
-        dht: DhtConfig {
-            bootstrap: vec![],
-            port: 0,
-            host: "127.0.0.1".to_string(),
-            firewalled: true,
-            ..DhtConfig::default()
-        },
-        ..HyperDhtConfig::default()
-    };
+    let mut bs_dht = DhtConfig::default();
+    bs_dht.bootstrap = vec![];
+    bs_dht.port = 0;
+    bs_dht.host = "127.0.0.1".to_string();
+    bs_dht.firewalled = true;
+
+    let mut bs_config = HyperDhtConfig::default();
+    bs_config.dht = bs_dht;
     let (_bs_join, bs_handle, _bs_rx) = spawn(&rt, bs_config).await?;
     let bs_port = bs_handle.dht().local_port().await?;
     tracing::info!(bs_port, "bootstrap node ready");
@@ -57,16 +55,14 @@ async fn run_handshake_test() -> Result<(), Box<dyn std::error::Error>> {
     let bootstrap = vec![format!("127.0.0.1:{bs_port}")];
 
     // ── 2. Server node ────────────────────────────────────────────────────
-    let srv_config = HyperDhtConfig {
-        dht: DhtConfig {
-            bootstrap: bootstrap.clone(),
-            port: 0,
-            host: "127.0.0.1".to_string(),
-            firewalled: true,
-            ..DhtConfig::default()
-        },
-        ..HyperDhtConfig::default()
-    };
+    let mut srv_dht = DhtConfig::default();
+    srv_dht.bootstrap = bootstrap.clone();
+    srv_dht.port = 0;
+    srv_dht.host = "127.0.0.1".to_string();
+    srv_dht.firewalled = true;
+
+    let mut srv_config = HyperDhtConfig::default();
+    srv_config.dht = srv_dht;
     let (_srv_join, srv_handle, srv_rx) = spawn(&rt, srv_config).await?;
     let srv_port = srv_handle.dht().local_port().await?;
     tracing::info!(srv_port, "server node ready");
@@ -76,24 +72,19 @@ async fn run_handshake_test() -> Result<(), Box<dyn std::error::Error>> {
 
     srv_handle.register_server(&target);
 
-    let server_config = ServerConfig {
-        key_pair: server_kp.clone(),
-        firewall: 0,
-    };
+    let server_config = ServerConfig::new(server_kp.clone(), 0);
     let server_rt = UdxRuntime::new()?;
     let server_task = tokio::spawn(run_server(srv_rx, server_config, server_rt));
 
     // ── 3. Client node ────────────────────────────────────────────────────
-    let cli_config = HyperDhtConfig {
-        dht: DhtConfig {
-            bootstrap: bootstrap.clone(),
-            port: 0,
-            host: "127.0.0.1".to_string(),
-            firewalled: true,
-            ..DhtConfig::default()
-        },
-        ..HyperDhtConfig::default()
-    };
+    let mut cli_dht = DhtConfig::default();
+    cli_dht.bootstrap = bootstrap.clone();
+    cli_dht.port = 0;
+    cli_dht.host = "127.0.0.1".to_string();
+    cli_dht.firewalled = true;
+
+    let mut cli_config = HyperDhtConfig::default();
+    cli_config.dht = cli_dht;
     let (_cli_join, cli_handle, _cli_rx) = spawn(&rt, cli_config).await?;
 
     srv_handle.bootstrapped().await?;

@@ -14,6 +14,7 @@ const PROVEN_THRESHOLD_SECS: u64 = 15;
 /// - 4+ attempts → VeryLow
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Priority {
     /// Lowest priority (4+ failed attempts).
     VeryLow = 0,
@@ -30,6 +31,7 @@ pub enum Priority {
 /// Per-peer metadata tracking connection attempts, priority, and topic associations.
 ///
 /// Modelled after `lib/peer-info.js` in the Node.js Hyperswarm.
+#[non_exhaustive]
 pub struct PeerInfo {
     /// The peer's Ed25519 public key.
     pub public_key: [u8; 32],

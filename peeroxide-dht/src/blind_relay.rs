@@ -140,6 +140,7 @@ pub fn decode_unpair_from_slice(data: &[u8]) -> c::Result<UnpairMessage> {
 
 /// Errors that can occur while using the blind relay client.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RelayError {
     /// A Protomux operation failed while opening, sending, or receiving.
     #[error("protomux error: {0}")]

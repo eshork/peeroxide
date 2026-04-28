@@ -22,6 +22,7 @@ type Blake2bMac256 = Blake2bMac<U32>;
 
 /// Errors from the [`NoiseWrap`] handshake layer.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum NoiseWrapError {
     /// The underlying Noise IK handshake failed.
     #[error("noise handshake failed: {0}")]
@@ -40,6 +41,7 @@ pub enum NoiseWrapError {
 
 /// Final output after a completed NoiseWrap handshake.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct NoiseWrapResult {
     /// Whether this side initiated the handshake.
     pub is_initiator: bool,

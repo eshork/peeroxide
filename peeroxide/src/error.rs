@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Errors from the Hyperswarm layer.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SwarmError {
     /// Error from the HyperDHT layer.
     #[error("DHT error: {0}")]

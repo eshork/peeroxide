@@ -14,6 +14,7 @@ const NONCE_SIZE: usize = 24;
 const TAG_SIZE: usize = 16;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SecurePayloadError {
     #[error("encoding error: {0}")]
     Encoding(#[from] EncodingError),

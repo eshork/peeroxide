@@ -10,6 +10,7 @@ use crate::socket_pool::{coerce_firewall, random_port, SocketPool, SocketRef};
 
 const BIRTHDAY_SOCKETS: usize = 256;
 
+#[non_exhaustive]
 pub enum HolepunchEvent {
     Connected {
         addr: SocketAddr,

@@ -68,6 +68,7 @@ fn is_addr_private(host: &str) -> bool {
 
 #[derive(Debug, Error)]
 /// Errors returned by HyperDHT operations.
+#[non_exhaustive]
 pub enum HyperDhtError {
     /// Error propagated from the underlying DHT client.
     #[error("DHT error: {0}")]
@@ -135,6 +136,7 @@ pub enum HyperDhtError {
 
 #[derive(Debug)]
 /// Events forwarded to server-side listeners.
+#[non_exhaustive]
 pub enum ServerEvent {
     /// A peer handshake request that may need local server handling.
     PeerHandshake {
@@ -215,6 +217,7 @@ impl KeyPair {
 
 #[derive(Debug, Clone)]
 /// Result from a LOOKUP query.
+#[non_exhaustive]
 pub struct LookupResult {
     /// Node that returned the lookup result.
     pub from: Ipv4Peer,
@@ -226,6 +229,7 @@ pub struct LookupResult {
 
 #[derive(Debug, Clone)]
 /// Result from an ANNOUNCE operation.
+#[non_exhaustive]
 pub struct AnnounceResult {
     /// Closest nodes contacted during the announce.
     pub closest_nodes: Vec<Ipv4Peer>,
@@ -233,6 +237,7 @@ pub struct AnnounceResult {
 
 #[derive(Debug, Clone)]
 /// Result from an immutable put operation.
+#[non_exhaustive]
 pub struct ImmutablePutResult {
     /// Content hash used as the target key.
     pub hash: [u8; 32],
@@ -242,6 +247,7 @@ pub struct ImmutablePutResult {
 
 #[derive(Debug, Clone)]
 /// Result from a mutable put operation.
+#[non_exhaustive]
 pub struct MutablePutResult {
     /// Public key used as the mutable record key.
     pub public_key: [u8; 32],
@@ -255,6 +261,7 @@ pub struct MutablePutResult {
 
 #[derive(Debug, Clone)]
 /// Result from a mutable get operation.
+#[non_exhaustive]
 pub struct MutableGetResult {
     /// Retrieved value bytes.
     pub value: Vec<u8>,
@@ -268,6 +275,7 @@ pub struct MutableGetResult {
 
 #[derive(Debug, Clone)]
 /// Metadata needed to establish a peer connection.
+#[non_exhaustive]
 pub struct ConnectResult {
     /// Remote peer's public key.
     pub remote_public_key: [u8; 32],
@@ -289,6 +297,7 @@ pub struct ConnectResult {
 ///
 /// Wraps a [`SecretStream`] over a UDX transport, keeping the underlying
 /// socket alive for the connection's lifetime.
+#[non_exhaustive]
 pub struct PeerConnection {
     /// Encrypted bidirectional stream to the peer.
     pub stream: SecretStream<UdxAsyncStream>,
@@ -349,11 +358,19 @@ impl fmt::Debug for PeerConnection {
 }
 
 /// Configuration used by the server-side handshake and holepunch handler.
+#[non_exhaustive]
 pub struct ServerConfig {
     /// Server identity key pair.
     pub key_pair: KeyPair,
     /// Firewall mode advertised to connecting peers.
     pub firewall: u64,
+}
+
+impl ServerConfig {
+    /// Create a new server configuration.
+    pub fn new(key_pair: KeyPair, firewall: u64) -> Self {
+        Self { key_pair, firewall }
+    }
 }
 
 // ── Bootstrap defaults ────────────────────────────────────────────────────────
@@ -372,6 +389,7 @@ pub const DEFAULT_BOOTSTRAP: [&str; 3] = [
 
 #[derive(Debug, Clone, Default)]
 /// Configuration for a HyperDHT instance.
+#[non_exhaustive]
 pub struct HyperDhtConfig {
     /// DHT transport and bootstrap settings.
     pub dht: DhtConfig,

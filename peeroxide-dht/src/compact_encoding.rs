@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Errors returned by compact encoding operations
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum EncodingError {
     #[error("out of bounds: need {need} bytes, have {have}")]
     /// The buffer did not contain enough bytes

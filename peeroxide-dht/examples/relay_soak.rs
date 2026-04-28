@@ -34,18 +34,16 @@ async fn main() {
         )
         .init();
 
-    let config = HyperDhtConfig {
-        dht: DhtConfig {
-            bootstrap: DEFAULT_BOOTSTRAP
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect(),
-            ephemeral: Some(false),
-            firewalled: false,
-            ..DhtConfig::default()
-        },
-        ..HyperDhtConfig::default()
-    };
+    let mut dht_config = DhtConfig::default();
+    dht_config.bootstrap = DEFAULT_BOOTSTRAP
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    dht_config.ephemeral = Some(false);
+    dht_config.firewalled = false;
+
+    let mut config = HyperDhtConfig::default();
+    config.dht = dht_config;
 
     let runtime = UdxRuntime::new().expect("failed to create UDX runtime");
     let (join_handle, handle, mut server_rx) =
@@ -85,6 +83,7 @@ async fn main() {
                     );
                     let _ = reply_tx.send(None);
                 }
+                _ => {}
             }
         }
     });

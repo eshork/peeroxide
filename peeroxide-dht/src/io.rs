@@ -28,6 +28,7 @@ const DEFAULT_RETRIES: u32 = 3;
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum IoError {
     #[error("UDP error: {0}")]
     Udx(#[from] libudx::UdxError),

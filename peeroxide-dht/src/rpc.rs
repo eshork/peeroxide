@@ -41,6 +41,7 @@ const ERR_UNKNOWN_COMMAND: u64 = 1;
 
 #[derive(Debug, Error)]
 /// Errors returned by [`DhtHandle`] and [`spawn`].
+#[non_exhaustive]
 pub enum DhtError {
     /// Underlying I/O failed.
     #[error("IO error: {0}")]
@@ -63,6 +64,7 @@ pub enum DhtError {
 
 /// Configuration for creating a DHT node.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DhtConfig {
     /// Bootstrap node addresses.
     pub bootstrap: Vec<String>,
@@ -96,6 +98,7 @@ impl Default for DhtConfig {
 
 #[derive(Debug, Clone)]
 /// Response to a ping request.
+#[non_exhaustive]
 pub struct PingResponse {
     /// Remote peer that replied.
     pub from: Ipv4Peer,
@@ -107,6 +110,7 @@ pub struct PingResponse {
 
 #[derive(Debug, Clone)]
 /// Data returned from a DHT request.
+#[non_exhaustive]
 pub struct ResponseData {
     /// Remote peer that replied.
     pub from: Ipv4Peer,

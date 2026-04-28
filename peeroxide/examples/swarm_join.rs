@@ -39,9 +39,10 @@ async fn main() {
     handle
         .join(
             topic,
-            JoinOpts {
-                server: false,
-                client: true,
+            {
+                let mut opts = JoinOpts::default();
+                opts.server = false;
+                opts
             },
         )
         .await

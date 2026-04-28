@@ -106,12 +106,10 @@ async fn main() {
         hex::encode(&server_pk[..8])
     );
 
-    let server_config = SwarmConfig {
-        key_pair: Some(server_kp),
-        relay_through: Some(relay.public_key),
-        relay_address: Some(relay.addr),
-        ..SwarmConfig::with_public_bootstrap()
-    };
+    let mut server_config = SwarmConfig::with_public_bootstrap();
+    server_config.key_pair = Some(server_kp);
+    server_config.relay_through = Some(relay.public_key);
+    server_config.relay_address = Some(relay.addr);
 
     let (server_join, server_handle, mut server_rx) =
         spawn(server_config).await.expect("server spawn");
@@ -119,9 +117,10 @@ async fn main() {
     server_handle
         .join(
             topic,
-            JoinOpts {
-                server: true,
-                client: false,
+            {
+                let mut opts = JoinOpts::default();
+                opts.client = false;
+                opts
             },
         )
         .await
@@ -136,10 +135,8 @@ async fn main() {
         hex::encode(&client_kp.public_key[..8])
     );
 
-    let client_config = SwarmConfig {
-        key_pair: Some(client_kp),
-        ..SwarmConfig::with_public_bootstrap()
-    };
+    let mut client_config = SwarmConfig::with_public_bootstrap();
+    client_config.key_pair = Some(client_kp);
 
     let (client_join, client_handle, mut client_rx) =
         spawn(client_config).await.expect("client spawn");
@@ -147,9 +144,10 @@ async fn main() {
     client_handle
         .join(
             topic,
-            JoinOpts {
-                server: false,
-                client: true,
+            {
+                let mut opts = JoinOpts::default();
+                opts.server = false;
+                opts
             },
         )
         .await
