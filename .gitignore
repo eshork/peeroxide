@@ -1,4 +1,4 @@
 /target/
 tests/node/node_modules/
-.sisyphus
+.sisyphus/
 .vogon_poetry/
