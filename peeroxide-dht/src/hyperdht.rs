@@ -328,7 +328,7 @@ pub struct PeerConnection {
     /// The UDX socket underlying this connection. Public so relay flows
     /// in downstream crates can reuse the control channel's socket for
     /// data streams (matching Node.js behaviour).
-    pub socket: Arc<UdxSocket>,
+    pub socket: UdxSocket,
     _relay_task: Option<JoinHandle<()>>,
 }
 
@@ -337,7 +337,7 @@ impl PeerConnection {
     pub fn new(
         stream: SecretStream<UdxAsyncStream>,
         remote_public_key: [u8; 32],
-        socket: Arc<UdxSocket>,
+        socket: UdxSocket,
         relay_task: Option<JoinHandle<()>>,
     ) -> Self {
         Self {
@@ -354,7 +354,7 @@ impl PeerConnection {
         stream: SecretStream<UdxAsyncStream>,
         remote_public_key: [u8; 32],
         remote_addr: std::net::SocketAddr,
-        socket: Arc<UdxSocket>,
+        socket: UdxSocket,
         relay_task: Option<JoinHandle<()>>,
     ) -> Self {
         Self {
@@ -892,12 +892,12 @@ impl HyperDhtHandle {
     }
 
     /// Returns the DHT server socket for multiplexing UDX streams.
-    pub async fn server_socket(&self) -> Result<Option<Arc<UdxSocket>>, HyperDhtError> {
+    pub async fn server_socket(&self) -> Result<Option<UdxSocket>, HyperDhtError> {
         self.dht.server_socket().await.map_err(HyperDhtError::Dht)
     }
 
     /// Returns the actual listen socket (bound to the advertised server port).
-    pub async fn listen_socket(&self) -> Result<Option<Arc<UdxSocket>>, HyperDhtError> {
+    pub async fn listen_socket(&self) -> Result<Option<UdxSocket>, HyperDhtError> {
         self.dht.listen_socket().await.map_err(HyperDhtError::Dht)
     }
 
@@ -1526,7 +1526,7 @@ impl HyperDhtHandle {
 pub async fn establish_stream(
     result: &ConnectResult,
     runtime: &UdxRuntime,
-    shared_socket: Option<Arc<UdxSocket>>,
+    shared_socket: Option<UdxSocket>,
 ) -> Result<PeerConnection, HyperDhtError> {
     let remote_udx = result
         .remote_udx
@@ -1551,7 +1551,7 @@ pub async fn establish_stream(
     } else {
         let s = runtime.create_socket().await?;
         s.bind("0.0.0.0:0".parse().expect("valid addr")).await?;
-        Arc::new(s)
+        s
     };
     let stream = runtime.create_stream(result.local_stream_id).await?;
     stream.connect(&socket, remote_id, addr).await?;

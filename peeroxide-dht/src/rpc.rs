@@ -240,10 +240,10 @@ enum DhtCommand {
         reply_tx: oneshot::Sender<Option<NodeId>>,
     },
     ServerSocket {
-        reply_tx: oneshot::Sender<Option<Arc<UdxSocket>>>,
+        reply_tx: oneshot::Sender<Option<UdxSocket>>,
     },
     ListenSocket {
-        reply_tx: oneshot::Sender<Option<Arc<UdxSocket>>>,
+        reply_tx: oneshot::Sender<Option<UdxSocket>>,
     },
 }
 
@@ -411,7 +411,7 @@ impl DhtHandle {
     }
 
     /// Returns a shared reference to the DHT server socket for UDX stream multiplexing.
-    pub async fn server_socket(&self) -> Result<Option<Arc<UdxSocket>>, DhtError> {
+    pub async fn server_socket(&self) -> Result<Option<UdxSocket>, DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(DhtCommand::ServerSocket { reply_tx: tx })
@@ -420,7 +420,7 @@ impl DhtHandle {
     }
 
     /// Returns the actual listen socket (the socket bound to the advertised port).
-    pub async fn listen_socket(&self) -> Result<Option<Arc<UdxSocket>>, DhtError> {
+    pub async fn listen_socket(&self) -> Result<Option<UdxSocket>, DhtError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(DhtCommand::ListenSocket { reply_tx: tx })

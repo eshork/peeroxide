@@ -238,8 +238,8 @@ impl CongestionWindow {
 // ── Io ────────────────────────────────────────────────────────────────────────
 
 pub struct Io {
-    client_socket: Arc<UdxSocket>,
-    server_socket: Arc<UdxSocket>,
+    client_socket: UdxSocket,
+    server_socket: UdxSocket,
     client_rx: tokio::sync::mpsc::UnboundedReceiver<Datagram>,
     server_rx: tokio::sync::mpsc::UnboundedReceiver<Datagram>,
     inflight: Vec<InflightEntry>,
@@ -272,12 +272,10 @@ impl Io {
         let server_socket = runtime.create_socket().await?;
         server_socket.bind(server_addr).await?;
         let server_rx = server_socket.recv_start()?;
-        let server_socket = Arc::new(server_socket);
 
         let client_socket = runtime.create_socket().await?;
         client_socket.bind(client_addr).await?;
         let client_rx = client_socket.recv_start()?;
-        let client_socket = Arc::new(client_socket);
 
         let tid: u16 = rand::random();
 
@@ -304,15 +302,15 @@ impl Io {
         self.server_socket.local_addr().await.map_err(IoError::from)
     }
 
-    pub fn server_socket(&self) -> Arc<UdxSocket> {
-        Arc::clone(&self.server_socket)
+    pub fn server_socket(&self) -> UdxSocket {
+        self.server_socket.clone()
     }
 
-    pub fn primary_socket(&self) -> Arc<UdxSocket> {
+    pub fn primary_socket(&self) -> UdxSocket {
         if self.firewalled {
-            Arc::clone(&self.client_socket)
+            self.client_socket.clone()
         } else {
-            Arc::clone(&self.server_socket)
+            self.server_socket.clone()
         }
     }
 
