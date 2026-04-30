@@ -33,3 +33,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - Add doc comments to all public API items and enforce deny(missing_docs) ([#2](https://github.com/Rightbracket/peeroxide/pull/2))
+
+## [1.0.0] - 2025-04-25
+
+Initial release. Pure Rust implementation of the Hyperswarm P2P networking
+stack, wire-compatible with the existing Node.js network.
+
+### Added
+
+- Topic-based peer discovery and connection management (Hyperswarm port)
+- `SwarmConfig` with configurable max peers, firewall callback, backoff, and jitter
+- `spawn()` returns `(JoinHandle, SwarmHandle, Receiver<SwarmConnection>)`
+- `SwarmHandle`: `join()`, `leave()`, `status()`, `destroy()`
+- Connection deduplication by remote public key
+- Peer state machine with priority scoring and exponential retry backoff
+- `SwarmConfig::with_public_bootstrap()` for connecting to the live HyperDHT network
+- `discovery_key()` helper for topic hashing
+
+### Tested
+
+- 24 unit tests passing
+- 3 integration tests passing
+- All tests verified against Node.js Hyperswarm reference behaviour
+
+### Dependencies
+
+- `peeroxide-dht` — HyperDHT implementation
+- `libudx` — reliable UDP transport
+- `tokio` — async runtime
+- `tracing`, `thiserror` — logging and error handling
+- `rand` — ephemeral keypair generation
+
+### Compatibility
+
+- Wire-compatible with Node.js Hyperswarm
+- Rust edition 2024, MSRV 1.85
+- Dual-licensed: MIT OR Apache-2.0
+
+[1.0.0]: https://github.com/Rightbracket/peeroxide/releases/tag/v1.0.0

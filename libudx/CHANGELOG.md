@@ -5,7 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2025-04-25
+
+Initial release. Pure Rust implementation of the UDX protocol with BBR
+congestion control, wire-compatible with the existing Node.js network.
+
+### Added
+
+- Pure Rust UDX protocol implementation (replaced C FFI bindings)
+- BBR congestion control (faithful port of C `udx_bbr.c`)
+- Reliability: cumulative ACK, SACK, retransmission with RTO, fast retransmit
+- RTT estimation (Jacobson/Karels per RFC 6298)
+- Rate sampling for BBR bandwidth estimation
+- Token bucket pacing
+- MTU probing (base 1200, max 1500, step 32)
+- Relay packet forwarding (header rewriting, DESTROY propagation)
+- `UdxAsyncStream`: `AsyncRead + AsyncWrite + Unpin` adapter for tokio
+- Multiplexing: multiple streams per socket with independent congestion state
+- Heartbeat keepalive (1s interval)
+- Graceful shutdown with buffered write drain
+
+### Tested
+
+- 53 unit tests passing
+- 74 integration and network simulation tests (loss, delay, jitter, reorder, MTU clamping)
+- Golden byte fixtures verified against Node.js libudx reference implementation
+
+### Dependencies
+
+- `tokio` — async runtime
+- `tracing`, `thiserror` — logging and error handling
+
+### Compatibility
+
+- Wire-compatible with Node.js libudx
+- Rust edition 2024, MSRV 1.85
+- Dual-licensed: MIT OR Apache-2.0
+
+[1.0.0]: https://github.com/Rightbracket/peeroxide/releases/tag/v1.0.0
 
 ## [1.2.0](https://github.com/Rightbracket/peeroxide/compare/libudx-v1.1.0...libudx-v1.2.0) - 2026-04-30
 
