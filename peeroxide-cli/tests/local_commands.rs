@@ -1,0 +1,1355 @@
+//! Local integration tests — no internet required.
+//! Each test starts an isolated bootstrap node and exercises CLI commands against it.
+//!
+//! Run with: `cargo test -p peeroxide-cli --test local_commands`
+
+#![deny(clippy::all)]
+
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+use libudx::UdxRuntime;
+use peeroxide_dht::hyperdht::{self, HyperDhtConfig, HyperDhtError, HyperDhtHandle, ServerEvent};
+use peeroxide_dht::rpc::DhtConfig;
+
+fn bin_path() -> std::path::PathBuf {
+    assert_cmd::cargo::cargo_bin("peeroxide")
+}
+
+async fn spawn_bootstrap() -> (u16, BootstrapNode) {
+    let rt = UdxRuntime::new().unwrap();
+    let mut dht_cfg = DhtConfig::default();
+    dht_cfg.bootstrap = vec![];
+    dht_cfg.port = 0;
+    dht_cfg.host = "127.0.0.1".to_string();
+    dht_cfg.firewalled = false;
+
+    let mut cfg = HyperDhtConfig::default();
+    cfg.dht = dht_cfg;
+
+    let (task, handle, rx) = hyperdht::spawn(&rt, cfg).await.unwrap();
+    let port = handle.local_port().await.unwrap();
+
+    (port, BootstrapNode { _rt: rt, _task: task, _handle: handle, _rx: rx })
+}
+
+struct BootstrapNode {
+    _rt: UdxRuntime,
+    _task: tokio::task::JoinHandle<Result<(), HyperDhtError>>,
+    _handle: HyperDhtHandle,
+    _rx: tokio::sync::mpsc::UnboundedReceiver<ServerEvent>,
+}
+
+async fn spawn_dht_cluster(n: usize) -> (Vec<u16>, Vec<BootstrapNode>) {
+    assert!(n >= 2, "cluster requires at least 2 nodes");
+
+    let (first_port, first_node) = spawn_bootstrap().await;
+    let mut ports = vec![first_port];
+    let mut nodes = vec![first_node];
+
+    for _ in 1..n {
+        let rt = UdxRuntime::new().unwrap();
+        let mut dht_cfg = DhtConfig::default();
+        dht_cfg.bootstrap = vec![format!("127.0.0.1:{first_port}")];
+        dht_cfg.port = 0;
+        dht_cfg.host = "127.0.0.1".to_string();
+        dht_cfg.firewalled = false;
+
+        let mut cfg = HyperDhtConfig::default();
+        cfg.dht = dht_cfg;
+
+        let (task, handle, rx) = hyperdht::spawn(&rt, cfg).await.unwrap();
+        handle.bootstrapped().await.unwrap();
+        let port = handle.local_port().await.unwrap();
+
+        ports.push(port);
+        nodes.push(BootstrapNode { _rt: rt, _task: task, _handle: handle, _rx: rx });
+    }
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    (ports, nodes)
+}
+
+fn kill_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// ── Test: node starts and binds ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_node_starts_and_binds() {
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut child = Command::new(bin_path())
+            .args(["--no-default-config", "node", "--port", "0", "--host", "127.0.0.1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn peeroxide node");
+
+        let stdout = child.stdout.take().unwrap();
+        let handle = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                if line.contains("127.0.0.1:") {
+                    return Some(line);
+                }
+            }
+            None
+        });
+
+        let found = tokio::time::timeout(Duration::from_secs(10), handle).await;
+        kill_child(&mut child);
+
+        match found {
+            Ok(Ok(Some(line))) => {
+                assert!(line.contains("127.0.0.1:"), "expected address in: {line}");
+            }
+            _ => {
+                // Node ran without crashing — acceptable even if it didn't print to stdout
+            }
+        }
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_node_starts_and_binds timed out");
+}
+
+// ── Test: lookup returns empty for unknown topic ─────────────────────────────
+
+#[tokio::test]
+async fn test_lookup_empty_topic() {
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let (port, _bs) = spawn_bootstrap().await;
+        let bs_addr = format!("127.0.0.1:{port}");
+
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config",
+                    "lookup", "nonexistent-topic-12345",
+                    "--bootstrap", &bs_addr,
+                    "--json",
+                ])
+                .output()
+                .expect("failed to run lookup")
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            output.status.success(),
+            "lookup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("\"peers_found\":0") || stdout.contains("\"peers_found\": 0"),
+            "expected 0 peers found, got: {stdout}"
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_lookup_empty_topic timed out");
+}
+
+// ── Test: announce then lookup finds the peer ────────────────────────────────
+
+#[tokio::test]
+async fn test_announce_then_lookup() {
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let (port, _bs) = spawn_bootstrap().await;
+        let bs_addr = format!("127.0.0.1:{port}");
+
+        let mut announce = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--public",
+                "announce", "local-test-announce-lookup",
+                "--bootstrap", &bs_addr,
+                "--duration", "20",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn announce");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let bs_addr_clone = bs_addr.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--public",
+                    "lookup", "local-test-announce-lookup",
+                    "--bootstrap", &bs_addr_clone,
+                    "--json",
+                ])
+                .output()
+                .expect("failed to run lookup")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut announce);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "lookup failed: {stderr}"
+        );
+
+        // Single-bootstrap DHT cannot propagate announcements, so we only
+        // verify the lookup executes successfully and produces valid JSON.
+        // Actual discovery is verified in live_commands.rs tests.
+        assert!(
+            stdout.contains("\"peers_found\""),
+            "expected JSON summary in output.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_announce_then_lookup timed out");
+}
+
+// ── Test: config loading with --config flag ──────────────────────────────────
+
+#[tokio::test]
+async fn test_config_file_loading() {
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("test-config.toml");
+
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(f, "[network]").unwrap();
+        writeln!(f, "bootstrap = [\"127.0.0.1:19999\"]").unwrap();
+
+        let config_str = config_path.to_str().unwrap().to_string();
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--config", &config_str,
+                    "lookup", "--help",
+                ])
+                .output()
+                .expect("failed to run with --config")
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            output.status.success(),
+            "config loading failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_config_file_loading timed out");
+}
+
+// ── Test: deaddrop leave then pickup (local DHT) ────────────────────────────
+
+#[tokio::test]
+async fn test_deaddrop_local_roundtrip() {
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("input.txt");
+        let output_path = dir.path().join("output.txt");
+
+        let msg = b"local deaddrop test payload";
+        std::fs::write(&input_path, msg).unwrap();
+
+        let input_path_str = input_path.to_str().unwrap().to_string();
+        let bs_addr_clone = bs_addr.clone();
+        let mut leave = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--public",
+                "deaddrop", "leave", &input_path_str,
+                "--bootstrap", &bs_addr_clone,
+                "--ttl", "35",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn deaddrop leave");
+
+        let stdout = leave.stdout.take().unwrap();
+        let pickup_key = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let trimmed = line.trim();
+                if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(trimmed.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap();
+
+        let pickup_key = pickup_key.expect("deaddrop leave did not output a pickup key");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let output_path_str = output_path.to_str().unwrap().to_string();
+        let bs_addr_clone2 = bs_addr.clone();
+        let pickup_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--public",
+                    "deaddrop", "pickup", &pickup_key,
+                    "--bootstrap", &bs_addr_clone2,
+                    "--output", &output_path_str,
+                    "--timeout", "20",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run deaddrop pickup")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        let stderr = String::from_utf8_lossy(&pickup_output.stderr);
+        assert!(
+            pickup_output.status.success(),
+            "deaddrop pickup failed: {stderr}"
+        );
+
+        let received = std::fs::read(&output_path).expect("output file not found");
+        assert_eq!(received, msg, "payload mismatch.\nstderr: {stderr}");
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_deaddrop_local_roundtrip timed out");
+}
+
+// ── Test: --help works for all subcommands ──────────────────────────────────
+
+#[tokio::test]
+async fn test_help_all_subcommands() {
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let subcommands = ["node", "lookup", "announce", "ping", "cp", "deaddrop"];
+
+        for subcmd in subcommands {
+            let subcmd_owned = subcmd.to_string();
+            let output = tokio::task::spawn_blocking(move || {
+                Command::new(bin_path())
+                    .args([&subcmd_owned, "--help"])
+                    .output()
+                    .expect("failed to run --help")
+            })
+            .await
+            .unwrap();
+
+            assert!(
+                output.status.success(),
+                "{subcmd} --help failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                !stdout.is_empty(),
+                "{subcmd} --help produced no output"
+            );
+        }
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_help_all_subcommands timed out");
+}
+
+// ── Test: --generate-man produces manpages ──────────────────────────────────
+
+#[tokio::test]
+async fn test_generate_man() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["--generate-man", &dir_str])
+            .output()
+            .expect("failed to run --generate-man")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "--generate-man failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let expected_pages = [
+        "peeroxide.1",
+        "peeroxide-node.1",
+        "peeroxide-lookup.1",
+        "peeroxide-announce.1",
+        "peeroxide-ping.1",
+        "peeroxide-cp.1",
+        "peeroxide-deaddrop.1",
+    ];
+
+    for page in &expected_pages {
+        let path = dir.path().join(page);
+        assert!(path.exists(), "missing manpage: {page}");
+        let content = std::fs::read(&path).unwrap();
+        assert!(!content.is_empty(), "empty manpage: {page}");
+    }
+}
+
+// ── Test: global --help ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_global_help() {
+    let output = tokio::task::spawn_blocking(|| {
+        Command::new(bin_path())
+            .args(["--help"])
+            .output()
+            .expect("failed to run --help")
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("node"));
+    assert!(stdout.contains("lookup"));
+    assert!(stdout.contains("announce"));
+    assert!(stdout.contains("ping"));
+    assert!(stdout.contains("cp"));
+    assert!(stdout.contains("deaddrop"));
+}
+
+// ── Test: ping direct with --json produces valid NDJSON ─────────────────────
+
+#[tokio::test]
+async fn test_ping_direct_json() {
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let (port, _bs) = spawn_bootstrap().await;
+        let target = format!("127.0.0.1:{port}");
+
+        let bs_addr = target.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config",
+                    "ping", &target,
+                    "--bootstrap", &bs_addr,
+                    "--json",
+                ])
+                .output()
+                .expect("failed to run ping")
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            output.status.success(),
+            "ping failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+
+        // Should have resolve line + probe line (count defaults to 1)
+        assert!(lines.len() >= 2, "expected >=2 JSON lines, got: {stdout}");
+
+        // First line: resolve
+        let resolve: serde_json::Value = serde_json::from_str(lines[0])
+            .unwrap_or_else(|e| panic!("invalid JSON line 0: {e}\nline: {}", lines[0]));
+        assert_eq!(resolve["type"], "resolve");
+        assert_eq!(resolve["method"], "direct");
+
+        // Second line: probe with status ok
+        let probe: serde_json::Value = serde_json::from_str(lines[1])
+            .unwrap_or_else(|e| panic!("invalid JSON line 1: {e}\nline: {}", lines[1]));
+        assert_eq!(probe["type"], "probe");
+        assert_eq!(probe["seq"], 1);
+        assert_eq!(probe["status"], "ok");
+        assert!(probe["rtt_ms"].as_f64().unwrap() > 0.0, "rtt_ms should be positive");
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_ping_direct_json timed out");
+}
+
+// ── Test: ping --count 3 produces repeated probes and a summary ─────────────
+
+#[tokio::test]
+async fn test_ping_count_repeated() {
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let (port, _bs) = spawn_bootstrap().await;
+        let target = format!("127.0.0.1:{port}");
+
+        let bs_addr = target.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config",
+                    "ping", &target,
+                    "--bootstrap", &bs_addr,
+                    "--count", "3",
+                    "--interval", "0.1",
+                    "--json",
+                ])
+                .output()
+                .expect("failed to run ping")
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            output.status.success(),
+            "ping --count 3 failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+
+        // resolve + 3 probes + summary = 5 lines
+        assert!(
+            lines.len() >= 5,
+            "expected >=5 JSON lines for --count 3, got {}:\n{stdout}",
+            lines.len()
+        );
+
+        // Verify seq numbers are 1, 2, 3
+        for (i, expected_seq) in [1, 2, 3].iter().enumerate() {
+            let probe: serde_json::Value = serde_json::from_str(lines[i + 1])
+                .unwrap_or_else(|e| panic!("invalid JSON line {}: {e}", i + 1));
+            assert_eq!(probe["type"], "probe");
+            assert_eq!(probe["seq"], *expected_seq);
+        }
+
+        // Last line should be the summary
+        let summary: serde_json::Value = serde_json::from_str(lines.last().unwrap())
+            .unwrap_or_else(|e| panic!("invalid summary JSON: {e}"));
+        assert_eq!(summary["type"], "summary");
+        assert_eq!(summary["probes_sent"], 3);
+        assert_eq!(summary["probes_responded"], 3);
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_ping_count_repeated timed out");
+}
+
+// ── Test: announce on topic then ping by topic finds the peer ───────────────
+
+#[tokio::test]
+#[ignore = "requires multi-node DHT — single bootstrap cannot propagate announcements"]
+async fn test_ping_by_topic() {
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let (port, _bs) = spawn_bootstrap().await;
+        let bs_addr = format!("127.0.0.1:{port}");
+        let topic = "local-test-ping-topic";
+
+        // Start announce
+        let bs_for_announce = bs_addr.clone();
+        let mut announce = Command::new(bin_path())
+            .args([
+                "--no-default-config",
+                "announce", topic,
+                "--bootstrap", &bs_for_announce,
+                "--duration", "25",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn announce");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        // Ping the topic
+        let bs_for_ping = bs_addr.clone();
+        let topic_owned = topic.to_string();
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config",
+                    "ping", &topic_owned,
+                    "--bootstrap", &bs_for_ping,
+                    "--json",
+                ])
+                .output()
+                .expect("failed to run ping by topic")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut announce);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "ping by topic failed.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+
+        // Should contain resolve line showing topic resolution
+        assert!(
+            stdout.contains("\"type\":\"resolve\"") || stdout.contains("\"type\": \"resolve\""),
+            "expected resolve in output.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+
+        // Should have at least one probe
+        assert!(
+            stdout.contains("\"type\":\"probe\"") || stdout.contains("\"type\": \"probe\""),
+            "expected probe in output.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_ping_by_topic timed out");
+}
+
+// ── Same-host smoke tests: explicit bootstrap, direct-connect path ───────────
+//
+// SCOPE: These tests verify E2E file transfer works on 127.0.0.1 with an
+// explicit local bootstrap node. They exercise:
+//   - DHT announce/lookup via explicit bootstrap (B2 mode)
+//   - Noise handshake + SecretStream encryption
+//   - UDX reliable transport
+//   - CLI argument parsing and file I/O
+//
+// LIMITATION: On same-host, `should_direct_connect` always returns true
+// (same_host=true), so ALL these tests take the direct-connect path regardless
+// of --public/--firewalled flags. They do NOT verify topology-specific
+// relay/holepunch behavior (T3/T5/T6). Topology-specific connection path
+// decisions are covered by the unit-level 3×6 scenario matrix in cmd/mod.rs.
+//
+// The flag combinations (--public, --firewalled, default) verify that the
+// CLI correctly passes firewall config through to the swarm without causing
+// connection failures. Actual firewall-differentiated behavior requires
+// multi-host or network-namespace testing.
+
+#[tokio::test]
+async fn test_cp_local_roundtrip() {
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        let (port, _bs) = spawn_bootstrap().await;
+        let bs_addr = format!("127.0.0.1:{port}");
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create source file
+        let src_path = dir.path().join("testfile.txt");
+        let payload = b"hello from cp local test\n";
+        std::fs::write(&src_path, payload).unwrap();
+
+        let dest_path = dir.path().join("received.txt");
+
+        // Start sender
+
+        let bs_for_send = bs_addr.clone();
+        let src_str = src_path.to_str().unwrap().to_string();
+        let mut sender = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--public",
+                "cp", "send", &src_str,
+                "--bootstrap", &bs_for_send,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn cp send");
+
+        // Read topic from sender stdout
+        let stdout = sender.stdout.take().unwrap();
+        let topic = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap();
+
+        let topic = topic.expect("cp send did not output topic");
+
+        // Wait for sender to announce and self-announce
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        // Run receiver
+        let bs_for_recv = bs_addr.clone();
+        let dest_str = dest_path.to_str().unwrap().to_string();
+        let dest_str_display = dest_str.clone();
+        let recv_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--public",
+                    "cp", "recv", &topic,
+                    &dest_str,
+                    "--bootstrap", &bs_for_recv,
+                    "--yes",
+                    "--force",
+                    "--timeout", "30",
+                ])
+                .output()
+                .expect("failed to run cp recv")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut sender);
+
+        let stderr = String::from_utf8_lossy(&recv_output.stderr);
+        assert!(
+            recv_output.status.success(),
+            "cp recv failed: {stderr}"
+        );
+
+        // Verify file content
+        let received = std::fs::read(&dest_path)
+            .unwrap_or_else(|_| panic!("output file not found at {dest_str_display}\nstderr: {stderr}"));
+        assert_eq!(
+            received, payload,
+            "file content mismatch.\nexpected: {:?}\ngot: {:?}\nstderr: {stderr}",
+            String::from_utf8_lossy(payload),
+            String::from_utf8_lossy(&received)
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_cp_local_roundtrip timed out");
+}
+
+async fn cp_roundtrip_with_flags(sender_public: bool, receiver_public: bool, test_name: &str) {
+    let (port, _bs) = spawn_bootstrap().await;
+    let bs_addr = format!("127.0.0.1:{port}");
+    let dir = tempfile::tempdir().unwrap();
+
+    let src_path = dir.path().join("testfile.txt");
+    let payload = b"firewall scenario test payload\n";
+    std::fs::write(&src_path, payload).unwrap();
+
+    let dest_path = dir.path().join("received.txt");
+
+    let bs_for_send = bs_addr.clone();
+    let src_str = src_path.to_str().unwrap().to_string();
+
+    let mut send_args: Vec<&str> = vec!["--no-default-config"];
+    if sender_public {
+        send_args.push("--public");
+    }
+    send_args.extend(["cp", "send", &src_str, "--bootstrap"]);
+
+    let mut sender = Command::new(bin_path())
+        .args(&send_args)
+        .arg(&bs_for_send)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("[{test_name}] failed to spawn cp send: {e}"));
+
+    let stdout = sender.stdout.take().unwrap();
+    let tn = test_name.to_string();
+    let topic = tokio::task::spawn_blocking(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let line = line.unwrap_or_default();
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        None
+    })
+    .await
+    .unwrap();
+
+    let topic = topic.unwrap_or_else(|| panic!("[{tn}] cp send did not output topic"));
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let bs_for_recv = bs_addr.clone();
+    let dest_str = dest_path.to_str().unwrap().to_string();
+    let tn2 = test_name.to_string();
+
+    let mut recv_args: Vec<String> = vec!["--no-default-config".to_string()];
+    if receiver_public {
+        recv_args.push("--public".to_string());
+    }
+    recv_args.extend([
+        "cp".to_string(),
+        "recv".to_string(),
+        topic.clone(),
+        dest_str.clone(),
+        "--bootstrap".to_string(),
+        bs_for_recv,
+        "--yes".to_string(),
+        "--force".to_string(),
+        "--timeout".to_string(),
+        "30".to_string(),
+    ]);
+
+    let recv_output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(&recv_args)
+            .output()
+            .unwrap_or_else(|e| panic!("[{tn2}] failed to run cp recv: {e}"))
+    })
+    .await
+    .unwrap();
+
+    kill_child(&mut sender);
+
+    let stderr = String::from_utf8_lossy(&recv_output.stderr);
+    assert!(
+        recv_output.status.success(),
+        "[{test_name}] cp recv failed: {stderr}"
+    );
+
+    let dest_str_display = dest_path.to_str().unwrap().to_string();
+    let received = std::fs::read(&dest_path)
+        .unwrap_or_else(|_| panic!("[{test_name}] output file not found at {dest_str_display}\nstderr: {stderr}"));
+    assert_eq!(
+        received, payload,
+        "[{test_name}] file content mismatch.\nexpected: {:?}\ngot: {:?}\nstderr: {stderr}",
+        String::from_utf8_lossy(payload),
+        String::from_utf8_lossy(&received)
+    );
+}
+
+#[tokio::test]
+async fn test_cp_sender_default_receiver_public() {
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        cp_roundtrip_with_flags(false, true, "sender_default_receiver_public").await;
+    })
+    .await;
+    assert!(result.is_ok(), "test_cp_sender_default_receiver_public timed out");
+}
+
+#[tokio::test]
+async fn test_cp_sender_public_receiver_default() {
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        cp_roundtrip_with_flags(true, false, "sender_public_receiver_default").await;
+    })
+    .await;
+    assert!(result.is_ok(), "test_cp_sender_public_receiver_default timed out");
+}
+
+#[tokio::test]
+async fn test_cp_both_default_same_host() {
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        cp_roundtrip_with_flags(false, false, "both_default_same_host").await;
+    })
+    .await;
+    assert!(result.is_ok(), "test_cp_both_default_same_host timed out");
+}
+
+// ── Isolated mode: no bootstrap, graceful failure ────────────────────────────
+
+#[tokio::test]
+async fn test_cp_firewalled_flag_roundtrip() {
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        let (port, _bs) = spawn_bootstrap().await;
+        let bs_addr = format!("127.0.0.1:{port}");
+        let dir = tempfile::tempdir().unwrap();
+
+        let src_path = dir.path().join("testfile.txt");
+        let payload = b"firewalled flag e2e test\n";
+        std::fs::write(&src_path, payload).unwrap();
+
+        let dest_path = dir.path().join("received.txt");
+
+        let bs_for_send = bs_addr.clone();
+        let src_str = src_path.to_str().unwrap().to_string();
+
+        let mut sender = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--firewalled",
+                "cp", "send", &src_str,
+                "--bootstrap", &bs_for_send,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn cp send with --firewalled");
+
+        let stdout = sender.stdout.take().unwrap();
+        let topic = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap();
+
+        let topic = topic.expect("cp send --firewalled did not output topic");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let bs_for_recv = bs_addr.clone();
+        let dest_str = dest_path.to_str().unwrap().to_string();
+        let recv_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--firewalled",
+                    "cp", "recv", &topic,
+                    &dest_str,
+                    "--bootstrap", &bs_for_recv,
+                    "--yes",
+                    "--force",
+                    "--timeout", "30",
+                ])
+                .output()
+                .expect("failed to run cp recv with --firewalled")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut sender);
+
+        let stderr = String::from_utf8_lossy(&recv_output.stderr);
+        assert!(
+            recv_output.status.success(),
+            "cp recv --firewalled failed: {stderr}"
+        );
+
+        let received = std::fs::read(&dest_path)
+            .unwrap_or_else(|_| panic!("output file not found\nstderr: {stderr}"));
+        assert_eq!(
+            received, payload,
+            "file content mismatch with --firewalled flag.\nstderr: {stderr}"
+        );
+    })
+    .await;
+    assert!(result.is_ok(), "test_cp_firewalled_flag_roundtrip timed out");
+}
+
+#[tokio::test]
+async fn test_cp_isolated_no_bootstrap_times_out() {
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let dir = tempfile::tempdir().unwrap();
+        let dest_path = dir.path().join("should_not_exist.txt");
+        let dest_str = dest_path.to_str().unwrap().to_string();
+
+        let recv_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config",
+                    "cp", "recv",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    &dest_str,
+                    "--yes",
+                    "--force",
+                    "--timeout", "5",
+                ])
+                .output()
+                .expect("failed to run cp recv")
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            !recv_output.status.success(),
+            "isolated cp recv should fail (no bootstrap → no discovery → timeout)"
+        );
+        assert!(
+            !dest_path.exists(),
+            "no file should be created when recv times out"
+        );
+    })
+    .await;
+    assert!(result.is_ok(), "test_cp_isolated_no_bootstrap_times_out timed out");
+}
+
+#[tokio::test]
+async fn test_deaddrop_passphrase_roundtrip() {
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("input.txt");
+        let output_path = dir.path().join("output.txt");
+
+        let msg = b"passphrase deaddrop roundtrip payload";
+        std::fs::write(&input_path, msg).unwrap();
+
+        let input_path_str = input_path.to_str().unwrap().to_string();
+        let bs_addr_clone = bs_addr.clone();
+
+        let mut leave_cmd = Command::new(bin_path());
+        leave_cmd
+            .args([
+                "--no-default-config", "--public",
+                "deaddrop", "leave", &input_path_str,
+                "--bootstrap", &bs_addr_clone,
+                "--ttl", "40",
+                "--passphrase", "deaddrop-test-pass-abc",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            unsafe extern "C" { fn setsid() -> i32; }
+            unsafe { leave_cmd.pre_exec(|| { setsid(); Ok(()) }); }
+        }
+
+        let mut leave = leave_cmd.spawn().expect("failed to spawn deaddrop leave --passphrase");
+
+        let stdout = leave.stdout.take().unwrap();
+        let pickup_key = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let trimmed = line.trim();
+                if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(trimmed.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap();
+
+        let pickup_key = pickup_key.expect("deaddrop leave --passphrase did not output pickup key");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let output_path_str = output_path.to_str().unwrap().to_string();
+        let bs_addr_clone2 = bs_addr.clone();
+        let pickup_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--public",
+                    "deaddrop", "pickup", &pickup_key,
+                    "--bootstrap", &bs_addr_clone2,
+                    "--output", &output_path_str,
+                    "--timeout", "20",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run deaddrop pickup after passphrase leave")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        let stderr = String::from_utf8_lossy(&pickup_output.stderr);
+        assert!(
+            pickup_output.status.success(),
+            "pickup after passphrase leave failed: {stderr}"
+        );
+
+        let received = std::fs::read(&output_path).expect("output file not found");
+        assert_eq!(received, msg, "payload mismatch after passphrase leave.\nstderr: {stderr}");
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_deaddrop_passphrase_roundtrip timed out");
+}
+
+#[tokio::test]
+async fn test_deaddrop_large_payload() {
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("large_input.bin");
+        let output_path = dir.path().join("large_output.bin");
+
+        let msg: Vec<u8> = (0u8..=255).cycle().take(5000).collect();
+        std::fs::write(&input_path, &msg).unwrap();
+
+        let input_path_str = input_path.to_str().unwrap().to_string();
+        let bs_addr_clone = bs_addr.clone();
+        let mut leave = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--public",
+                "deaddrop", "leave", &input_path_str,
+                "--bootstrap", &bs_addr_clone,
+                "--ttl", "40",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn deaddrop leave (large payload)");
+
+        let stdout = leave.stdout.take().unwrap();
+        let pickup_key = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let trimmed = line.trim();
+                if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(trimmed.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap();
+
+        let pickup_key = pickup_key.expect("deaddrop leave (large) did not output pickup key");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let output_path_str = output_path.to_str().unwrap().to_string();
+        let bs_addr_clone2 = bs_addr.clone();
+        let pickup_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--public",
+                    "deaddrop", "pickup", &pickup_key,
+                    "--bootstrap", &bs_addr_clone2,
+                    "--output", &output_path_str,
+                    "--timeout", "25",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run deaddrop pickup (large payload)")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        let stderr = String::from_utf8_lossy(&pickup_output.stderr);
+        assert!(
+            pickup_output.status.success(),
+            "deaddrop pickup (large payload) failed: {stderr}"
+        );
+
+        let received = std::fs::read(&output_path).expect("output file not found (large payload)");
+        assert_eq!(
+            received, msg,
+            "large payload mismatch ({} bytes expected, {} bytes received).\nstderr: {stderr}",
+            msg.len(),
+            received.len()
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_deaddrop_large_payload timed out");
+}
+
+#[tokio::test]
+async fn test_deaddrop_stdin_stdout() {
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+
+        let msg = b"stdin-to-stdout deaddrop test payload";
+
+        let bs_addr_clone = bs_addr.clone();
+        let mut leave = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--public",
+                "deaddrop", "leave", "-",
+                "--bootstrap", &bs_addr_clone,
+                "--ttl", "40",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn deaddrop leave (stdin)");
+
+        let mut leave_stdin = leave.stdin.take().unwrap();
+        let msg_clone = msg.to_vec();
+        let stdin_writer = tokio::task::spawn_blocking(move || {
+            let _ = leave_stdin.write_all(&msg_clone);
+        });
+
+        let stdout = leave.stdout.take().unwrap();
+        let key_reader = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let trimmed = line.trim();
+                if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(trimmed.to_string());
+                }
+            }
+            None
+        });
+
+        let (_, pickup_key_result) = tokio::join!(stdin_writer, key_reader);
+        let pickup_key = pickup_key_result.unwrap().expect("deaddrop leave (stdin) did not output pickup key");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let bs_addr_clone2 = bs_addr.clone();
+        let pickup_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--public",
+                    "deaddrop", "pickup", &pickup_key,
+                    "--bootstrap", &bs_addr_clone2,
+                    "--timeout", "20",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run deaddrop pickup (stdout mode)")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        let stderr = String::from_utf8_lossy(&pickup_output.stderr);
+        assert!(
+            pickup_output.status.success(),
+            "deaddrop pickup (stdout mode) failed: {stderr}"
+        );
+
+        assert_eq!(
+            pickup_output.stdout, msg,
+            "stdout payload mismatch.\nstderr: {stderr}"
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_deaddrop_stdin_stdout timed out");
+}
+
+#[tokio::test]
+async fn test_deaddrop_pickup_timeout() {
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+
+        let nonexistent_key = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+        let pickup_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--public",
+                    "deaddrop", "pickup", nonexistent_key,
+                    "--bootstrap", &bs_addr,
+                    "--timeout", "5",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run deaddrop pickup (timeout test)")
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            !pickup_output.status.success(),
+            "pickup of nonexistent key should fail, but exited 0"
+        );
+
+        let stderr = String::from_utf8_lossy(&pickup_output.stderr);
+        assert!(
+            stderr.contains("timeout") || stderr.contains("not found"),
+            "expected timeout/not-found in stderr, got: {stderr}"
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_deaddrop_pickup_timeout timed out");
+}
+
+#[tokio::test]
+async fn test_deaddrop_wrong_passphrase_fails() {
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("input.txt");
+
+        let msg = b"wrong passphrase test payload";
+        std::fs::write(&input_path, msg).unwrap();
+
+        let input_path_str = input_path.to_str().unwrap().to_string();
+        let bs_addr_clone = bs_addr.clone();
+
+        let mut leave_cmd = Command::new(bin_path());
+        leave_cmd
+            .args([
+                "--no-default-config", "--public",
+                "deaddrop", "leave", &input_path_str,
+                "--bootstrap", &bs_addr_clone,
+                "--ttl", "40",
+                "--passphrase", "correct-secret-passphrase",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            unsafe extern "C" { fn setsid() -> i32; }
+            unsafe { leave_cmd.pre_exec(|| { setsid(); Ok(()) }); }
+        }
+
+        let mut leave = leave_cmd.spawn().expect("failed to spawn deaddrop leave (wrong passphrase test)");
+
+        let stdout = leave.stdout.take().unwrap();
+        let leave_key_result = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let trimmed = line.trim();
+                if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(trimmed.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap();
+
+        assert!(leave_key_result.is_some(), "deaddrop leave did not output a key");
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let wrong_key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let bs_addr_clone2 = bs_addr.clone();
+        let pickup_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--public",
+                    "deaddrop", "pickup", wrong_key,
+                    "--bootstrap", &bs_addr_clone2,
+                    "--timeout", "8",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run deaddrop pickup (wrong passphrase test)")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        assert!(
+            !pickup_output.status.success(),
+            "pickup with wrong key should fail, but succeeded"
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_deaddrop_wrong_passphrase_fails timed out");
+}

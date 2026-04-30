@@ -150,7 +150,7 @@ impl UdxSocket {
     }
 
     /// Close the socket and stop the receive loop.
-    pub async fn close(self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         let handle = self.recv_task.lock().ok().and_then(|mut g| g.take());
         if let Some(handle) = handle {
             handle.abort();

@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, Instant};
 
-use libudx::UdxRuntime;
+use libudx::{UdxRuntime, UdxSocket};
 
 use crate::io::{Io, IoConfig, IoEvent, ReplyContext, RequestParams, TimeoutEvent};
 use crate::messages::{Command, Ipv4Peer};
@@ -232,6 +232,15 @@ enum DhtCommand {
     LocalPort {
         reply_tx: oneshot::Sender<Result<u16, DhtError>>,
     },
+    TableId {
+        reply_tx: oneshot::Sender<Option<NodeId>>,
+    },
+    ServerSocket {
+        reply_tx: oneshot::Sender<Option<Arc<UdxSocket>>>,
+    },
+    ListenSocket {
+        reply_tx: oneshot::Sender<Option<Arc<UdxSocket>>>,
+    },
 }
 
 // ── Standalone (non-query) inflight tracking ──────────────────────────────────
@@ -387,6 +396,33 @@ impl DhtHandle {
             .map_err(|_| DhtError::ChannelClosed)?;
         rx.await.map_err(|_| DhtError::ChannelClosed)?
     }
+
+    /// Returns the node's current routing table ID, or None if not yet assigned.
+    pub async fn table_id(&self) -> Result<Option<NodeId>, DhtError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(DhtCommand::TableId { reply_tx: tx })
+            .map_err(|_| DhtError::ChannelClosed)?;
+        rx.await.map_err(|_| DhtError::ChannelClosed)
+    }
+
+    /// Returns a shared reference to the DHT server socket for UDX stream multiplexing.
+    pub async fn server_socket(&self) -> Result<Option<Arc<UdxSocket>>, DhtError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(DhtCommand::ServerSocket { reply_tx: tx })
+            .map_err(|_| DhtError::ChannelClosed)?;
+        rx.await.map_err(|_| DhtError::ChannelClosed)
+    }
+
+    /// Returns the actual listen socket (the socket bound to the advertised port).
+    pub async fn listen_socket(&self) -> Result<Option<Arc<UdxSocket>>, DhtError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(DhtCommand::ListenSocket { reply_tx: tx })
+            .map_err(|_| DhtError::ChannelClosed)?;
+        rx.await.map_err(|_| DhtError::ChannelClosed)
+    }
 }
 
 // ── DhtNode (internal background actor) ──────────────────────────────────────
@@ -416,6 +452,9 @@ struct DhtNode {
     bootstrap_query_id: Option<u64>,
     deferred_reply_tx: mpsc::UnboundedSender<DeferredReply>,
     deferred_reply_rx: mpsc::UnboundedReceiver<DeferredReply>,
+
+    needs_id_update: bool,
+    addr_samples: Vec<Ipv4Peer>,
 }
 
 impl DhtNode {
@@ -506,7 +545,12 @@ impl DhtNode {
 
         let requests = q.poll_requests();
         self.dispatch_query_requests(query_id, requests);
-        self.active_queries.insert(query_id, q);
+
+        if q.is_finished() {
+            self.on_query_removed(query_id);
+        } else {
+            self.active_queries.insert(query_id, q);
+        }
 
         tracing::debug!(query_id, "bootstrap query started");
     }
@@ -527,9 +571,13 @@ impl DhtNode {
                 value,
                 rtt,
                 request: _request,
-                to: _,
+                to,
             } => {
                 self.add_node_from_network(from.clone(), id);
+
+                if self.needs_id_update && to.port != 0 && !to.host.is_empty() {
+                    self.addr_samples.push(to);
+                }
 
                 let data = IoResponseData {
                     from: from.clone(),
@@ -1116,6 +1164,21 @@ impl DhtNode {
             DhtCommand::LocalPort { reply_tx } => {
                 let _ = reply_tx.send(Ok(self.local_port));
             }
+
+            DhtCommand::TableId { reply_tx } => {
+                let id = self.table.lock().ok().map(|t| *t.id());
+                let _ = reply_tx.send(id);
+            }
+
+            DhtCommand::ServerSocket { reply_tx } => {
+                let socket = Some(self.io.primary_socket());
+                let _ = reply_tx.send(socket);
+            }
+
+            DhtCommand::ListenSocket { reply_tx } => {
+                let socket = Some(self.io.server_socket());
+                let _ = reply_tx.send(socket);
+            }
         }
         false
     }
@@ -1361,10 +1424,45 @@ impl DhtNode {
         if self.bootstrapped {
             return;
         }
+
+        if self.needs_id_update {
+            if let Some(addr) = self.determine_address_from_samples() {
+                let new_id = peer_id(&addr.host, addr.port);
+                if let Ok(mut table) = self.table.lock() {
+                    table.rebuild_with_id(new_id);
+                }
+                tracing::debug!(host = %addr.host, port = addr.port, "updated node ID from NAT samples");
+            }
+            self.needs_id_update = false;
+        }
+
         self.bootstrapped = true;
         tracing::debug!("DHT node bootstrapped");
         for tx in self.bootstrap_waiters.drain(..) {
             let _ = tx.send(Ok(()));
+        }
+    }
+
+    fn determine_address_from_samples(&self) -> Option<Ipv4Peer> {
+        if self.addr_samples.is_empty() {
+            return None;
+        }
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for sample in &self.addr_samples {
+            let key = format!("{}:{}", sample.host, sample.port);
+            *counts.entry(key).or_default() += 1;
+        }
+
+        let best = counts.into_iter().max_by_key(|(_, count)| *count)?;
+        let (host_port, _) = best;
+        let parts: Vec<&str> = host_port.rsplitn(2, ':').collect();
+        if parts.len() == 2 {
+            let port: u16 = parts[0].parse().ok()?;
+            let host = parts[1].to_string();
+            Some(Ipv4Peer { host, port })
+        } else {
+            None
         }
     }
 }
@@ -1379,18 +1477,29 @@ pub async fn spawn(
     let table_id: NodeId = rand::random();
     let table = Arc::new(Mutex::new(RoutingTable::new(table_id)));
 
+    let ephemeral = config.ephemeral.unwrap_or(!config.bootstrap.is_empty());
     let io_config = IoConfig {
         max_window: config.max_window,
         port: config.port,
         host: config.host.clone(),
         firewalled: config.firewalled,
-        ephemeral: config.ephemeral.unwrap_or(!config.bootstrap.is_empty()),
+        ephemeral,
     };
 
     let io = Io::bind(runtime, Arc::clone(&table), io_config).await?;
     let local_port = io.server_local_addr().await
         .map(|a| a.port())
         .unwrap_or(config.port);
+
+    let is_wildcard = config.host == "0.0.0.0" || config.host == "::";
+    let needs_id_update = !ephemeral && is_wildcard;
+
+    if !ephemeral && !is_wildcard {
+        let deterministic_id = peer_id(&config.host, local_port);
+        if let Ok(mut t) = table.lock() {
+            t.rebuild_with_id(deterministic_id);
+        }
+    }
 
     let mut config = config;
     config.bootstrap = resolve_bootstrap_nodes(&config.bootstrap).await;
@@ -1420,6 +1529,8 @@ pub async fn spawn(
         bootstrap_query_id: None,
         deferred_reply_tx,
         deferred_reply_rx,
+        needs_id_update,
+        addr_samples: Vec::new(),
     };
 
     let handle = tokio::spawn(node.run());

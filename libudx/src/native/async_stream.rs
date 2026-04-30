@@ -23,6 +23,7 @@ pub struct UdxAsyncStream {
     read_eof: bool,
     pending_ack: Option<oneshot::Receiver<UdxResult<()>>>,
     processor: Option<tokio::task::JoinHandle<()>>,
+    fin_queued: bool,
 }
 
 impl UdxAsyncStream {
@@ -39,6 +40,7 @@ impl UdxAsyncStream {
             read_eof: false,
             pending_ack: None,
             processor,
+            fin_queued: false,
         }
     }
 }
@@ -209,9 +211,14 @@ impl AsyncWrite for UdxAsyncStream {
                     if let Err(e) = result {
                         return Poll::Ready(Err(io::Error::other(e.to_string())));
                     }
+                    if self.fin_queued {
+                        return Poll::Ready(Ok(()));
+                    }
+                    // Write ACK resolved — fall through to queue FIN
                 }
                 Poll::Ready(Err(_)) => {
                     self.pending_ack = None;
+                    return Poll::Ready(Ok(()));
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -238,8 +245,18 @@ impl AsyncWrite for UdxAsyncStream {
             };
             let packet = header.encode().to_vec();
 
+            let (ack_tx, ack_rx) = oneshot::channel();
+            inner.pending_writes.push(super::stream::PendingWrite {
+                ack_threshold: seq + 1,
+                tx: Some(ack_tx),
+            });
+
             inner.queue_for_send(vec![(seq, packet)], addr);
             drop(inner);
+
+            self.fin_queued = true;
+            self.pending_ack = Some(ack_rx);
+            return self.as_mut().poll_shutdown(cx);
         }
         Poll::Ready(Ok(()))
     }

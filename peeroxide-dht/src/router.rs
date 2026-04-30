@@ -7,7 +7,7 @@ use crate::hyperdht_messages::{
 };
 use crate::messages::Ipv4Peer;
 
-const DEFAULT_FORWARD_TTL: Duration = Duration::from_secs(30);
+const DEFAULT_FORWARD_TTL: Duration = Duration::from_secs(20 * 60);
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -88,7 +88,12 @@ impl Router {
 
     pub fn get(&self, target: &[u8; 32]) -> Option<&ForwardEntry> {
         let entry = self.forwards.get(target)?;
-        if entry.inserted.elapsed() > self.ttl {
+        // Server entries (local listeners) never expire — they persist until
+        // explicitly removed via `delete()` / `unregister_server()`.  Only
+        // forwarded announce entries are subject to TTL expiry.  This matches
+        // Node.js where server entries use `retain` and live as long as the
+        // server is active.
+        if !entry.has_server && entry.inserted.elapsed() > self.ttl {
             return None;
         }
         Some(entry)
@@ -100,7 +105,7 @@ impl Router {
 
     pub fn gc(&mut self) {
         self.forwards
-            .retain(|_, entry| entry.inserted.elapsed() <= self.ttl);
+            .retain(|_, entry| entry.has_server || entry.inserted.elapsed() <= self.ttl);
     }
 
     pub fn validate_handshake_reply(
@@ -393,7 +398,7 @@ mod tests {
             &key,
             ForwardEntry {
                 relay: None,
-                has_server: true,
+                has_server: false,
                 inserted: Instant::now() - Duration::from_secs(1),
             },
         );
@@ -411,13 +416,212 @@ mod tests {
             &key,
             ForwardEntry {
                 relay: None,
-                has_server: true,
+                has_server: false,
                 inserted: Instant::now() - Duration::from_secs(1),
             },
         );
 
         assert_eq!(router.forwards.len(), 1);
         router.gc();
+        assert_eq!(router.forwards.len(), 0);
+    }
+
+    #[test]
+    fn forward_entry_persists_within_20_min_ttl() {
+        let mut router = Router::new();
+        let key = target_key();
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: Some(peer("5.5.5.5", 2000)),
+                has_server: false,
+                inserted: Instant::now() - Duration::from_secs(19 * 60),
+            },
+        );
+
+        assert!(
+            router.get(&key).is_some(),
+            "entry should persist within 20-minute TTL"
+        );
+    }
+
+    #[test]
+    fn forward_entry_expires_after_20_min_ttl() {
+        let mut router = Router::new();
+        let key = target_key();
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: Some(peer("5.5.5.5", 2000)),
+                has_server: false,
+                inserted: Instant::now() - Duration::from_secs(21 * 60),
+            },
+        );
+
+        assert!(
+            router.get(&key).is_none(),
+            "entry should expire after 20-minute TTL"
+        );
+    }
+
+    #[test]
+    fn forward_entry_refresh_extends_lifetime() {
+        let mut router = Router::new();
+        let key = target_key();
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: Some(peer("5.5.5.5", 2000)),
+                has_server: false,
+                inserted: Instant::now() - Duration::from_secs(21 * 60),
+            },
+        );
+        assert!(router.get(&key).is_none());
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: Some(peer("5.5.5.5", 2000)),
+                has_server: false,
+                inserted: Instant::now(),
+            },
+        );
+        assert!(
+            router.get(&key).is_some(),
+            "re-announced entry should be accessible again"
+        );
+    }
+
+    #[test]
+    fn gc_preserves_fresh_entries() {
+        let mut router = Router::new();
+        let key1 = [0x11; 32];
+        let key2 = [0x22; 32];
+
+        router.set(
+            &key1,
+            ForwardEntry {
+                relay: Some(peer("1.1.1.1", 100)),
+                has_server: false,
+                inserted: Instant::now(),
+            },
+        );
+        router.set(
+            &key2,
+            ForwardEntry {
+                relay: Some(peer("2.2.2.2", 200)),
+                has_server: false,
+                inserted: Instant::now() - Duration::from_secs(21 * 60),
+            },
+        );
+
+        router.gc();
+        assert!(router.get(&key1).is_some(), "fresh entry should survive gc");
+        assert_eq!(router.forwards.len(), 1, "expired entry should be removed by gc");
+    }
+
+    #[test]
+    fn default_ttl_matches_nodejs_20_minutes() {
+        let router = Router::new();
+        assert_eq!(router.ttl, Duration::from_secs(20 * 60));
+    }
+
+    #[test]
+    fn server_entry_never_expires_on_ttl() {
+        let mut router = Router::new();
+        let key = target_key();
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: None,
+                has_server: true,
+                inserted: Instant::now() - Duration::from_secs(60 * 60),
+            },
+        );
+
+        assert!(
+            router.get(&key).is_some(),
+            "server entry must survive past TTL"
+        );
+    }
+
+    #[test]
+    fn server_entry_survives_gc() {
+        let mut router = Router::new();
+        let key = target_key();
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: None,
+                has_server: true,
+                inserted: Instant::now() - Duration::from_secs(60 * 60),
+            },
+        );
+
+        router.gc();
+        assert_eq!(
+            router.forwards.len(),
+            1,
+            "server entry must survive gc"
+        );
+    }
+
+    #[test]
+    fn server_entry_routes_handshake_after_ttl() {
+        let mut router = Router::new();
+        let key = target_key();
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: None,
+                has_server: true,
+                inserted: Instant::now() - Duration::from_secs(60 * 60),
+            },
+        );
+
+        let client_hs = HandshakeMessage {
+            mode: MODE_FROM_CLIENT,
+            noise: vec![10, 20, 30],
+            peer_address: None,
+            relay_address: None,
+        };
+        let encoded = hyperdht_messages::encode_handshake_to_bytes(&client_hs).unwrap();
+
+        let action = router
+            .route_handshake(Some(&key), &peer("2.3.4.5", 3000), &encoded)
+            .unwrap();
+        assert!(
+            matches!(action, HandshakeAction::HandleLocally(_)),
+            "server entry must still route handshakes after TTL expiry window"
+        );
+    }
+
+    #[test]
+    fn server_entry_removed_by_delete() {
+        let mut router = Router::new();
+        let key = target_key();
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: None,
+                has_server: true,
+                inserted: Instant::now(),
+            },
+        );
+
+        assert!(router.get(&key).is_some());
+        router.delete(&key);
+        assert!(
+            router.get(&key).is_none(),
+            "delete() must remove server entries (unregister lifecycle)"
+        );
         assert_eq!(router.forwards.len(), 0);
     }
 
@@ -505,6 +709,134 @@ mod tests {
             }
             other => panic!("Expected Relay, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn route_handshake_local_server_handles_locally() {
+        let mut router = Router::new();
+        let key = target_key();
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: None,
+                has_server: true,
+                inserted: Instant::now(),
+            },
+        );
+
+        let client_hs = HandshakeMessage {
+            mode: MODE_FROM_CLIENT,
+            noise: vec![10, 20, 30],
+            peer_address: None,
+            relay_address: None,
+        };
+        let encoded = hyperdht_messages::encode_handshake_to_bytes(&client_hs).unwrap();
+
+        let action = router
+            .route_handshake(Some(&key), &peer("2.3.4.5", 3000), &encoded)
+            .unwrap();
+        match action {
+            HandshakeAction::HandleLocally(hs) => {
+                assert_eq!(hs.noise, vec![10, 20, 30]);
+            }
+            other => panic!("Expected HandleLocally, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_handshake_relayed_to_local_server() {
+        let mut router = Router::new();
+        let key = target_key();
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: None,
+                has_server: true,
+                inserted: Instant::now(),
+            },
+        );
+
+        let relayed_hs = HandshakeMessage {
+            mode: MODE_FROM_RELAY,
+            noise: vec![40, 50],
+            peer_address: Some(peer("1.1.1.1", 2000)),
+            relay_address: None,
+        };
+        let encoded = hyperdht_messages::encode_handshake_to_bytes(&relayed_hs).unwrap();
+
+        let action = router
+            .route_handshake(Some(&key), &peer("9.9.9.9", 5000), &encoded)
+            .unwrap();
+        match action {
+            HandshakeAction::HandleLocally(hs) => {
+                assert_eq!(hs.noise, vec![40, 50]);
+                assert_eq!(hs.peer_address.unwrap().host, "1.1.1.1");
+            }
+            other => panic!("Expected HandleLocally for relay-to-server, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_handshake_self_announce_then_relay() {
+        let mut router = Router::new();
+        let pk_hash = [0xbb; 32];
+
+        router.set(
+            &pk_hash,
+            ForwardEntry {
+                relay: Some(peer("10.0.0.5", 4000)),
+                has_server: false,
+                inserted: Instant::now(),
+            },
+        );
+
+        let client_hs = HandshakeMessage {
+            mode: MODE_FROM_CLIENT,
+            noise: vec![1, 2, 3, 4],
+            peer_address: None,
+            relay_address: None,
+        };
+        let encoded = hyperdht_messages::encode_handshake_to_bytes(&client_hs).unwrap();
+
+        let action = router
+            .route_handshake(Some(&pk_hash), &peer("8.8.8.8", 6000), &encoded)
+            .unwrap();
+        match action {
+            HandshakeAction::Relay { to, .. } => {
+                assert_eq!(to.host, "10.0.0.5");
+                assert_eq!(to.port, 4000);
+            }
+            other => panic!("Expected Relay to server via self-announce entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_handshake_expired_entry_falls_through() {
+        let mut router = Router::new();
+        router.ttl = Duration::from_millis(1);
+        let key = target_key();
+
+        router.set(
+            &key,
+            ForwardEntry {
+                relay: Some(peer("9.9.9.9", 5000)),
+                has_server: false,
+                inserted: Instant::now() - Duration::from_secs(1),
+            },
+        );
+
+        let client_hs = HandshakeMessage {
+            mode: MODE_FROM_CLIENT,
+            noise: vec![10, 20, 30],
+            peer_address: None,
+            relay_address: None,
+        };
+        let encoded = hyperdht_messages::encode_handshake_to_bytes(&client_hs).unwrap();
+
+        let action = router
+            .route_handshake(Some(&key), &peer("2.3.4.5", 3000), &encoded)
+            .unwrap();
+        assert!(matches!(action, HandshakeAction::CloserNodes));
     }
 
     #[test]

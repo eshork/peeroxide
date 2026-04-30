@@ -1,0 +1,38 @@
+[package]
+name = "peeroxide-cli"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+repository = "https://github.com/Rightbracket/peeroxide"
+description = "Command-line interface for the peeroxide P2P networking stack"
+
+[[bin]]
+name = "peeroxide"
+path = "src/main.rs"
+
+[dependencies]
+peeroxide = { path = "../peeroxide" }
+peeroxide-dht = { path = "../peeroxide-dht" }
+libudx = { path = "../libudx" }
+clap = { version = "4", features = ["derive"] }
+clap_mangen = "0.2"
+tokio = { version = "1", features = ["full", "signal"] }
+toml = "0.8"
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+indicatif = "0.17"
+futures = "0.3"
+crc32c = "0.6"
+rand = "0.9"
+indexmap = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"

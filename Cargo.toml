@@ -4,6 +4,7 @@ members = [
     "libudx",
     "peeroxide-dht",
     "peeroxide",
+    "peeroxide-cli",
 ]
 
 [workspace.package]

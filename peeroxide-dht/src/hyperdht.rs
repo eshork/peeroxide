@@ -11,7 +11,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use libudx::{UdxAsyncStream, UdxRuntime};
+use libudx::{UdxAsyncStream, UdxRuntime, UdxSocket};
 
 use crate::blind_relay::{BlindRelayClient, RelayError};
 use crate::crypto::{
@@ -33,7 +33,7 @@ use crate::noise::Keypair as NoiseKeypair;
 use crate::noise_wrap::{NoiseWrap, NoiseWrapResult};
 use crate::peer::NodeId;
 use crate::persistent::{
-    HandlerReply, IncomingHyperRequest, Persistent, PersistentConfig,
+    HandlerReply, IncomingHyperRequest, Persistent, PersistentConfig, PersistentStats,
 };
 use crate::protomux::Mux;
 use crate::router::{ForwardEntry, HandshakeAction, HolepunchAction, Router};
@@ -64,6 +64,24 @@ fn is_addr_private(host: &str) -> bool {
         || ip.is_unspecified()
         || ip.is_documentation()
         || ip.octets()[0] == 100 && ip.octets()[1] >= 64 && ip.octets()[1] <= 127 // CGN
+}
+
+/// Determines whether a direct connection should be attempted instead of holepunching.
+///
+/// Returns `true` (direct connect) when ANY of:
+/// - The handshake was NOT relayed (client reached server directly)
+/// - Server reports FIREWALL_OPEN
+/// - Server has no holepunch relays (can't holepunch even if we wanted to)
+/// - Both peers share the same host address
+///
+/// Matches Node.js connect.js decision logic.
+pub fn should_direct_connect(
+    relayed: bool,
+    firewall: u64,
+    remote_holepunchable: bool,
+    same_host: bool,
+) -> bool {
+    !relayed || firewall == FIREWALL_OPEN || !remote_holepunchable || same_host
 }
 
 #[derive(Debug, Error)]
@@ -257,6 +275,8 @@ pub struct MutablePutResult {
     pub seq: u64,
     /// Signature over the stored value.
     pub signature: [u8; 64],
+    /// Number of commit-phase requests that timed out.
+    pub commit_timeouts: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -308,7 +328,7 @@ pub struct PeerConnection {
     /// The UDX socket underlying this connection. Public so relay flows
     /// in downstream crates can reuse the control channel's socket for
     /// data streams (matching Node.js behaviour).
-    pub socket: libudx::UdxSocket,
+    pub socket: Arc<UdxSocket>,
     _relay_task: Option<JoinHandle<()>>,
 }
 
@@ -317,7 +337,7 @@ impl PeerConnection {
     pub fn new(
         stream: SecretStream<UdxAsyncStream>,
         remote_public_key: [u8; 32],
-        socket: libudx::UdxSocket,
+        socket: Arc<UdxSocket>,
         relay_task: Option<JoinHandle<()>>,
     ) -> Self {
         Self {
@@ -334,7 +354,7 @@ impl PeerConnection {
         stream: SecretStream<UdxAsyncStream>,
         remote_public_key: [u8; 32],
         remote_addr: std::net::SocketAddr,
-        socket: libudx::UdxSocket,
+        socket: Arc<UdxSocket>,
         relay_task: Option<JoinHandle<()>>,
     ) -> Self {
         Self {
@@ -414,6 +434,12 @@ impl HyperDhtConfig {
     }
 }
 
+// ── AdminRequest ──────────────────────────────────────────────────────────────
+
+enum AdminRequest {
+    PersistentStats { reply: oneshot::Sender<PersistentStats> },
+}
+
 // ── HyperDhtHandle ────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -422,6 +448,7 @@ pub struct HyperDhtHandle {
     dht: DhtHandle,
     router: Arc<Mutex<Router>>,
     server_tx: mpsc::UnboundedSender<ServerEvent>,
+    admin_tx: mpsc::UnboundedSender<AdminRequest>,
 }
 
 impl HyperDhtHandle {
@@ -764,6 +791,7 @@ impl HyperDhtHandle {
             .await?;
 
         let mut closest_nodes = Vec::new();
+        let mut commit_timeouts: u32 = 0;
 
         for reply in &replies {
             closest_nodes.push(reply.from.clone());
@@ -773,7 +801,7 @@ impl HyperDhtHandle {
                 None => continue,
             };
 
-            let _ = self
+            if let Err(DhtError::RequestFailed(_)) = self
                 .dht
                 .request(
                     UserRequestParams {
@@ -785,7 +813,10 @@ impl HyperDhtHandle {
                     &reply.from.host,
                     reply.from.port,
                 )
-                .await;
+                .await
+            {
+                commit_timeouts += 1;
+            }
         }
 
         Ok(MutablePutResult {
@@ -793,6 +824,7 @@ impl HyperDhtHandle {
             closest_nodes,
             seq,
             signature,
+            commit_timeouts,
         })
     }
 
@@ -859,6 +891,16 @@ impl HyperDhtHandle {
         self.dht.local_port().await.map_err(HyperDhtError::Dht)
     }
 
+    /// Returns the DHT server socket for multiplexing UDX streams.
+    pub async fn server_socket(&self) -> Result<Option<Arc<UdxSocket>>, HyperDhtError> {
+        self.dht.server_socket().await.map_err(HyperDhtError::Dht)
+    }
+
+    /// Returns the actual listen socket (bound to the advertised server port).
+    pub async fn listen_socket(&self) -> Result<Option<Arc<UdxSocket>>, HyperDhtError> {
+        self.dht.listen_socket().await.map_err(HyperDhtError::Dht)
+    }
+
     /// Access the shared router state.
     pub fn router(&self) -> &Arc<Mutex<Router>> {
         &self.router
@@ -867,6 +909,15 @@ impl HyperDhtHandle {
     /// Access the underlying DHT handle.
     pub fn dht(&self) -> &DhtHandle {
         &self.dht
+    }
+
+    /// Returns persistent storage statistics collected from the request handler.
+    pub async fn persistent_stats(&self) -> Result<PersistentStats, HyperDhtError> {
+        let (tx, rx) = oneshot::channel();
+        self.admin_tx
+            .send(AdminRequest::PersistentStats { reply: tx })
+            .map_err(|_| HyperDhtError::Destroyed)?;
+        rx.await.map_err(|_| HyperDhtError::Destroyed)
     }
 
     /// Mark a target as having a local server available.
@@ -1154,11 +1205,12 @@ impl HyperDhtHandle {
             "handshake complete, deciding connection path"
         );
 
-        if !hs_result.relayed
-            || remote_payload.firewall == FIREWALL_OPEN
-            || !remote_holepunchable
-            || hs_result.server_address.host == hs_result.client_address.host
-        {
+        if should_direct_connect(
+            hs_result.relayed,
+            remote_payload.firewall,
+            remote_holepunchable,
+            hs_result.server_address.host == hs_result.client_address.host,
+        ) {
             // Prefer first non-private address from the remote's advertised list,
             // falling back to the server address extracted from the handshake reply.
             let connect_addr = remote_payload
@@ -1177,7 +1229,8 @@ impl HyperDhtHandle {
                 local_stream_id,
                 remote_udx: remote_payload.udx.clone(),
             };
-            return establish_stream(&direct, runtime).await;
+            let shared = self.server_socket().await?;
+            return establish_stream(&direct, runtime, shared).await;
         }
 
         // Phase 2: Holepunch rounds via PEER_HOLEPUNCH relay
@@ -1193,7 +1246,8 @@ impl HyperDhtHandle {
                 local_stream_id,
             )
             .await?;
-        establish_stream(&hp_result, runtime).await
+        let shared = self.server_socket().await?;
+        establish_stream(&hp_result, runtime, shared).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1465,9 +1519,14 @@ impl HyperDhtHandle {
 ///
 /// Call after [`HyperDhtHandle::connect`] to upgrade a [`ConnectResult`]
 /// into an encrypted bidirectional stream.
+///
+/// When `shared_socket` is provided, the stream reuses that socket (matching
+/// the Node.js single-socket multiplexing model). Otherwise a fresh socket
+/// bound to an ephemeral port is created.
 pub async fn establish_stream(
     result: &ConnectResult,
     runtime: &UdxRuntime,
+    shared_socket: Option<Arc<UdxSocket>>,
 ) -> Result<PeerConnection, HyperDhtError> {
     let remote_udx = result
         .remote_udx
@@ -1487,11 +1546,13 @@ pub async fn establish_stream(
     );
 
     tracing::debug!(local_id = result.local_stream_id, remote_id, %addr, "establishing UDX stream");
-    let socket = runtime.create_socket().await?;
-    socket
-        // SAFETY: "0.0.0.0:0" is a valid socket address literal.
-        .bind("0.0.0.0:0".parse().expect("valid addr"))
-        .await?;
+    let socket = if let Some(s) = shared_socket {
+        s
+    } else {
+        let s = runtime.create_socket().await?;
+        s.bind("0.0.0.0:0".parse().expect("valid addr")).await?;
+        Arc::new(s)
+    };
     let stream = runtime.create_stream(result.local_stream_id).await?;
     stream.connect(&socket, remote_id, addr).await?;
 
@@ -1754,6 +1815,7 @@ pub async fn spawn(
 
     let router = Arc::new(Mutex::new(Router::new()));
     let (server_tx, server_rx) = mpsc::unbounded_channel();
+    let (admin_tx, admin_rx) = mpsc::unbounded_channel::<AdminRequest>();
 
     let request_task = tokio::spawn(run_request_handler(
         request_rx,
@@ -1761,6 +1823,7 @@ pub async fn spawn(
         dht_handle.clone(),
         Arc::clone(&router),
         server_tx.clone(),
+        admin_rx,
     ));
 
     let join = tokio::spawn(async move {
@@ -1785,6 +1848,7 @@ pub async fn spawn(
         dht: dht_handle,
         router,
         server_tx,
+        admin_tx,
     };
     Ok((join, handle, server_rx))
 }
@@ -1795,10 +1859,26 @@ async fn run_request_handler(
     dht: DhtHandle,
     router: Arc<Mutex<Router>>,
     server_tx: mpsc::UnboundedSender<ServerEvent>,
+    mut admin_rx: mpsc::UnboundedReceiver<AdminRequest>,
 ) {
     let mut storage = Persistent::new(config);
 
-    while let Some(mut req) = rx.recv().await {
+    loop {
+        let mut req = tokio::select! {
+            biased;
+            Some(admin_req) = admin_rx.recv() => {
+                match admin_req {
+                    AdminRequest::PersistentStats { reply } => {
+                        let _ = reply.send(storage.stats());
+                    }
+                }
+                continue;
+            }
+            req = rx.recv() => match req {
+                Some(r) => r,
+                None => break,
+            },
+        };
         match req.command {
             PEER_HANDSHAKE => {
                 tracing::debug!(from = %format!("{}:{}", req.from.host, req.from.port), "request: PEER_HANDSHAKE");
@@ -1835,15 +1915,35 @@ async fn run_request_handler(
             }
             ANNOUNCE => {
                 tracing::debug!(from = %format!("{}:{}", req.from.host, req.from.port), "request: ANNOUNCE");
-                if let Some(nid) = node_id {
-                    storage.on_announce(&incoming, &nid)
+                let own_id = dht.table_id().await.ok().flatten();
+                if let Some(nid) = own_id {
+                    let result = storage.on_announce(&incoming, &nid);
+                    if !matches!(result, HandlerReply::Silent) {
+                        if let Some(target) = incoming.target {
+                            if let Ok(mut r) = router.lock() {
+                                let already_server = r.get(&target).is_some_and(|e| e.has_server);
+                                if !already_server {
+                                    r.set(
+                                        &target,
+                                        ForwardEntry {
+                                            relay: Some(incoming.from.clone()),
+                                            has_server: false,
+                                            inserted: std::time::Instant::now(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    result
                 } else {
                     HandlerReply::Silent
                 }
             }
             UNANNOUNCE => {
                 tracing::debug!(from = %format!("{}:{}", req.from.host, req.from.port), "request: UNANNOUNCE");
-                if let Some(nid) = node_id {
+                let own_id = dht.table_id().await.ok().flatten();
+                if let Some(nid) = own_id {
                     storage.on_unannounce(&incoming, &nid)
                 } else {
                     HandlerReply::Silent
@@ -2074,6 +2174,7 @@ fn to_hex(bytes: impl AsRef<[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hyperdht_messages::{FIREWALL_CONSISTENT, FIREWALL_RANDOM};
 
     #[test]
     fn hyperdht_config_defaults() {
@@ -2199,7 +2300,7 @@ mod tests {
             local_stream_id: 1,
             remote_udx: None,
         };
-        let err = establish_stream(&result, &runtime).await.unwrap_err();
+        let err = establish_stream(&result, &runtime, None).await.unwrap_err();
         assert!(matches!(err, HyperDhtError::StreamEstablishment(_)));
     }
 
@@ -2223,7 +2324,7 @@ mod tests {
             local_stream_id: next_stream_id(),
             remote_udx: Some(UdxInfo { version: 1, reusable_socket: true, id: 42, seq: 0 }),
         };
-        let err = establish_stream(&result, &runtime).await.unwrap_err();
+        let err = establish_stream(&result, &runtime, None).await.unwrap_err();
         assert!(matches!(err, HyperDhtError::StreamEstablishment(_)));
     }
 
@@ -2252,7 +2353,7 @@ mod tests {
                 seq: 0,
             }),
         };
-        let err = establish_stream(&result, &runtime).await.unwrap_err();
+        let err = establish_stream(&result, &runtime, None).await.unwrap_err();
         assert!(matches!(err, HyperDhtError::StreamEstablishment(_)));
     }
 
@@ -2274,5 +2375,103 @@ mod tests {
         assert_eq!(cfg.dht.bootstrap[2], DEFAULT_BOOTSTRAP[2]);
         assert_eq!(cfg.dht.port, 0);
         assert!(cfg.dht.firewalled);
+    }
+
+    #[test]
+    fn direct_connect_when_not_relayed() {
+        assert!(should_direct_connect(false, FIREWALL_RANDOM, true, false));
+    }
+
+    #[test]
+    fn direct_connect_when_firewall_open() {
+        assert!(should_direct_connect(true, FIREWALL_OPEN, true, false));
+    }
+
+    #[test]
+    fn direct_connect_when_not_holepunchable() {
+        assert!(should_direct_connect(true, FIREWALL_RANDOM, false, false));
+    }
+
+    #[test]
+    fn direct_connect_when_same_host() {
+        assert!(should_direct_connect(true, FIREWALL_RANDOM, true, true));
+    }
+
+    #[test]
+    fn holepunch_when_relayed_firewalled_holepunchable_different_host() {
+        assert!(!should_direct_connect(true, FIREWALL_RANDOM, true, false));
+        assert!(!should_direct_connect(true, FIREWALL_CONSISTENT, true, false));
+        assert!(!should_direct_connect(true, FIREWALL_UNKNOWN, true, false));
+    }
+
+    #[test]
+    fn direct_connect_all_conditions_false_except_one() {
+        assert!(should_direct_connect(false, FIREWALL_RANDOM, true, false));
+        assert!(should_direct_connect(true, FIREWALL_OPEN, true, false));
+        assert!(should_direct_connect(true, FIREWALL_RANDOM, false, false));
+        assert!(should_direct_connect(true, FIREWALL_RANDOM, true, true));
+    }
+
+    // ── Scenario-matrix topology tests ───────────────────────────────────
+    //
+    // These map to the user-defined topology matrix:
+    //   T1: both open
+    //   T2: sender firewalled, receiver open
+    //   T3: sender open, receiver firewalled
+    //   T4: both firewalled, same network
+    //   T5: both firewalled, different networks
+    //   T6: one behind CGNAT
+    //
+    // For each topology we test the connection decision from the
+    // *connector's* perspective (the one calling should_direct_connect).
+
+    #[test]
+    fn topology_both_open() {
+        // T1: Neither side relayed, both FIREWALL_OPEN → direct connect
+        assert!(should_direct_connect(false, FIREWALL_OPEN, true, false));
+    }
+
+    #[test]
+    fn topology_sender_firewalled_receiver_open() {
+        // T2: Sender is firewalled, discovered receiver via relay (relayed=true).
+        // Receiver is FIREWALL_OPEN → direct connect (firewall==OPEN branch).
+        assert!(should_direct_connect(true, FIREWALL_OPEN, true, false));
+    }
+
+    #[test]
+    fn topology_sender_open_receiver_firewalled() {
+        // T3: Sender is open. Found receiver via relay (relayed=true).
+        // Receiver is firewalled (CONSISTENT), holepunchable → holepunch.
+        assert!(!should_direct_connect(true, FIREWALL_CONSISTENT, true, false));
+        // If receiver is NOT holepunchable → direct connect (fallback).
+        assert!(should_direct_connect(true, FIREWALL_CONSISTENT, false, false));
+    }
+
+    #[test]
+    fn topology_both_firewalled_same_network() {
+        // T4: Both firewalled, same network (same_host=true).
+        // same_host → direct connect regardless of firewall state.
+        assert!(should_direct_connect(true, FIREWALL_RANDOM, true, true));
+        assert!(should_direct_connect(true, FIREWALL_CONSISTENT, true, true));
+    }
+
+    #[test]
+    fn topology_both_firewalled_different_networks() {
+        // T5: Both firewalled, different networks.
+        // When holepunchable → holepunch attempt.
+        assert!(!should_direct_connect(true, FIREWALL_RANDOM, true, false));
+        assert!(!should_direct_connect(true, FIREWALL_CONSISTENT, true, false));
+        // When NOT holepunchable → direct connect fallback (no HP relay).
+        assert!(should_direct_connect(true, FIREWALL_RANDOM, false, false));
+        assert!(should_direct_connect(true, FIREWALL_CONSISTENT, false, false));
+    }
+
+    #[test]
+    fn topology_one_behind_cgnat() {
+        // T6: CGNAT peer is FIREWALL_RANDOM and holepunchable.
+        // Non-CGNAT peer connects via relay → holepunch.
+        assert!(!should_direct_connect(true, FIREWALL_RANDOM, true, false));
+        // CGNAT peer with no holepunch support → direct connect fallback.
+        assert!(should_direct_connect(true, FIREWALL_RANDOM, false, false));
     }
 }

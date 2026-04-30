@@ -191,6 +191,14 @@ impl RecordCache {
         self.total = 0;
     }
 
+    pub fn record_count(&self) -> usize {
+        self.total
+    }
+
+    pub fn topic_count(&self) -> usize {
+        self.entries.len()
+    }
+
     fn evict_oldest(&mut self) {
         // Find the globally oldest entry.
         let oldest_key = self
@@ -286,6 +294,14 @@ impl LruCache {
     pub fn destroy(&mut self) {
         self.entries.clear();
     }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 // ── RouterEntry ───────────────────────────────────────────────────────────────
@@ -294,6 +310,18 @@ struct RouterEntry {
     #[allow(dead_code)]
     relay: Ipv4Peer,
     record: Vec<u8>,
+}
+
+// ── PersistentStats ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct PersistentStats {
+    pub records: usize,
+    pub record_topics: usize,
+    pub mutables: usize,
+    pub immutables: usize,
+    pub router_entries: usize,
 }
 
 // ── Persistent ────────────────────────────────────────────────────────────────
@@ -714,7 +742,16 @@ impl Persistent {
         HandlerReply::Value(self.immutables.get(&target_key))
     }
 
-    /// Destroy all storage.
+    pub fn stats(&self) -> PersistentStats {
+        PersistentStats {
+            records: self.records.record_count(),
+            record_topics: self.records.topic_count(),
+            mutables: self.mutables.len(),
+            immutables: self.immutables.len(),
+            router_entries: self.router.len(),
+        }
+    }
+
     pub fn destroy(&mut self) {
         self.records.destroy();
         self.bumps.destroy();
@@ -1088,4 +1125,71 @@ mod tests {
             HandlerReply::Silent
         ));
     }
+
+    // ── stats tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn lru_cache_len_empty() {
+        let cache = LruCache::new(100, Duration::from_secs(60));
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn lru_cache_len_after_set() {
+        let mut cache = LruCache::new(100, Duration::from_secs(60));
+        cache.set("k1", b"v1".to_vec());
+        cache.set("k2", b"v2".to_vec());
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn record_cache_record_count() {
+        let mut cache = RecordCache::new(100, Duration::from_secs(60), 20);
+        assert_eq!(cache.record_count(), 0);
+        cache.add("topic1", [0x01u8; 32], b"r1".to_vec());
+        cache.add("topic1", [0x02u8; 32], b"r2".to_vec());
+        cache.add("topic2", [0x03u8; 32], b"r3".to_vec());
+        assert_eq!(cache.record_count(), 3);
+    }
+
+    #[test]
+    fn record_cache_topic_count() {
+        let mut cache = RecordCache::new(100, Duration::from_secs(60), 20);
+        assert_eq!(cache.topic_count(), 0);
+        cache.add("topic1", [0x01u8; 32], b"r1".to_vec());
+        cache.add("topic2", [0x02u8; 32], b"r2".to_vec());
+        assert_eq!(cache.topic_count(), 2);
+        cache.add("topic1", [0x03u8; 32], b"r3".to_vec());
+        assert_eq!(cache.topic_count(), 2);
+    }
+
+    #[test]
+    fn persistent_stats_empty() {
+        let p = make_persistent();
+        let s = p.stats();
+        assert_eq!(s.records, 0);
+        assert_eq!(s.record_topics, 0);
+        assert_eq!(s.mutables, 0);
+        assert_eq!(s.immutables, 0);
+        assert_eq!(s.router_entries, 0);
+    }
+
+    #[test]
+    fn persistent_stats_after_immutable_put() {
+        let mut p = make_persistent();
+        let data = b"stats test data".to_vec();
+        let target = hash(&data);
+        let req = IncomingHyperRequest {
+            command: crate::hyperdht_messages::IMMUTABLE_PUT,
+            target: Some(target),
+            token: Some([0u8; 32]),
+            value: Some(data),
+            from: dummy_peer(),
+            id: None,
+        };
+        p.on_immutable_put(&req);
+        let s = p.stats();
+        assert_eq!(s.immutables, 1);
+    }
 }
+
