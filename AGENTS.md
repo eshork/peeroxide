@@ -15,11 +15,6 @@ The three library crates are published to crates.io and have external users. `pe
 
 ## Key Files
 
-- `DOCS_PLAN.md` — Documentation build progress tracker (checkbox-based)
-- `ISSUES.md` — Source-level issues discovered during documentation and review
-- `PR-TODOS.md` — Outstanding pre-merge checklist
-- `RALPH_PROMPT.md` — Ralph Loop spec for automated documentation build
-- `API_CHANGES.md` — Public API surface changes relative to last release
 - `docs/` — mdBook documentation source (build: `mdbook build docs/`)
 - `.github/workflows/` — CI (`ci.yml`), release (`release.yml`), docs (`docs-site.yml`)
 
@@ -86,10 +81,19 @@ If you find yourself needing to change a library signature to satisfy a CLI feat
 
 Do not mark work complete until both suites are green.
 
+## Task Artifacts
+
+Task-specific files (planning docs, progress trackers, spec drafts, Ralph Loop prompts, PR checklists, etc.) must **not** be committed to git unless explicitly directed by the human.
+
+Before opening or merging a PR, scan the branch's added files (`git diff --name-only --diff-filter=A main`) and flag any task-artifact files to the human. Examples of files that should not be in git:
+
+- `*_PLAN.md`, `*_PROMPT.md`, `*_TODOS.md`
+- `DOCS_PLAN.md`, `RALPH_PROMPT.md`, `PR-TODOS.md`
+- Any per-task progress trackers or scratch notes
+
+If such a file appears, verify with the human that its inclusion is intentional before committing or pushing.
+
 ## Agent Notes
 
-- Do not modify `peeroxide-cli/DEADDROP_V2.md` — reference only.
 - Do not push to remote — commits are local until explicitly requested.
-- All documentation lives under `docs/` — use `mdbook build docs/` to verify.
-- Echo protocol is documented exactly once in `docs/src/announce/echo-protocol.md`.
 - MSRV: Rust 1.85 (2024 edition).
