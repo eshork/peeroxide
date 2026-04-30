@@ -100,13 +100,10 @@ If such a file appears, verify with the human that its inclusion is intentional 
 
 ## PR Checklist
 
-Before opening a PR and before merging, verify:
+The full checklist is in [CONTRIBUTING.md](./CONTRIBUTING.md). **Check it before opening a PR or merging.** Key gates:
 
-**Before opening a PR:**
-- All local tests pass (both suites — see Test Completeness)
-- No task-artifact files in the branch's added files (see Task Artifacts)
-- No public API breaking changes without explicit human approval (see API Breaking Change Policy)
-
-**Before merging:**
-- GitHub Actions CI is green (all checks pass)
-- PR has been reviewed
+- Both test suites green (see Test Completeness above)
+- Clippy clean
+- No API breaking changes without explicit human approval
+- No task-artifact files in the branch (see Task Artifacts above)
+- CI green before merge
