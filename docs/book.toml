@@ -1,0 +1,15 @@
+[book]
+title = "peeroxide-cli: Technical Reference"
+description = "Architecture, wire formats, and behavioral reference for the peeroxide command-line tools."
+authors = ["peeroxide contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+no-section-label = false
