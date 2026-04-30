@@ -399,6 +399,7 @@ async fn test_generate_man() {
         "peeroxide-announce.1",
         "peeroxide-ping.1",
         "peeroxide-cp.1",
+        "peeroxide-config.1",
         "peeroxide-deaddrop.1",
     ];
 

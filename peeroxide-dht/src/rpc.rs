@@ -106,6 +106,10 @@ pub struct PingResponse {
     pub id: Option<NodeId>,
     /// Round-trip time for the ping.
     pub rtt: Duration,
+    /// Reflexive address: our address as seen by the remote node.
+    pub to: Option<Ipv4Peer>,
+    /// Nodes returned by the remote peer (closer nodes from its routing table).
+    pub closer_nodes: Vec<Ipv4Peer>,
 }
 
 #[derive(Debug, Clone)]
@@ -576,14 +580,14 @@ impl DhtNode {
                 self.add_node_from_network(from.clone(), id);
 
                 if self.needs_id_update && to.port != 0 && !to.host.is_empty() {
-                    self.addr_samples.push(to);
+                    self.addr_samples.push(to.clone());
                 }
 
                 let data = IoResponseData {
                     from: from.clone(),
                     from_id: id,
                     token,
-                    closer_nodes,
+                    closer_nodes: closer_nodes.clone(),
                     error,
                     value: value.clone(),
                     rtt,
@@ -622,11 +626,11 @@ impl DhtNode {
                         from,
                         id,
                         token,
-                        closer_nodes: vec![],
+                        closer_nodes,
                         error,
                         value,
                         rtt,
-                    });
+                    }, to);
                 }
             }
         }
@@ -818,13 +822,21 @@ impl DhtNode {
         &mut self,
         standalone: StandaloneRequest,
         resp: ResponseData,
+        reflexive_addr: Ipv4Peer,
     ) {
         match standalone {
             StandaloneRequest::Ping(reply_tx) => {
+                let to = if reflexive_addr.port != 0 && !reflexive_addr.host.is_empty() {
+                    Some(reflexive_addr)
+                } else {
+                    None
+                };
                 let _ = reply_tx.send(Ok(PingResponse {
                     from: resp.from,
                     id: resp.id,
                     rtt: resp.rtt,
+                    to,
+                    closer_nodes: resp.closer_nodes,
                 }));
             }
             StandaloneRequest::UserRequest(reply_tx) => {
@@ -1076,12 +1088,13 @@ impl DhtNode {
                 port,
                 reply_tx,
             } => {
+                let target = self.table.lock().ok().map(|t| *t.id());
                 let params = RequestParams {
                     to: Ipv4Peer { host, port },
                     token: None,
                     internal: true,
-                    command: CMD_PING,
-                    target: None,
+                    command: CMD_FIND_NODE,
+                    target,
                     value: None,
                 };
                 if let Some(tid) = self.io.create_request(params) {

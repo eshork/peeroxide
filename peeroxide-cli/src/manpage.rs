@@ -3,7 +3,7 @@
 use clap::CommandFactory;
 use std::io::Write;
 
-const CONSOLIDATED: &[&str] = &["peeroxide-cp", "peeroxide-deaddrop"];
+const CONSOLIDATED: &[&str] = &["peeroxide-cp", "peeroxide-config", "peeroxide-deaddrop"];
 
 /// Generate all man pages and return them as (filename_stem, content) pairs.
 pub fn generate_all() -> Vec<(String, Vec<u8>)> {
@@ -176,7 +176,13 @@ fn write_consolidated_commands(buf: &mut Vec<u8>, cmd: &clap::Command, parent_na
 fn is_global_arg(arg: &clap::Arg) -> bool {
     matches!(
         arg.get_id().as_str(),
-        "config" | "no_default_config" | "public" | "no_public" | "bootstrap" | "help"
+        "config"
+            | "no_default_config"
+            | "public"
+            | "no_public"
+            | "firewalled"
+            | "bootstrap"
+            | "help"
     )
 }
 
@@ -253,7 +259,10 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              file transfer, and anonymous messaging over the Hyperswarm-compatible network.\n\n\
              The tool connects to the public Hyperswarm DHT by default, or to custom \
              bootstrap nodes specified via --bootstrap flags or the configuration file. \
-             All subcommands share a common set of global options for network configuration.",
+             All subcommands share a common set of global options for network configuration.\n\n\
+             Use --public to mark this node as publicly reachable (not behind NAT), \
+             --no-public to force NAT mode, or --firewalled to simulate a consistently \
+             firewalled node for testing firewall-specific connection paths.",
         ),
         "peeroxide-node" => Some(
             "Run a long-lived DHT coordination (bootstrap) node that participates in the \
@@ -289,11 +298,19 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              terminated by SIGTERM or SIGINT.",
         ),
         "peeroxide-ping" => Some(
-            "Diagnose reachability of a DHT node or peer. Supports three target forms:\n\n\
+            "Diagnose reachability of a DHT node or peer. Supports three target forms, \
+             plus a no-target bootstrap check mode:\n\n\
+             (no target) — Ping all configured bootstrap nodes and report your public \
+             address, NAT type, and the number of DHT peers each bootstrap knows about.\n\n\
              host:port — Send a DHT-level UDP ping to the given address.\n\n\
              @<pubkey> — Look up the peer by public key in the DHT, then attempt a \
              Noise-encrypted connection and PING/PONG echo exchange.\n\n\
              <topic> — Look up the topic in the DHT, then ping all discovered peers.\n\n\
+             In bootstrap check mode (no target), the resolved bootstrap list comes from \
+             the config file, --bootstrap flags, or public defaults (with --public). The \
+             output includes per-node reachability and routing table size, your reflexive \
+             public address, a NAT type classification (open, consistent, random, or \
+             multi-homed), and the total unique peers discovered across all bootstraps.\n\n\
              For address pings, RTT is measured from the UDP request/response. For peer \
              pings, the full connection setup (DHT lookup + Noise handshake + echo) is timed.\n\n\
              Use --count to send multiple probes with summary statistics. Use --connect with \
@@ -340,24 +357,42 @@ fn long_about_for(name: &str) -> Option<&'static str> {
         ),
         "peeroxide-deaddrop-leave" => Some(
             "Leave an anonymous message at a dead drop location in the DHT. The message \
-             is encrypted with a passphrase (prompted interactively or read from --passphrase) \
-             and stored as a mutable DHT record.\n\n\
-             The drop location is derived from the topic string. Both sender and receiver \
-             must use the same topic and passphrase to exchange messages. The message is \
-             read from stdin.\n\n\
+             is encrypted with a passphrase-derived keypair and stored as a mutable DHT \
+             record.\n\n\
+             The passphrase can be provided inline with --passphrase or prompted \
+             interactively (hidden input) with --interactive-passphrase. The keypair \
+             is deterministically derived from the passphrase, so both sender and \
+             receiver must use the same passphrase to exchange messages.\n\n\
+             The positional argument is a file path to read, or '-' to read from stdin. \
              The DHT record is stored with acknowledgement confirmation from routing table \
              peers. Records persist in the DHT as long as nodes cache them (typically hours \
              to days depending on network conditions).",
         ),
         "peeroxide-deaddrop-pickup" => Some(
-            "Retrieve a message from a dead drop location in the DHT. The message is \
-             looked up by topic and decrypted using the passphrase (prompted interactively \
-             or read from --passphrase).\n\n\
-             The retrieved message is written to stdout. If no message is found at the \
-             specified location, or if decryption fails (wrong passphrase), an error is \
-             reported.\n\n\
+            "Retrieve a message from a dead drop location in the DHT. The pickup key \
+             can be a 64-character hex public key, a passphrase string (if less than 64 \
+             hex chars), or derived interactively.\n\n\
+             Use --passphrase to supply the passphrase inline, or --interactive-passphrase \
+             to be prompted with hidden input. If a positional key argument is given that \
+             is not valid hex, it is treated as a passphrase.\n\n\
+             The retrieved message is written to stdout (or to a file with --output). If \
+             no message is found at the specified location, or if decryption fails (wrong \
+             passphrase), an error is reported.\n\n\
              The pickup operation is read-only and does not modify or consume the stored \
-             record — the same message can be picked up multiple times by different peers.",
+             record -- the same message can be picked up multiple times by different peers.",
+        ),
+        "peeroxide-config" => Some(
+            "Manage peeroxide configuration files. The config subcommands help with \
+             initial setup and inspection of the TOML-based configuration.\n\n\
+             peeroxide reads its configuration from ~/.config/peeroxide/config.toml by \
+             default. Override the path with --config or the PEEROXIDE_CONFIG environment \
+             variable. Use --no-default-config to ignore the config file entirely.",
+        ),
+        "peeroxide-config-init" => Some(
+            "Generate a commented configuration file with sane defaults. The output is \
+             valid TOML with all options commented out, ready for customization.\n\n\
+             By default the config is printed to stdout. Use --output to write directly \
+             to a file (parent directories are created if needed).",
         ),
         _ => None,
     }
@@ -366,6 +401,10 @@ fn long_about_for(name: &str) -> Option<&'static str> {
 fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
     match name {
         "peeroxide" => Some(&[
+            (
+                "peeroxide --public ping",
+                "Verify bootstrap connectivity and discover your public address:",
+            ),
             (
                 "peeroxide ping 1.2.3.4:49737",
                 "Ping a known DHT bootstrap node:",
@@ -435,6 +474,10 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
         ]),
         "peeroxide-ping" => Some(&[
             (
+                "peeroxide --public ping",
+                "Check bootstrap connectivity and discover your public address:",
+            ),
+            (
                 "peeroxide ping 1.2.3.4:49737",
                 "Send a UDP DHT ping to an address:",
             ),
@@ -483,24 +526,34 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
         ]),
         "peeroxide-deaddrop" => Some(&[
             (
-                "echo 'secret message' | peeroxide deaddrop leave my-drop",
-                "Leave a message (passphrase prompted interactively):",
+                "echo 'secret message' | peeroxide deaddrop leave - --passphrase s3cret",
+                "Leave a message with an inline passphrase (read from stdin):",
             ),
             (
-                "echo 'msg' | peeroxide deaddrop leave my-drop --passphrase s3cret",
-                "Leave with an inline passphrase:",
+                "peeroxide deaddrop leave ./msg.txt --interactive-passphrase",
+                "Leave a file with a prompted passphrase (hidden input):",
             ),
             (
-                "peeroxide deaddrop pickup my-drop",
-                "Pick up a message (passphrase prompted interactively):",
+                "peeroxide deaddrop pickup --passphrase s3cret",
+                "Pick up a message using the same passphrase:",
             ),
             (
-                "peeroxide deaddrop pickup my-drop --passphrase s3cret",
-                "Pick up with an inline passphrase:",
+                "peeroxide deaddrop pickup --interactive-passphrase --output ./msg.txt",
+                "Pick up with prompted passphrase, write to file:",
             ),
             (
-                "peeroxide deaddrop pickup my-drop --output ./msg.txt",
-                "Pick up and write to a file:",
+                "peeroxide deaddrop pickup a1b2c3...64chars",
+                "Pick up using a raw hex public key:",
+            ),
+        ]),
+        "peeroxide-config" => Some(&[
+            (
+                "peeroxide config init",
+                "Print a default config file to stdout:",
+            ),
+            (
+                "peeroxide config init --output ~/.config/peeroxide/config.toml",
+                "Write config to the default location:",
             ),
         ]),
         _ => None,
@@ -510,7 +563,7 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
 fn exit_status_for(name: &str) -> Option<&'static str> {
     match name {
         "peeroxide" | "peeroxide-node" | "peeroxide-lookup" | "peeroxide-announce"
-        | "peeroxide-cp" | "peeroxide-deaddrop" => Some(
+        | "peeroxide-cp" | "peeroxide-config" | "peeroxide-deaddrop" => Some(
             ".TP\n\\fB0\\fR\nSuccess.\n\
              .TP\n\\fB1\\fR\nFailure or partial failure.\n\
              .TP\n\\fB2\\fR\nUsage error (invalid arguments).\n\
@@ -534,6 +587,7 @@ fn see_also_for(name: &str) -> Option<&'static [&'static str]> {
             "peeroxide-announce",
             "peeroxide-ping",
             "peeroxide-cp",
+            "peeroxide-config",
             "peeroxide-deaddrop",
         ]),
         "peeroxide-node" => Some(&["peeroxide"]),
@@ -546,6 +600,7 @@ fn see_also_for(name: &str) -> Option<&'static [&'static str]> {
             "peeroxide",
         ]),
         "peeroxide-cp" => Some(&["peeroxide-deaddrop", "peeroxide"]),
+        "peeroxide-config" => Some(&["peeroxide"]),
         "peeroxide-deaddrop" => Some(&["peeroxide-cp", "peeroxide"]),
         _ => None,
     }

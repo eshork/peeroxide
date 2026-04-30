@@ -2,6 +2,7 @@ use clap::Args;
 use libudx::UdxRuntime;
 use peeroxide::KeyPair;
 use peeroxide_dht::hyperdht::{self, HyperDhtHandle};
+use peeroxide_dht::messages::Ipv4Peer;
 use std::time::{Duration, Instant};
 use tokio::signal;
 
@@ -14,8 +15,9 @@ const ECHO_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Args)]
 pub struct PingArgs {
-    /// Target: host:port, @pubkey, 64-char hex topic, or topic name
-    target: String,
+    /// Target: host:port, @pubkey, 64-char hex topic, or topic name.
+    /// If omitted, pings all configured bootstrap nodes.
+    target: Option<String>,
 
     /// Number of probes (0 = infinite)
     #[arg(long, default_value_t = 1)]
@@ -73,15 +75,28 @@ fn parse_target(input: &str) -> Result<Target, String> {
 }
 
 pub async fn run(args: PingArgs, cfg: &ResolvedConfig) -> i32 {
-    let target = match parse_target(&args.target) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
+    let dht_config = build_dht_config(cfg);
+    let bootstrap_addrs = dht_config.dht.bootstrap.clone();
+
+    let target = match &args.target {
+        Some(t) => {
+            match parse_target(t) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            }
+        }
+        None => {
+            if bootstrap_addrs.is_empty() {
+                eprintln!("error: no target specified and no bootstrap nodes configured.");
+                eprintln!("       Use --public for default network, or specify bootstrap nodes in config.");
+                return 1;
+            }
+            None
         }
     };
-
-    let dht_config = build_dht_config(cfg);
 
     let runtime = match UdxRuntime::new() {
         Ok(r) => r,
@@ -105,13 +120,16 @@ pub async fn run(args: PingArgs, cfg: &ResolvedConfig) -> i32 {
     }
 
     let exit_code = match target {
-        Target::HostPort(host, port) => {
+        None => {
+            run_bootstrap_check(&handle, &args, &bootstrap_addrs).await
+        }
+        Some(Target::HostPort(host, port)) => {
             run_direct_ping(&handle, &args, &host, port).await
         }
-        Target::PubKey(pk) => {
+        Some(Target::PubKey(pk)) => {
             run_pubkey_ping(&handle, &args, &pk, &runtime).await
         }
-        Target::Topic(topic, name) => {
+        Some(Target::Topic(topic, name)) => {
             run_topic_ping(&handle, &args, &topic, &name, &runtime).await
         }
     };
@@ -120,11 +138,388 @@ pub async fn run(args: PingArgs, cfg: &ResolvedConfig) -> i32 {
     let _ = task.await;
     drop(runtime);
 
-    // SIGINT produces 130 per spec; inner functions return SIGINT_EXIT when interrupted
     exit_code
 }
 
 const SIGINT_EXIT: i32 = 130;
+
+#[derive(Debug, Clone, Copy)]
+enum NatType {
+    Open,
+    Consistent,
+    Random,
+    MultiHomed,
+    Unknown,
+}
+
+impl NatType {
+    fn classify(reflexive_addrs: &[Ipv4Peer], local_port: Option<u16>) -> (Self, Option<String>, Option<u16>) {
+        if reflexive_addrs.is_empty() {
+            return (Self::Unknown, None, None);
+        }
+
+        let hosts: Vec<&str> = reflexive_addrs.iter().map(|a| a.host.as_str()).collect();
+        let ports: Vec<u16> = reflexive_addrs.iter().map(|a| a.port).collect();
+
+        let all_same_host = hosts.windows(2).all(|w| w[0] == w[1]);
+        let all_same_port = ports.windows(2).all(|w| w[0] == w[1]);
+
+        if !all_same_host {
+            if reflexive_addrs.len() >= 2 {
+                return (Self::MultiHomed, None, None);
+            }
+            return (Self::Unknown, None, None);
+        }
+
+        let host = Some(hosts[0].to_string());
+
+        if all_same_port {
+            let port = Some(ports[0]);
+            // Open requires: same port as local AND reflexive IP is a local interface address.
+            // Port-preserving NATs pass the port check but fail the IP check.
+            let nat_type = match local_port {
+                Some(lp) if lp == ports[0] && is_local_address(hosts[0]) => Self::Open,
+                _ => Self::Consistent,
+            };
+            (nat_type, host, port)
+        } else {
+            (Self::Random, host, None)
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Open => "open (directly reachable)",
+            Self::Consistent => "consistent (hole-punchable)",
+            Self::Random => "random (not directly hole-punchable)",
+            Self::MultiHomed => "multi-homed (direct connections unreliable — relay required)",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Consistent => "consistent",
+            Self::Random => "random",
+            Self::MultiHomed => "multi-homed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+fn is_local_address(addr: &str) -> bool {
+    use std::net::{IpAddr, SocketAddr, UdpSocket};
+    let ip: IpAddr = match addr.parse() {
+        Ok(ip) => ip,
+        Err(_) => return false,
+    };
+    let bind_addr = SocketAddr::new(ip, 0);
+    UdpSocket::bind(bind_addr).is_ok()
+}
+
+fn parse_host_port(addr: &str) -> Option<(&str, u16)> {
+    let colon = addr.rfind(':')?;
+    let port_str = &addr[colon + 1..];
+    let port: u16 = port_str.parse().ok()?;
+    let host_part = &addr[..colon];
+    // Handle "suggestedIP@hostname:port" format — extract IP before '@'
+    let host = if let Some(at_pos) = host_part.find('@') {
+        &host_part[..at_pos]
+    } else {
+        host_part
+    };
+    Some((host, port))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NatType, Ipv4Peer};
+
+    fn peer(host: &str, port: u16) -> Ipv4Peer {
+        Ipv4Peer { host: host.to_string(), port }
+    }
+
+    #[test]
+    fn classify_open() {
+        let addrs = [
+            peer("127.0.0.1", 5000),
+            peer("127.0.0.1", 5000),
+            peer("127.0.0.1", 5000),
+        ];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
+
+        assert!(matches!(nat, NatType::Open));
+        assert_eq!(host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(port, Some(5000));
+    }
+
+    #[test]
+    fn classify_consistent_port_preserving() {
+        let addrs = [
+            peer("93.184.216.34", 5000),
+            peer("93.184.216.34", 5000),
+            peer("93.184.216.34", 5000),
+        ];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
+
+        assert!(matches!(nat, NatType::Consistent));
+        assert_eq!(host.as_deref(), Some("93.184.216.34"));
+        assert_eq!(port, Some(5000));
+    }
+
+    #[test]
+    fn classify_consistent_port_remapping() {
+        let addrs = [peer("73.42.18.201", 51234), peer("73.42.18.201", 51234)];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
+
+        assert!(matches!(nat, NatType::Consistent));
+        assert_eq!(host.as_deref(), Some("73.42.18.201"));
+        assert_eq!(port, Some(51234));
+    }
+
+    #[test]
+    fn classify_random() {
+        let addrs = [
+            peer("73.42.18.201", 51234),
+            peer("73.42.18.201", 52001),
+            peer("73.42.18.201", 49888),
+        ];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
+
+        assert!(matches!(nat, NatType::Random));
+        assert_eq!(host.as_deref(), Some("73.42.18.201"));
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn classify_unknown_no_responses() {
+        let addrs: [Ipv4Peer; 0] = [];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
+
+        assert!(matches!(nat, NatType::Unknown));
+        assert_eq!(host, None);
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn classify_multi_homed() {
+        let addrs = [peer("1.2.3.4", 5000), peer("5.6.7.8", 5000)];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
+
+        assert!(matches!(nat, NatType::MultiHomed));
+        assert_eq!(host, None);
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn classify_unknown_single_sample_different_ip() {
+        let addrs = [peer("1.2.3.4", 5000)];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(9999));
+
+        // Single sample can't confirm multi-homing, reports as consistent
+        assert!(matches!(nat, NatType::Consistent));
+        assert_eq!(host.as_deref(), Some("1.2.3.4"));
+        assert_eq!(port, Some(5000));
+    }
+}
+
+async fn run_bootstrap_check(handle: &HyperDhtHandle, args: &PingArgs, bootstrap_addrs: &[String]) -> i32 {
+    let node_count = bootstrap_addrs.len();
+
+    if args.json {
+        let obj = serde_json::json!({
+            "type": "bootstrap_check",
+            "nodes": node_count,
+        });
+        println!("{}", serde_json::to_string(&obj).unwrap());
+    } else {
+        eprintln!("BOOTSTRAP CHECK ({node_count} node{})", if node_count == 1 { "" } else { "s" });
+    }
+
+    let interval = Duration::from_secs_f64(args.interval);
+    let count = if args.count == 0 { u64::MAX } else { args.count };
+    let mut reachable: u64 = 0;
+    let mut unreachable: u64 = 0;
+    let mut reflexive_addrs: Vec<Ipv4Peer> = Vec::new();
+    let mut all_closer_nodes: Vec<Ipv4Peer> = Vec::new();
+    let mut interrupted = false;
+
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    let cancel_handle = tokio::spawn(async move {
+        signal::ctrl_c().await.ok();
+        let _ = cancel_tx.send(());
+    });
+
+    'outer: for addr_str in bootstrap_addrs {
+        let (host, port) = match parse_host_port(addr_str) {
+            Some(hp) => hp,
+            None => {
+                if args.json {
+                    let obj = serde_json::json!({
+                        "type": "bootstrap_probe",
+                        "node": addr_str,
+                        "status": "invalid",
+                        "error": "could not parse address",
+                    });
+                    println!("{}", serde_json::to_string(&obj).unwrap());
+                } else {
+                    eprintln!("  {addr_str}  INVALID (could not parse)");
+                }
+                unreachable += 1;
+                continue;
+            }
+        };
+
+        for seq in 1..=count {
+            let dht = handle.dht();
+            match dht.ping(host, port).await {
+                Ok(resp) => {
+                    reachable += 1;
+                    let rtt_ms = resp.rtt.as_secs_f64() * 1000.0;
+                    let nodes_offered = resp.closer_nodes.len();
+                    all_closer_nodes.extend(resp.closer_nodes);
+
+                    if let Some(ref reflexive) = resp.to {
+                        reflexive_addrs.push(reflexive.clone());
+                    }
+
+                    if args.json {
+                        let obj = serde_json::json!({
+                            "type": "bootstrap_probe",
+                            "node": addr_str,
+                            "seq": seq,
+                            "status": "ok",
+                            "rtt_ms": rtt_ms,
+                            "node_id": resp.id.map(|id| to_hex(&id)),
+                            "reflexive_addr": resp.to.as_ref().map(|a| format!("{}:{}", a.host, a.port)),
+                            "closer_nodes": nodes_offered,
+                        });
+                        println!("{}", serde_json::to_string(&obj).unwrap());
+                    } else if count == 1 {
+                        let node_str = resp.id.map(|id| format!("  node_id={}", to_hex(&id))).unwrap_or_default();
+                        eprintln!("  {addr_str}  OK  {rtt_ms:.0}ms  ({nodes_offered} nodes){node_str}");
+                    } else {
+                        eprintln!("  {addr_str}  [{seq}] OK  {rtt_ms:.0}ms  ({nodes_offered} nodes)");
+                    }
+                }
+                Err(_) => {
+                    unreachable += 1;
+                    if args.json {
+                        let obj = serde_json::json!({
+                            "type": "bootstrap_probe",
+                            "node": addr_str,
+                            "seq": seq,
+                            "status": "timeout",
+                        });
+                        println!("{}", serde_json::to_string(&obj).unwrap());
+                    } else if count == 1 {
+                        eprintln!("  {addr_str}  TIMEOUT");
+                    } else {
+                        eprintln!("  {addr_str}  [{seq}] TIMEOUT");
+                    }
+                }
+            }
+
+            if seq < count && count > 1 {
+                tokio::select! {
+                    _ = tokio::time::sleep(interval) => {}
+                    _ = &mut cancel_rx => { interrupted = true; break 'outer; }
+                }
+            }
+
+            if cancel_rx.is_terminated() {
+                interrupted = true;
+                break 'outer;
+            }
+        }
+    }
+
+    cancel_handle.abort();
+
+    let local_port = handle.dht().local_port().await.ok();
+    let (nat_type, public_host, public_port) = NatType::classify(&reflexive_addrs, local_port);
+
+    all_closer_nodes.sort_by(|a, b| (&a.host, a.port).cmp(&(&b.host, b.port)));
+    all_closer_nodes.dedup_by(|a, b| a.host == b.host && a.port == b.port);
+    let total_unique_nodes = all_closer_nodes.len();
+
+    if args.json {
+        let mut summary = serde_json::json!({
+            "type": "bootstrap_summary",
+            "nodes": node_count,
+            "reachable": reachable,
+            "unreachable": unreachable,
+            "nat_type": nat_type.short_label(),
+            "closer_nodes_total": total_unique_nodes,
+        });
+        if let Some(ref host) = public_host {
+            summary["public_host"] = serde_json::Value::String(host.clone());
+        }
+        if let Some(port) = public_port {
+            summary["public_port"] = serde_json::Value::Number(port.into());
+            summary["port_consistent"] = serde_json::Value::Bool(true);
+        } else if public_host.is_some() {
+            summary["port_consistent"] = serde_json::Value::Bool(false);
+            let ports: Vec<u16> = reflexive_addrs.iter().map(|a| a.port).collect();
+            summary["observed_ports"] = serde_json::json!(ports);
+        }
+        if matches!(nat_type, NatType::MultiHomed) {
+            let mut unique_hosts: Vec<&str> = reflexive_addrs.iter().map(|a| a.host.as_str()).collect();
+            unique_hosts.dedup();
+            summary["observed_hosts"] = serde_json::json!(unique_hosts);
+        }
+        println!("{}", serde_json::to_string(&summary).unwrap());
+    } else {
+        eprintln!("--- bootstrap summary ---");
+        eprintln!("{node_count} node{}, {reachable} reachable, {unreachable} unreachable",
+            if node_count == 1 { "" } else { "s" });
+        eprintln!("{total_unique_nodes} unique peer{} discovered via routing tables",
+            if total_unique_nodes == 1 { "" } else { "s" });
+
+        match nat_type {
+            NatType::MultiHomed => {
+                let mut unique_hosts: Vec<&str> = reflexive_addrs.iter().map(|a| a.host.as_str()).collect();
+                unique_hosts.sort();
+                unique_hosts.dedup();
+                eprintln!("public address: multiple ({})", unique_hosts.join(", "));
+            }
+            _ => {
+                if let Some(ref host) = public_host {
+                    if let Some(port) = public_port {
+                        let sample_count = reflexive_addrs.len();
+                        eprintln!("public address: {host}:{port} (consistent across {sample_count} node{})",
+                            if sample_count == 1 { "" } else { "s" });
+                    } else {
+                        let ports: Vec<String> = reflexive_addrs.iter().map(|a| a.port.to_string()).collect();
+                        eprintln!("public address: {host} (port varies: {})", ports.join(", "));
+                    }
+                }
+            }
+        }
+
+        if reachable >= 2 {
+            eprintln!("NAT type: {}", nat_type.label());
+        } else if reachable == 1 {
+            eprintln!("NAT type: insufficient samples (need 2+ nodes)");
+        }
+    }
+
+    if interrupted {
+        SIGINT_EXIT
+    } else if unreachable > 0 {
+        1
+    } else {
+        0
+    }
+}
 
 async fn run_direct_ping(handle: &HyperDhtHandle, args: &PingArgs, host: &str, port: u16) -> i32 {
     if args.json {
