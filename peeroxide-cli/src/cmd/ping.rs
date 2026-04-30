@@ -232,105 +232,6 @@ fn parse_host_port(addr: &str) -> Option<(&str, u16)> {
     Some((host, port))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{NatType, Ipv4Peer};
-
-    fn peer(host: &str, port: u16) -> Ipv4Peer {
-        Ipv4Peer { host: host.to_string(), port }
-    }
-
-    #[test]
-    fn classify_open() {
-        let addrs = [
-            peer("127.0.0.1", 5000),
-            peer("127.0.0.1", 5000),
-            peer("127.0.0.1", 5000),
-        ];
-
-        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
-
-        assert!(matches!(nat, NatType::Open));
-        assert_eq!(host.as_deref(), Some("127.0.0.1"));
-        assert_eq!(port, Some(5000));
-    }
-
-    #[test]
-    fn classify_consistent_port_preserving() {
-        let addrs = [
-            peer("93.184.216.34", 5000),
-            peer("93.184.216.34", 5000),
-            peer("93.184.216.34", 5000),
-        ];
-
-        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
-
-        assert!(matches!(nat, NatType::Consistent));
-        assert_eq!(host.as_deref(), Some("93.184.216.34"));
-        assert_eq!(port, Some(5000));
-    }
-
-    #[test]
-    fn classify_consistent_port_remapping() {
-        let addrs = [peer("73.42.18.201", 51234), peer("73.42.18.201", 51234)];
-
-        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
-
-        assert!(matches!(nat, NatType::Consistent));
-        assert_eq!(host.as_deref(), Some("73.42.18.201"));
-        assert_eq!(port, Some(51234));
-    }
-
-    #[test]
-    fn classify_random() {
-        let addrs = [
-            peer("73.42.18.201", 51234),
-            peer("73.42.18.201", 52001),
-            peer("73.42.18.201", 49888),
-        ];
-
-        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
-
-        assert!(matches!(nat, NatType::Random));
-        assert_eq!(host.as_deref(), Some("73.42.18.201"));
-        assert_eq!(port, None);
-    }
-
-    #[test]
-    fn classify_unknown_no_responses() {
-        let addrs: [Ipv4Peer; 0] = [];
-
-        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
-
-        assert!(matches!(nat, NatType::Unknown));
-        assert_eq!(host, None);
-        assert_eq!(port, None);
-    }
-
-    #[test]
-    fn classify_multi_homed() {
-        let addrs = [peer("1.2.3.4", 5000), peer("5.6.7.8", 5000)];
-
-        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
-
-        assert!(matches!(nat, NatType::MultiHomed));
-        assert_eq!(host, None);
-        assert_eq!(port, None);
-    }
-
-    #[test]
-    fn classify_unknown_single_sample_different_ip() {
-        let addrs = [peer("1.2.3.4", 5000)];
-
-        let (nat, host, port) = NatType::classify(&addrs, Some(9999));
-
-        // Single sample can't confirm multi-homing, reports as consistent
-        assert!(matches!(nat, NatType::Consistent));
-        assert_eq!(host.as_deref(), Some("1.2.3.4"));
-        assert_eq!(port, Some(5000));
-    }
-}
-
 async fn run_bootstrap_check(handle: &HyperDhtHandle, args: &PingArgs, bootstrap_addrs: &[String]) -> i32 {
     let node_count = bootstrap_addrs.len();
 
@@ -1145,5 +1046,103 @@ async fn run_connect(
         1
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NatType, Ipv4Peer};
+
+    fn peer(host: &str, port: u16) -> Ipv4Peer {
+        Ipv4Peer { host: host.to_string(), port }
+    }
+
+    #[test]
+    fn classify_open() {
+        let addrs = [
+            peer("127.0.0.1", 5000),
+            peer("127.0.0.1", 5000),
+            peer("127.0.0.1", 5000),
+        ];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
+
+        assert!(matches!(nat, NatType::Open));
+        assert_eq!(host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(port, Some(5000));
+    }
+
+    #[test]
+    fn classify_consistent_port_preserving() {
+        let addrs = [
+            peer("93.184.216.34", 5000),
+            peer("93.184.216.34", 5000),
+            peer("93.184.216.34", 5000),
+        ];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
+
+        assert!(matches!(nat, NatType::Consistent));
+        assert_eq!(host.as_deref(), Some("93.184.216.34"));
+        assert_eq!(port, Some(5000));
+    }
+
+    #[test]
+    fn classify_consistent_port_remapping() {
+        let addrs = [peer("73.42.18.201", 51234), peer("73.42.18.201", 51234)];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
+
+        assert!(matches!(nat, NatType::Consistent));
+        assert_eq!(host.as_deref(), Some("73.42.18.201"));
+        assert_eq!(port, Some(51234));
+    }
+
+    #[test]
+    fn classify_random() {
+        let addrs = [
+            peer("73.42.18.201", 51234),
+            peer("73.42.18.201", 52001),
+            peer("73.42.18.201", 49888),
+        ];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
+
+        assert!(matches!(nat, NatType::Random));
+        assert_eq!(host.as_deref(), Some("73.42.18.201"));
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn classify_unknown_no_responses() {
+        let addrs: [Ipv4Peer; 0] = [];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(12345));
+
+        assert!(matches!(nat, NatType::Unknown));
+        assert_eq!(host, None);
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn classify_multi_homed() {
+        let addrs = [peer("1.2.3.4", 5000), peer("5.6.7.8", 5000)];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(5000));
+
+        assert!(matches!(nat, NatType::MultiHomed));
+        assert_eq!(host, None);
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn classify_unknown_single_sample_different_ip() {
+        let addrs = [peer("1.2.3.4", 5000)];
+
+        let (nat, host, port) = NatType::classify(&addrs, Some(9999));
+
+        assert!(matches!(nat, NatType::Consistent));
+        assert_eq!(host.as_deref(), Some("1.2.3.4"));
+        assert_eq!(port, Some(5000));
     }
 }

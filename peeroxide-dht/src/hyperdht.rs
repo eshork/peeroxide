@@ -1230,7 +1230,7 @@ impl HyperDhtHandle {
                 remote_udx: remote_payload.udx.clone(),
             };
             let shared = self.server_socket().await?;
-            return establish_stream(&direct, runtime, shared).await;
+            return establish_stream_with_socket(&direct, runtime, shared).await;
         }
 
         // Phase 2: Holepunch rounds via PEER_HOLEPUNCH relay
@@ -1247,7 +1247,7 @@ impl HyperDhtHandle {
             )
             .await?;
         let shared = self.server_socket().await?;
-        establish_stream(&hp_result, runtime, shared).await
+        establish_stream_with_socket(&hp_result, runtime, shared).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1520,10 +1520,23 @@ impl HyperDhtHandle {
 /// Call after [`HyperDhtHandle::connect`] to upgrade a [`ConnectResult`]
 /// into an encrypted bidirectional stream.
 ///
-/// When `shared_socket` is provided, the stream reuses that socket (matching
-/// the Node.js single-socket multiplexing model). Otherwise a fresh socket
-/// bound to an ephemeral port is created.
+/// A fresh UDX socket bound to an ephemeral port is created for the stream.
+/// To reuse an existing socket (Node.js-style single-socket multiplexing),
+/// use [`establish_stream_with_socket`] instead.
 pub async fn establish_stream(
+    result: &ConnectResult,
+    runtime: &UdxRuntime,
+) -> Result<PeerConnection, HyperDhtError> {
+    establish_stream_with_socket(result, runtime, None).await
+}
+
+/// Call after [`HyperDhtHandle::connect`] to upgrade a [`ConnectResult`]
+/// into an encrypted bidirectional stream, optionally reusing an existing socket.
+///
+/// When `shared_socket` is `Some`, the stream reuses that socket (matching
+/// the Node.js single-socket multiplexing model). When `None`, a fresh socket
+/// bound to an ephemeral port is created.
+pub async fn establish_stream_with_socket(
     result: &ConnectResult,
     runtime: &UdxRuntime,
     shared_socket: Option<UdxSocket>,
@@ -2300,7 +2313,7 @@ mod tests {
             local_stream_id: 1,
             remote_udx: None,
         };
-        let err = establish_stream(&result, &runtime, None).await.unwrap_err();
+        let err = establish_stream(&result, &runtime).await.unwrap_err();
         assert!(matches!(err, HyperDhtError::StreamEstablishment(_)));
     }
 
@@ -2324,7 +2337,7 @@ mod tests {
             local_stream_id: next_stream_id(),
             remote_udx: Some(UdxInfo { version: 1, reusable_socket: true, id: 42, seq: 0 }),
         };
-        let err = establish_stream(&result, &runtime, None).await.unwrap_err();
+        let err = establish_stream(&result, &runtime).await.unwrap_err();
         assert!(matches!(err, HyperDhtError::StreamEstablishment(_)));
     }
 
@@ -2353,7 +2366,7 @@ mod tests {
                 seq: 0,
             }),
         };
-        let err = establish_stream(&result, &runtime, None).await.unwrap_err();
+        let err = establish_stream(&result, &runtime).await.unwrap_err();
         assert!(matches!(err, HyperDhtError::StreamEstablishment(_)));
     }
 

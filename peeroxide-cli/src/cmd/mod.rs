@@ -279,11 +279,8 @@ mod tests {
 
         // Define expected outcomes for each (bootstrap_type, topology) pair.
         // Format: (bootstrap_name, config_fn, expected_per_topology)
-        let matrix: [(
-            &str,
-            fn() -> ResolvedConfig,
-            [MatrixExpectation; 6],
-        ); 3] = [
+        type MatrixRow = (&'static str, fn() -> ResolvedConfig, [MatrixExpectation; 6]);
+        let matrix: [MatrixRow; 3] = [
             (
                 "B1: public default",
                 b1_config as fn() -> ResolvedConfig,

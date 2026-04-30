@@ -97,3 +97,16 @@ If such a file appears, verify with the human that its inclusion is intentional 
 
 - Do not push to remote — commits are local until explicitly requested.
 - MSRV: Rust 1.85 (2024 edition).
+
+## PR Checklist
+
+Before opening a PR and before merging, verify:
+
+**Before opening a PR:**
+- All local tests pass (both suites — see Test Completeness)
+- No task-artifact files in the branch's added files (see Task Artifacts)
+- No public API breaking changes without explicit human approval (see API Breaking Change Policy)
+
+**Before merging:**
+- GitHub Actions CI is green (all checks pass)
+- PR has been reviewed
