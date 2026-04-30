@@ -61,6 +61,8 @@
 //!
 //! - [`discovery_key`] — BLAKE2b-256 hash for deriving topic keys
 //! - [`KeyPair`] — Ed25519 key pair for peer identity
+//! - [`HyperDhtHandle`] — low-level DHT handle for mutable/immutable storage
+//! - [`MutablePutResult`], [`MutableGetResult`], [`ImmutablePutResult`] — DHT storage results
 //! - [`DEFAULT_BOOTSTRAP`] — public HyperDHT bootstrap node addresses
 
 #![deny(clippy::all)]
@@ -77,4 +79,7 @@ pub use swarm::{spawn, JoinOpts, SwarmConfig, SwarmConnection, SwarmHandle};
 
 // Re-export commonly used types from peeroxide-dht.
 pub use peeroxide_dht::crypto::hash as discovery_key;
-pub use peeroxide_dht::hyperdht::{KeyPair, DEFAULT_BOOTSTRAP};
+pub use peeroxide_dht::hyperdht::{
+    HyperDhtHandle, ImmutablePutResult, KeyPair, MutableGetResult, MutablePutResult,
+    DEFAULT_BOOTSTRAP,
+};

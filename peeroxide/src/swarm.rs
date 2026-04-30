@@ -171,9 +171,53 @@ impl fmt::Debug for SwarmConnection {
 #[derive(Clone)]
 pub struct SwarmHandle {
     cmd_tx: mpsc::Sender<SwarmCommand>,
+    dht: HyperDhtHandle,
+    key_pair: KeyPair,
 }
 
 impl SwarmHandle {
+    /// Access the underlying [`HyperDhtHandle`] for low-level DHT operations.
+    ///
+    /// This exposes mutable/immutable storage, manual peer lookup, and other
+    /// DHT primitives not covered by the high-level swarm API.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use peeroxide::{spawn, discovery_key, JoinOpts, SwarmConfig, KeyPair};
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = SwarmConfig::with_public_bootstrap();
+    /// let (_task, handle, _conn_rx) = spawn(config).await?;
+    ///
+    /// // Publish a mutable record under the swarm's own keypair
+    /// let kp = handle.key_pair();
+    /// handle.dht().mutable_put(kp, b"hello", 0).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Caveats
+    ///
+    /// - **Do not call `destroy()`** on the returned handle. The swarm owns
+    ///   the DHT lifecycle; destroying it here will break discovery and
+    ///   connection establishment.
+    /// - **`connect` methods require a `UdxRuntime`** that is not accessible
+    ///   from the public API. Use swarm-level topic joins for connection
+    ///   establishment instead.
+    pub fn dht(&self) -> &HyperDhtHandle {
+        &self.dht
+    }
+
+    /// The Ed25519 key pair identifying this swarm node.
+    ///
+    /// This is the same key pair used for topic announcements and Noise
+    /// handshakes. It can also be used with [`HyperDhtHandle::mutable_put`]
+    /// to publish data that other peers can discover and verify.
+    pub fn key_pair(&self) -> &KeyPair {
+        &self.key_pair
+    }
+
     /// Join a topic for peer discovery.
     ///
     /// When `opts.server` is true, the swarm announces so other peers can
@@ -313,6 +357,9 @@ pub async fn spawn(
     let (conn_tx, conn_rx) = mpsc::channel(64);
     let (discovery_event_tx, discovery_event_rx) = mpsc::unbounded_channel();
 
+    let handle_dht = dht.clone();
+    let handle_key_pair = key_pair.clone();
+
     let actor = SwarmActor {
         key_pair,
         dht,
@@ -345,7 +392,11 @@ pub async fn spawn(
         drop(runtime);
     });
 
-    let handle = SwarmHandle { cmd_tx };
+    let handle = SwarmHandle {
+        cmd_tx,
+        dht: handle_dht,
+        key_pair: handle_key_pair,
+    };
     Ok((join, handle, conn_rx))
 }
 
