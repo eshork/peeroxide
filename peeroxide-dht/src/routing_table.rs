@@ -219,6 +219,38 @@ impl RoutingTable {
         result
     }
 
+    /// Rebuild the table with a new local node ID.
+    ///
+    /// Extracts all nodes, resets buckets with the new ID, and re-inserts
+    /// each node. Nodes that no longer fit (due to bucket capacity under the
+    /// new distance metric) are dropped. Mirrors the Node.js `_updateNetworkState`
+    /// table rebuild in dht-rpc.
+    pub fn rebuild_with_id(&mut self, new_id: NodeId) {
+        if self.id == new_id {
+            return;
+        }
+        let nodes: Vec<Node> = self
+            .buckets
+            .iter_mut()
+            .filter_map(|b| b.as_mut())
+            .flat_map(|b| b.nodes.drain(..))
+            .collect();
+
+        self.id = new_id;
+        self.size = 0;
+        for bucket in self.buckets.iter_mut() {
+            *bucket = None;
+        }
+        self.pending_events.clear();
+
+        for node in nodes {
+            if node.id == new_id {
+                continue;
+            }
+            self.add(node);
+        }
+    }
+
     /// Return a random node from the table, or `None` if empty.
     pub fn random(&self) -> Option<&Node> {
         if self.size == 0 {

@@ -1,0 +1,45 @@
+[package]
+name = "peeroxide-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Command-line interface for the peeroxide P2P networking stack"
+readme = "README.md"
+keywords = ["p2p", "cli", "hyperswarm", "networking", "peer-to-peer"]
+categories = ["command-line-utilities", "network-programming"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[bin]]
+name = "peeroxide"
+path = "src/main.rs"
+
+[dependencies]
+peeroxide = { path = "../peeroxide", version = "1.2.0" }
+peeroxide-dht = { path = "../peeroxide-dht", version = "1.2.0" }
+libudx = { path = "../libudx", version = "1.2.0" }
+clap = { version = "4", features = ["derive"] }
+clap_mangen = "0.2"
+tokio = { version = "1", features = ["full", "signal"] }
+toml = "0.8"
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+indicatif = "0.17"
+futures = "0.3"
+crc32c = "0.6"
+rand = "0.9"
+indexmap = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"

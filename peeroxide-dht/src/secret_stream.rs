@@ -286,6 +286,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SecretStream<T> {
         write_frame(&mut self.raw, &encrypted).await
     }
 
+    /// Gracefully close the write half, sending a FIN to the remote peer.
+    pub async fn shutdown(&mut self) -> Result<(), SecretStreamError> {
+        use tokio::io::AsyncWriteExt;
+        self.raw.shutdown().await.map_err(SecretStreamError::Io)
+    }
+
     /// Read and decrypt the next framed message.
     ///
     /// Returns `Ok(None)` on clean EOF, `Ok(Some(plaintext))` for data messages.

@@ -302,6 +302,18 @@ impl Io {
         self.server_socket.local_addr().await.map_err(IoError::from)
     }
 
+    pub fn server_socket(&self) -> UdxSocket {
+        self.server_socket.clone()
+    }
+
+    pub fn primary_socket(&self) -> UdxSocket {
+        if self.firewalled {
+            self.client_socket.clone()
+        } else {
+            self.server_socket.clone()
+        }
+    }
+
     /// Receive and decode the next message from either socket.
     /// Returns None only if both channels are closed.
     pub async fn recv(&mut self) -> Option<IoEvent> {

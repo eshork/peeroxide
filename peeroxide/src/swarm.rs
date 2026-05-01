@@ -171,9 +171,53 @@ impl fmt::Debug for SwarmConnection {
 #[derive(Clone)]
 pub struct SwarmHandle {
     cmd_tx: mpsc::Sender<SwarmCommand>,
+    dht: HyperDhtHandle,
+    key_pair: KeyPair,
 }
 
 impl SwarmHandle {
+    /// Access the underlying [`HyperDhtHandle`] for low-level DHT operations.
+    ///
+    /// This exposes mutable/immutable storage, manual peer lookup, and other
+    /// DHT primitives not covered by the high-level swarm API.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use peeroxide::{spawn, discovery_key, JoinOpts, SwarmConfig, KeyPair};
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = SwarmConfig::with_public_bootstrap();
+    /// let (_task, handle, _conn_rx) = spawn(config).await?;
+    ///
+    /// // Publish a mutable record under the swarm's own keypair
+    /// let kp = handle.key_pair();
+    /// handle.dht().mutable_put(kp, b"hello", 0).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Caveats
+    ///
+    /// - **Do not call `destroy()`** on the returned handle. The swarm owns
+    ///   the DHT lifecycle; destroying it here will break discovery and
+    ///   connection establishment.
+    /// - **`connect` methods require a `UdxRuntime`** that is not accessible
+    ///   from the public API. Use swarm-level topic joins for connection
+    ///   establishment instead.
+    pub fn dht(&self) -> &HyperDhtHandle {
+        &self.dht
+    }
+
+    /// The Ed25519 key pair identifying this swarm node.
+    ///
+    /// This is the same key pair used for topic announcements and Noise
+    /// handshakes. It can also be used with [`HyperDhtHandle::mutable_put`]
+    /// to publish data that other peers can discover and verify.
+    pub fn key_pair(&self) -> &KeyPair {
+        &self.key_pair
+    }
+
     /// Join a topic for peer discovery.
     ///
     /// When `opts.server` is true, the swarm announces so other peers can
@@ -313,6 +357,9 @@ pub async fn spawn(
     let (conn_tx, conn_rx) = mpsc::channel(64);
     let (discovery_event_tx, discovery_event_rx) = mpsc::unbounded_channel();
 
+    let handle_dht = dht.clone();
+    let handle_key_pair = key_pair.clone();
+
     let actor = SwarmActor {
         key_pair,
         dht,
@@ -345,7 +392,11 @@ pub async fn spawn(
         drop(runtime);
     });
 
-    let handle = SwarmHandle { cmd_tx };
+    let handle = SwarmHandle {
+        cmd_tx,
+        dht: handle_dht,
+        key_pair: handle_key_pair,
+    };
     Ok((join, handle, conn_rx))
 }
 
@@ -392,6 +443,13 @@ impl SwarmActor {
                 let _ = cancel.send(());
             }
         }
+
+        if self.server_registered {
+            let target = hash(&self.key_pair.public_key);
+            self.dht.unregister_server(&target);
+            self.server_registered = false;
+        }
+
         let _ = self.dht.destroy().await;
     }
 
@@ -422,6 +480,11 @@ impl SwarmActor {
                 false
             }
             SwarmCommand::Destroy { reply_tx } => {
+                if self.server_registered {
+                    let target = hash(&self.key_pair.public_key);
+                    self.dht.unregister_server(&target);
+                    self.server_registered = false;
+                }
                 let _ = reply_tx.send(Ok(()));
                 true
             }
@@ -478,6 +541,20 @@ impl SwarmActor {
             }
             for peer in self.peers.values_mut() {
                 peer.topics.retain(|t| *t != topic);
+            }
+
+            if state.is_server && self.server_registered {
+                let has_remaining_server_topics =
+                    self.topics.values().any(|t| t.is_server);
+                if !has_remaining_server_topics {
+                    let target = hash(&self.key_pair.public_key);
+                    self.dht.unregister_server(&target);
+                    self.server_registered = false;
+                    tracing::debug!(
+                        pk = %short_hex(&self.key_pair.public_key),
+                        "server unregistered (no remaining server topics)"
+                    );
+                }
             }
         }
         Ok(())
@@ -777,7 +854,7 @@ impl SwarmActor {
         let reply_msg = HandshakeMessage {
             mode: MODE_REPLY,
             noise: noise_reply,
-            peer_address: Some(from.clone()),
+            peer_address: None,
             relay_address: None,
         };
         let _ = reply_tx.send(encode_handshake_to_bytes(&reply_msg).ok());
@@ -842,8 +919,9 @@ impl SwarmActor {
             });
         } else {
             let rh = self.runtime_handle.clone();
+            let dht = self.dht.clone();
             tokio::spawn(async move {
-                match create_server_connection(rh, local_stream_id, &remote_udx, &from, &nw_result)
+                match create_server_connection(rh, dht, local_stream_id, &remote_udx, &from, &nw_result)
                     .await
                 {
                     Ok((conn, runtime)) => {
@@ -880,6 +958,7 @@ impl SwarmActor {
 
 async fn create_server_connection(
     runtime_handle: Arc<RuntimeHandle>,
+    dht: HyperDhtHandle,
     local_stream_id: u32,
     remote_udx: &UdxInfo,
     client_address: &Ipv4Peer,
@@ -902,7 +981,16 @@ async fn create_server_connection(
         client_address.port,
     );
 
-    let socket = runtime.create_socket().await?;
+    let socket = dht
+        .listen_socket()
+        .await
+        .map_err(SwarmError::Dht)?
+        .ok_or_else(|| {
+            SwarmError::Dht(peeroxide_dht::hyperdht::HyperDhtError::StreamEstablishment(
+                "DHT listen socket not available".into(),
+            ))
+        })?;
+
     let stream = runtime.create_stream(local_stream_id).await?;
     stream.connect(&socket, remote_id, addr).await?;
 
@@ -1076,5 +1164,99 @@ mod tests {
         let j = JoinOpts::default();
         assert!(j.server);
         assert!(j.client);
+    }
+
+    #[tokio::test]
+    async fn server_unregistered_on_leave_last_topic() {
+        let config = SwarmConfig::default();
+
+        let (_task, handle, _conn_rx) = crate::spawn(config).await.unwrap();
+        let target = hash(&handle.key_pair().public_key);
+        let topic = [0xAA; 32];
+
+        handle.join(topic, JoinOpts { server: true, client: false }).await.unwrap();
+
+        {
+            let router = handle.dht().router().lock().unwrap();
+            assert!(
+                router.get(&target).is_some(),
+                "server must be registered after join"
+            );
+        }
+
+        handle.leave(topic).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        {
+            let router = handle.dht().router().lock().unwrap();
+            assert!(
+                router.get(&target).is_none(),
+                "server must be unregistered after leaving last server topic"
+            );
+        }
+
+        handle.destroy().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_unregistered_on_destroy() {
+        let config = SwarmConfig::default();
+
+        let (_task, handle, _conn_rx) = crate::spawn(config).await.unwrap();
+        let target = hash(&handle.key_pair().public_key);
+        let topic = [0xBB; 32];
+
+        handle.join(topic, JoinOpts { server: true, client: false }).await.unwrap();
+
+        {
+            let router = handle.dht().router().lock().unwrap();
+            assert!(
+                router.get(&target).is_some(),
+                "server must be registered after join"
+            );
+        }
+
+        handle.destroy().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        {
+            let router = handle.dht().router().lock().unwrap();
+            assert!(
+                router.get(&target).is_none(),
+                "server must be unregistered after destroy"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn server_unregistered_on_handle_drop() {
+        let config = SwarmConfig::default();
+
+        let (task, handle, _conn_rx) = crate::spawn(config).await.unwrap();
+        let dht_handle = handle.dht().clone();
+        let target = hash(&handle.key_pair().public_key);
+        let topic = [0xCC; 32];
+
+        handle.join(topic, JoinOpts { server: true, client: false }).await.unwrap();
+
+        {
+            let router = dht_handle.router().lock().unwrap();
+            assert!(
+                router.get(&target).is_some(),
+                "server must be registered after join"
+            );
+        }
+
+        drop(handle);
+        drop(_conn_rx);
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+
+        {
+            let router = dht_handle.router().lock().unwrap();
+            assert!(
+                router.get(&target).is_none(),
+                "server must be unregistered after implicit shutdown (handle drop)"
+            );
+        }
     }
 }

@@ -1,4 +1,16 @@
 /target/
 tests/node/node_modules/
-.sisyphus
+.sisyphus/
 .vogon_poetry/
+docs/book/
+
+# Task artifacts — planning docs, Ralph Loop prompts, progress trackers, PR checklists.
+# These should never land in git. If you need to commit one, do it explicitly and it
+# will still be surfaced by the pre-PR artifact scan described in AGENTS.md.
+DOCS_PLAN.md
+RALPH_PROMPT.md
+REFACTOR_PLAN.md
+PR-TODOS.md
+*_PLAN.md
+*_PROMPT.md
+*_TODOS.md

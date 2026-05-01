@@ -117,9 +117,9 @@ struct QueuedPacket {
 }
 
 /// Tracks a pending write awaiting remote acknowledgement.
-struct PendingWrite {
-    ack_threshold: u32,
-    tx: Option<oneshot::Sender<Result<()>>>,
+pub(crate) struct PendingWrite {
+    pub(crate) ack_threshold: u32,
+    pub(crate) tx: Option<oneshot::Sender<Result<()>>>,
 }
 
 /// Notification from the send path to the processor task.
@@ -144,7 +144,7 @@ pub(crate) struct StreamInner {
 
     // ── Send state ──
     pub(crate) next_seq: u32,
-    pending_writes: Vec<PendingWrite>,
+    pub(crate) pending_writes: Vec<PendingWrite>,
     /// Sent packets awaiting ACK, keyed by sequence number.
     outgoing: BTreeMap<u32, SentPacket>,
 

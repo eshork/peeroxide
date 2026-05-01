@@ -4,6 +4,7 @@ use std::time::Duration;
 use rand::Rng;
 use tokio::sync::mpsc;
 
+use peeroxide_dht::crypto::hash;
 use peeroxide_dht::hyperdht::{HyperDhtHandle, KeyPair};
 use peeroxide_dht::messages::Ipv4Peer;
 
@@ -77,6 +78,22 @@ async fn do_refresh(
             }
             Err(e) => {
                 tracing::warn!(err = %e, "announce failed");
+            }
+        }
+
+        // Self-announce: announce hash(publicKey) so that nodes closest to our
+        // public key store a ForwardEntry.  This is how PEER_HANDSHAKE requests
+        // get routed — Node.js does this in persistent.js announce().
+        let pk_target = hash(&key_pair.public_key);
+        match dht.announce(pk_target, key_pair, relay_addresses).await {
+            Ok(r) => {
+                tracing::debug!(
+                    closest = r.closest_nodes.len(),
+                    "self-announce (hash(pk)) complete"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, "self-announce (hash(pk)) failed");
             }
         }
     }
