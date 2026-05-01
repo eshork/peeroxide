@@ -21,4 +21,3 @@ version_group = "peeroxide"
 
 [[package]]
 name = "peeroxide-cli"
-release_always = true
