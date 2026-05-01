@@ -1,5 +1,4 @@
 # Contributing to Peeroxide
-
 This project is a Rust implementation of the Hyperswarm stack, focusing on wire compatibility with the Node.js reference network.
 
 ## Crate Stack
@@ -52,7 +51,9 @@ cargo doc --workspace --no-deps
 
 ## API Stability
 
-These three library crates are published at `>=1.0` and have external users. **Any change to an existing public API signature is a breaking change and requires explicit maintainer approval before implementation.** See [AGENTS.md](./AGENTS.md) for the full policy.
+These three library crates are published at `>=1.0` and have external users. 
+
+**Any change to an existing public API signature is a breaking change and requires explicit maintainer approval before implementation.** 
 
 When in doubt, add a new function rather than changing an existing one.
 
