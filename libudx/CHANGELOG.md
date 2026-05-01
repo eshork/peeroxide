@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2025-04-25
+## [1.2.0](https://github.com/Rightbracket/peeroxide/compare/libudx-v1.1.0...libudx-v1.2.0) - 2026-05-01
+
+### Changed
+
+- `UdxSocket` is now a cheap-clone `Arc` handle (`UdxSocketInner` holds all state internally). All clones share the same underlying socket; the recv loop is only torn down when the last clone is dropped. `UdxSocket::close(self)` consuming signature is unchanged. ([#12](https://github.com/Rightbracket/peeroxide/pull/12))
+
+## [1.1.0](https://github.com/Rightbracket/peeroxide/compare/libudx-v1.0.1...libudx-v1.1.0) - 2026-04-28
+
+### Changed
+
+- `UdxError` marked `#[non_exhaustive]` to allow future variants without a breaking change. ([#10](https://github.com/Rightbracket/peeroxide/pull/10))
+
+## [1.0.1](https://github.com/Rightbracket/peeroxide/compare/libudx-v1.0.0...libudx-v1.0.1) - 2026-04-26
+
+### Changed
+
+- Added `#[forbid(unsafe_code)]` and `[package.metadata.docs.rs]` configuration.
+- Fixed doc example to use `?` instead of `.unwrap()`.
+- Increased network simulation test timeout from 120 s to 300 s for slower CI runners.
+- Updated repository URL, badges, and README links after repo transfer to the `Rightbracket` org.
+
+## [1.0.0](https://github.com/Rightbracket/peeroxide/releases/tag/v1.0.0) - 2026-04-25
 
 Initial release. Pure Rust implementation of the UDX protocol with BBR
 congestion control, wire-compatible with the existing Node.js network.
@@ -41,17 +62,3 @@ congestion control, wire-compatible with the existing Node.js network.
 - Wire-compatible with Node.js libudx
 - Rust edition 2024, MSRV 1.85
 - Dual-licensed: MIT OR Apache-2.0
-
-[1.0.0]: https://github.com/Rightbracket/peeroxide/releases/tag/v1.0.0
-
-## [1.2.0](https://github.com/Rightbracket/peeroxide/compare/libudx-v1.1.0...libudx-v1.2.0) - 2026-04-30
-
-### Changed
-
-- `UdxSocket` instances held internally by the I/O layer are now wrapped in `Arc`, allowing them to be shared with the DHT layer for UDX stream multiplexing over the same bound socket. No change to the public API.
-
-## [1.1.0](https://github.com/Rightbracket/peeroxide/compare/libudx-v1.0.1...libudx-v1.1.0) - 2026-04-28
-
-### Other
-
-- Add #[non_exhaustive] to public structs and enums ([#10](https://github.com/Rightbracket/peeroxide/pull/10))
