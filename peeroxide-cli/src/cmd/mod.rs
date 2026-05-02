@@ -1,7 +1,7 @@
 pub mod announce;
-pub mod config;
 pub mod cp;
 pub mod deaddrop;
+pub mod init;
 pub mod lookup;
 pub mod node;
 pub mod ping;

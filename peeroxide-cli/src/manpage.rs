@@ -3,7 +3,7 @@
 use clap::CommandFactory;
 use std::io::Write;
 
-const CONSOLIDATED: &[&str] = &["peeroxide-cp", "peeroxide-config", "peeroxide-deaddrop"];
+const CONSOLIDATED: &[&str] = &["peeroxide-cp", "peeroxide-deaddrop"];
 
 /// Generate all man pages and return them as (filename_stem, content) pairs.
 pub fn generate_all() -> Vec<(String, Vec<u8>)> {
@@ -381,18 +381,17 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              The pickup operation is read-only and does not modify or consume the stored \
              record -- the same message can be picked up multiple times by different peers.",
         ),
-        "peeroxide-config" => Some(
-            "Manage peeroxide configuration files. The config subcommands help with \
-             initial setup and inspection of the TOML-based configuration.\n\n\
-             peeroxide reads its configuration from ~/.config/peeroxide/config.toml by \
-             default. Override the path with --config or the PEEROXIDE_CONFIG environment \
-             variable. Use --no-default-config to ignore the config file entirely.",
-        ),
-        "peeroxide-config-init" => Some(
-            "Generate a commented configuration file with sane defaults. The output is \
-             valid TOML with all options commented out, ready for customization.\n\n\
-             By default the config is printed to stdout. Use --output to write directly \
-             to a file (parent directories are created if needed).",
+
+        "peeroxide-init" => Some(
+            "Initialize a peeroxide config file or install man pages. This command has \
+             two mutually exclusive modes:\n\n\
+             Config mode (default): Creates a commented TOML config file with sane defaults \
+             at ~/.config/peeroxide/config.toml (or the path given by --config). Use --force \
+             to overwrite an existing config, or --update to patch specific fields without \
+             disturbing other settings.\n\n\
+             Man page mode (--man-pages): Generates and installs roff man pages into the \
+             specified directory (default: /usr/local/share/man/man1/). No config is touched \
+             in this mode.",
         ),
         _ => None,
     }
@@ -546,14 +545,31 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
                 "Pick up using a raw hex public key:",
             ),
         ]),
-        "peeroxide-config" => Some(&[
+
+        "peeroxide-init" => Some(&[
             (
-                "peeroxide config init",
-                "Print a default config file to stdout:",
+                "peeroxide init",
+                "Create a default config file at ~/.config/peeroxide/config.toml:",
             ),
             (
-                "peeroxide config init --output ~/.config/peeroxide/config.toml",
-                "Write config to the default location:",
+                "peeroxide init --public --bootstrap node1.example.com:49737",
+                "Create a config with public mode and custom bootstrap:",
+            ),
+            (
+                "peeroxide init --force",
+                "Overwrite an existing config file:",
+            ),
+            (
+                "peeroxide init --update --public",
+                "Enable public mode in an existing config without changing other settings:",
+            ),
+            (
+                "peeroxide init --man-pages",
+                "Install man pages to /usr/local/share/man/man1/:",
+            ),
+            (
+                "peeroxide init --man-pages ~/.local/share/man/",
+                "Install man pages to a custom directory:",
             ),
         ]),
         _ => None,
@@ -562,8 +578,8 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
 
 fn exit_status_for(name: &str) -> Option<&'static str> {
     match name {
-        "peeroxide" | "peeroxide-node" | "peeroxide-lookup" | "peeroxide-announce"
-        | "peeroxide-cp" | "peeroxide-config" | "peeroxide-deaddrop" => Some(
+        "peeroxide" | "peeroxide-init" | "peeroxide-node" | "peeroxide-lookup"
+        | "peeroxide-announce" | "peeroxide-cp" | "peeroxide-deaddrop" => Some(
             ".TP\n\\fB0\\fR\nSuccess.\n\
              .TP\n\\fB1\\fR\nFailure or partial failure.\n\
              .TP\n\\fB2\\fR\nUsage error (invalid arguments).\n\
@@ -582,14 +598,15 @@ fn exit_status_for(name: &str) -> Option<&'static str> {
 fn see_also_for(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "peeroxide" => Some(&[
+            "peeroxide-init",
             "peeroxide-node",
             "peeroxide-lookup",
             "peeroxide-announce",
             "peeroxide-ping",
             "peeroxide-cp",
-            "peeroxide-config",
             "peeroxide-deaddrop",
         ]),
+        "peeroxide-init" => Some(&["peeroxide"]),
         "peeroxide-node" => Some(&["peeroxide"]),
         "peeroxide-lookup" => Some(&["peeroxide-announce", "peeroxide"]),
         "peeroxide-announce" => Some(&["peeroxide-lookup", "peeroxide-ping", "peeroxide"]),
@@ -600,7 +617,7 @@ fn see_also_for(name: &str) -> Option<&'static [&'static str]> {
             "peeroxide",
         ]),
         "peeroxide-cp" => Some(&["peeroxide-deaddrop", "peeroxide"]),
-        "peeroxide-config" => Some(&["peeroxide"]),
+
         "peeroxide-deaddrop" => Some(&["peeroxide-cp", "peeroxide"]),
         _ => None,
     }

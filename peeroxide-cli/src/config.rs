@@ -110,6 +110,46 @@ fn env_config_path() -> Option<PathBuf> {
     std::env::var("PEEROXIDE_CONFIG").ok().map(PathBuf::from)
 }
 
+/// Returns a footer string for help output showing the active or expected config path.
+pub fn config_path_footer() -> String {
+    if let Some(env_path) = env_config_path() {
+        return if env_path.exists() {
+            format!("Config: {} (via $PEEROXIDE_CONFIG)", env_path.display())
+        } else {
+            format!(
+                "Config: {} (via $PEEROXIDE_CONFIG, not found)",
+                env_path.display()
+            )
+        };
+    }
+
+    if let Some(path) = default_config_path() {
+        return format!("Config: {}", path.display());
+    }
+
+    match expected_default_path() {
+        Some(path) => format!(
+            "Config: {} (not found; create with 'peeroxide init')",
+            path.display()
+        ),
+        None => "Config: not found (create with 'peeroxide init')".to_string(),
+    }
+}
+
+/// Returns the default config path without checking if the file exists.
+fn expected_default_path() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg).join("peeroxide").join("config.toml"));
+    }
+    if let Some(config_dir) = dirs::config_dir() {
+        return Some(config_dir.join("peeroxide").join("config.toml"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        return Some(home.join(".config").join("peeroxide").join("config.toml"));
+    }
+    None
+}
+
 fn default_config_path() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         let p = PathBuf::from(xdg).join("peeroxide").join("config.toml");
