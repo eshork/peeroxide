@@ -339,7 +339,7 @@ async fn test_deaddrop_local_roundtrip() {
 #[tokio::test]
 async fn test_help_all_subcommands() {
     let result = tokio::time::timeout(Duration::from_secs(10), async {
-        let subcommands = ["node", "lookup", "announce", "ping", "cp", "deaddrop"];
+        let subcommands = ["init", "node", "lookup", "announce", "ping", "cp", "deaddrop"];
 
         for subcmd in subcommands {
             let subcmd_owned = subcmd.to_string();
@@ -370,45 +370,491 @@ async fn test_help_all_subcommands() {
     assert!(result.is_ok(), "test_help_all_subcommands timed out");
 }
 
-// ── Test: --generate-man produces manpages ──────────────────────────────────
+// ── Test: init creates config file ──────────────────────────────────────────
 
 #[tokio::test]
-async fn test_generate_man() {
+async fn test_init_creates_config() {
     let dir = tempfile::tempdir().unwrap();
-    let dir_str = dir.path().to_str().unwrap().to_string();
+    let config_path = dir.path().join("peeroxide").join("config.toml");
+    let config_str = config_path.to_str().unwrap().to_string();
 
     let output = tokio::task::spawn_blocking(move || {
         Command::new(bin_path())
-            .args(["--generate-man", &dir_str])
+            .args(["--config", &config_str, "init"])
             .output()
-            .expect("failed to run --generate-man")
+            .expect("failed to run init")
     })
     .await
     .unwrap();
 
     assert!(
         output.status.success(),
-        "--generate-man failed: {}",
+        "init failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
+    assert!(config_path.exists(), "config file not created");
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(content.contains("[network]"), "config missing [network] section");
+    assert!(content.contains("[node]"), "config missing [node] section");
+}
+
+// ── Test: init with --public sets public in config ──────────────────────────
+
+#[tokio::test]
+async fn test_init_public_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["--config", &config_str, "init", "--public"])
+            .output()
+            .expect("failed to run init --public")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init --public failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains("public = true"),
+        "config should contain 'public = true', got:\n{content}"
+    );
+}
+
+// ── Test: init existing config without --force is no-op ─────────────────────
+
+#[tokio::test]
+async fn test_init_existing_no_force() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(&config_path, "[network]\npublic = true\n").unwrap();
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["--config", &config_str, "init"])
+            .output()
+            .expect("failed to run init (existing)")
+    })
+    .await
+    .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("config already exists"),
+        "expected 'config already exists' message, got: {stdout}"
+    );
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert_eq!(content, "[network]\npublic = true\n", "config should not be modified");
+}
+
+// ── Test: init --force overwrites existing config ───────────────────────────
+
+#[tokio::test]
+async fn test_init_force_overwrites() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(&config_path, "old content").unwrap();
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["--config", &config_str, "init", "--force"])
+            .output()
+            .expect("failed to run init --force")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init --force failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(content.contains("[network]"), "config should be regenerated");
+    assert_ne!(content, "old content", "config should be overwritten");
+}
+
+// ── Test: init --update patches fields ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_init_update_patches() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(&config_path, "[network]\n# public = false\n\n[node]\nport = 49737\n").unwrap();
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["--config", &config_str, "init", "--update", "--public"])
+            .output()
+            .expect("failed to run init --update")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init --update failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains("public = true"),
+        "config should have public = true after update, got:\n{content}"
+    );
+    assert!(
+        content.contains("port = 49737"),
+        "config should preserve existing port setting, got:\n{content}"
+    );
+}
+
+// ── Test: init --update on nonexistent config errors ────────────────────────
+
+#[tokio::test]
+async fn test_init_update_no_config_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("nonexistent.toml");
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["--config", &config_str, "init", "--update", "--public"])
+            .output()
+            .expect("failed to run init --update (nonexistent)")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "init --update on nonexistent config should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no config to update"),
+        "expected 'no config to update' error, got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn test_init_update_no_flags_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(&config_path, "[network]\npublic = false\n").unwrap();
+
+    let config_str = config_path.to_str().unwrap().to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["init", "--config", &config_str, "--update"])
+            .output()
+            .expect("failed to run init --update")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "init --update with no flags should fail (exit non-zero)"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("nothing to update"),
+        "expected 'nothing to update' error, got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn test_init_update_preserves_trailing_comments() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        "[network]\npublic = false # important note\nbootstrap = [\"keep:1\"] # node list\n",
+    )
+    .unwrap();
+
+    let config_str = config_path.to_str().unwrap().to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["init", "--config", &config_str, "--update", "--public"])
+            .output()
+            .expect("failed to run init --update")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init --update failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains("# important note"),
+        "trailing comment on updated key should be preserved, got: {content}"
+    );
+    assert!(
+        content.contains("# node list"),
+        "trailing comment on untouched key should be preserved, got: {content}"
+    );
+    assert!(
+        content.contains("true"),
+        "public should be updated to true, got: {content}"
+    );
+    assert!(
+        content.contains("keep:1"),
+        "bootstrap should be untouched, got: {content}"
+    );
+}
+
+// ── Test: init --man-pages generates manpages ───────────────────────────────
+
+#[tokio::test]
+async fn test_init_man_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["init", "--man-pages", &dir_str])
+            .output()
+            .expect("failed to run init --man-pages")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init --man-pages failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let man1_dir = dir.path().join("man1");
+    assert!(man1_dir.exists(), "man1/ subdirectory not created");
+
     let expected_pages = [
         "peeroxide.1",
+        "peeroxide-init.1",
         "peeroxide-node.1",
         "peeroxide-lookup.1",
         "peeroxide-announce.1",
         "peeroxide-ping.1",
         "peeroxide-cp.1",
-        "peeroxide-config.1",
         "peeroxide-deaddrop.1",
     ];
 
     for page in &expected_pages {
-        let path = dir.path().join(page);
+        let path = man1_dir.join(page);
         assert!(path.exists(), "missing manpage: {page}");
         let content = std::fs::read(&path).unwrap();
         assert!(!content.is_empty(), "empty manpage: {page}");
     }
+}
+
+// ── Test: init --man-pages conflicts with config flags ──────────────────────
+
+#[tokio::test]
+async fn test_init_man_pages_conflicts_with_force() {
+    let output = tokio::task::spawn_blocking(|| {
+        Command::new(bin_path())
+            .args(["init", "--man-pages", "/tmp", "--force"])
+            .output()
+            .expect("failed to run init")
+    })
+    .await
+    .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be used with") || stderr.contains("conflict"),
+        "expected conflict error, got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn test_init_man_pages_conflicts_with_update() {
+    let output = tokio::task::spawn_blocking(|| {
+        Command::new(bin_path())
+            .args(["init", "--man-pages", "/tmp", "--update"])
+            .output()
+            .expect("failed to run init")
+    })
+    .await
+    .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be used with") || stderr.contains("conflict"),
+        "expected conflict error, got: {stderr}"
+    );
+}
+
+// ── Test: init respects PEEROXIDE_CONFIG env ────────────────────────────────
+
+#[tokio::test]
+async fn test_init_respects_peeroxide_config_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("custom.toml");
+    let config_str = config_path.to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .env("PEEROXIDE_CONFIG", &config_str)
+            .args(["init"])
+            .output()
+            .expect("failed to run init")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init with PEEROXIDE_CONFIG failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(config_path.exists(), "config not created at PEEROXIDE_CONFIG path");
+}
+
+// ── Test: init --man-pages default path (no argument) ───────────────────────
+
+#[tokio::test]
+async fn test_init_man_pages_default_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_str().unwrap().to_string();
+
+    // When --man-pages is given WITH a path, it uses that path (already tested).
+    // This test verifies the flag accepts no value (uses default_missing_value).
+    // We can't test writing to /usr/local/share/man/ in CI, so we verify the
+    // flag parses without a value by checking it doesn't fail with "missing value".
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .env("HOME", &dir_str)
+            .args(["init", "--man-pages"])
+            .output()
+            .expect("failed to run init --man-pages")
+    })
+    .await
+    .unwrap();
+
+    // It will likely fail due to permissions on /usr/local/share/man/,
+    // but it should NOT fail with a clap parsing error.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("error: a value is required"),
+        "--man-pages should accept zero arguments, got: {stderr}"
+    );
+}
+
+// ── Test: init --update preserves inline table fields ────────────────────────
+
+#[tokio::test]
+async fn test_init_update_preserves_inline_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"network = { public = false, bootstrap = ["keep:1234"] }"#,
+    )
+    .unwrap();
+
+    let config_str = config_path.to_str().unwrap().to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["init", "--config", &config_str, "--update", "--public"])
+            .output()
+            .expect("failed to run init --update")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init --update failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains("keep:1234"),
+        "bootstrap should be preserved in inline table, got: {content}"
+    );
+    assert!(
+        content.contains("true"),
+        "public should be set to true, got: {content}"
+    );
+}
+
+// ── Test: init rejects directory as config path ─────────────────────────────
+
+#[tokio::test]
+async fn test_init_rejects_directory_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_str().unwrap().to_string();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["init", "--config", &dir_str])
+            .output()
+            .expect("failed to run init")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "init should fail when --config points to a directory"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is a directory"),
+        "error should mention directory, got: {stderr}"
+    );
+}
+
+// ── Test: init --update rejects non-table network value ─────────────────────
+
+#[tokio::test]
+async fn test_init_update_rejects_non_table_network() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(&config_path, "network = \"oops\"\n").unwrap();
+
+    let config_str = config_path.to_str().unwrap().to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["init", "--config", &config_str, "--update", "--public"])
+            .output()
+            .expect("failed to run init --update")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "init --update should fail on non-table network value"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a table"),
+        "error should mention non-table, got: {stderr}"
+    );
 }
 
 // ── Test: global --help ─────────────────────────────────────────────────────
@@ -426,6 +872,7 @@ async fn test_global_help() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("init"));
     assert!(stdout.contains("node"));
     assert!(stdout.contains("lookup"));
     assert!(stdout.contains("announce"));

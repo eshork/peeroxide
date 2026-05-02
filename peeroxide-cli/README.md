@@ -24,11 +24,11 @@ The binary is named `peeroxide`.
 ## Quick Start
 
 ```sh
-# 1. Generate a config file (optional but recommended)
-peeroxide config init --output ~/.config/peeroxide/config.toml
+# 1. Initialize a config file (optional but recommended)
+peeroxide init
 
 # 2. Install man pages
-peeroxide --generate-man ~/.local/share/man/man1/
+peeroxide init --man-pages ~/.local/share/man/
 
 # 3. Verify network connectivity and discover your public address
 peeroxide --public ping
@@ -38,13 +38,13 @@ peeroxide --public ping
 
 | Command | Description |
 |---------|-------------|
+| `init` | Initialize config file or install man pages |
 | `node` | Run a long-running DHT coordination (bootstrap) node |
 | `lookup` | Query the DHT for peers announcing a topic |
 | `announce` | Announce presence on a topic |
 | `ping` | Diagnose reachability; bootstrap check, NAT classification, or targeted ping |
 | `cp` | Copy files between peers over the swarm |
 | `deaddrop` | Anonymous store-and-forward via the DHT |
-| `config` | Configuration management (`config init`) |
 
 Run `peeroxide <command> --help` for detailed usage of each command.
 
@@ -53,7 +53,7 @@ Run `peeroxide <command> --help` for detailed usage of each command.
 Generate and install man pages:
 
 ```sh
-peeroxide --generate-man ~/.local/share/man/man1/
+peeroxide init --man-pages ~/.local/share/man/
 ```
 
 If `~/.local/share/man` is not in your `MANPATH`, add it:
@@ -66,12 +66,12 @@ This produces 8 pages:
 
 ```
 peeroxide(1)          — main command and global options
+peeroxide-init(1)     — config initialization and man page installation
 peeroxide-node(1)     — bootstrap node operation
 peeroxide-lookup(1)   — DHT topic lookup
 peeroxide-announce(1) — DHT topic announcement
 peeroxide-ping(1)     — connectivity diagnostics
 peeroxide-cp(1)       — file transfer (send + recv)
-peeroxide-config(1)   — configuration management
 peeroxide-deaddrop(1) — anonymous messaging (leave + pickup)
 ```
 
@@ -80,11 +80,20 @@ peeroxide-deaddrop(1) — anonymous messaging (leave + pickup)
 ### Generating a config file
 
 ```sh
-# Print to stdout (inspect before saving)
-peeroxide config init
+# Create config at default location (~/.config/peeroxide/config.toml)
+peeroxide init
 
-# Write to default location
-peeroxide config init --output ~/.config/peeroxide/config.toml
+# Create config with public mode enabled
+peeroxide init --public
+
+# Create config with custom bootstrap nodes
+peeroxide init --bootstrap node1.example.com:49737
+
+# Overwrite existing config
+peeroxide init --force
+
+# Update specific fields in existing config
+peeroxide init --update --public
 ```
 
 ### Config file location
