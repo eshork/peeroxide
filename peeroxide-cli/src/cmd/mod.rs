@@ -40,6 +40,7 @@ pub fn resolve_bootstrap(cfg: &ResolvedConfig) -> Vec<String> {
     let mut bootstrap = cfg.bootstrap.clone();
 
     if cfg.public == Some(true) {
+        tracing::debug!("--public: adding default bootstrap nodes");
         for addr in &default_bootstrap {
             if !bootstrap.contains(addr) {
                 bootstrap.push(addr.clone());
@@ -48,12 +49,16 @@ pub fn resolve_bootstrap(cfg: &ResolvedConfig) -> Vec<String> {
     }
 
     if bootstrap.is_empty() {
+        tracing::debug!("no bootstrap configured, using public defaults (auto-public)");
         bootstrap = default_bootstrap.clone();
     }
 
     if cfg.public == Some(false) {
+        tracing::debug!("--no-public: removing default bootstrap nodes");
         bootstrap.retain(|addr| !default_bootstrap.contains(addr));
     }
+
+    tracing::info!(nodes = %bootstrap.join(", "), count = bootstrap.len(), "bootstrap resolved");
 
     bootstrap
 }

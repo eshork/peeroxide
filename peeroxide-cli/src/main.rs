@@ -32,6 +32,10 @@ struct Cli {
     /// Bootstrap node addresses (host:port or ip:port), repeatable
     #[arg(long, global = true, action = clap::ArgAction::Append)]
     bootstrap: Vec<String>,
+
+    /// Increase output verbosity (-v info, -vv debug)
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 #[derive(Subcommand)]
@@ -72,17 +76,30 @@ fn apply_config_footer(cmd: clap::Command, footer: &str) -> clap::Command {
     cmd.after_help(footer.to_string())
 }
 
-fn main() {
+fn init_tracing(verbose: u8) {
+    let filter = if std::env::var("RUST_LOG").is_ok() {
+        EnvFilter::from_default_env()
+    } else {
+        match verbose {
+            0 => EnvFilter::new("warn"),
+            1 => EnvFilter::new("peeroxide=info,warn"),
+            _ => EnvFilter::new("peeroxide=debug,info"),
+        }
+    };
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
+}
 
+fn main() {
     let footer = config::config_path_footer();
     let cmd = apply_config_footer(Cli::command(), &footer);
     let mut help_cmd = cmd.clone();
     let matches = cmd.get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e: clap::Error| e.exit());
+
+    init_tracing(cli.verbose);
 
     let Some(command) = cli.command else {
         help_cmd.print_help().ok();

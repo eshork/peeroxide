@@ -58,6 +58,7 @@ pub fn load_config(flags: &GlobalFlags) -> Result<ResolvedConfig, String> {
     let file_config = if let Some(ref path) = flags.config_path {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read config file {path}: {e}"))?;
+        tracing::info!(path, "config loaded");
         Some(
             toml::from_str::<ConfigFile>(&contents)
                 .map_err(|e| format!("invalid config file {path}: {e}"))?,
@@ -65,15 +66,33 @@ pub fn load_config(flags: &GlobalFlags) -> Result<ResolvedConfig, String> {
     } else if let Some(path) = env_config_path() {
         let contents = std::fs::read_to_string(&path)
             .map_err(|e| format!("cannot read config file {}: {e}", path.display()))?;
+        tracing::info!(path = %path.display(), "config loaded via $PEEROXIDE_CONFIG");
         Some(
             toml::from_str::<ConfigFile>(&contents)
                 .map_err(|e| format!("invalid config file {}: {e}", path.display()))?,
         )
     } else if !flags.no_default_config {
-        default_config_path()
-            .and_then(|p| std::fs::read_to_string(&p).ok())
-            .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        match default_config_path() {
+            Some(p) => {
+                let contents = std::fs::read_to_string(&p).ok();
+                if let Some(ref contents) = contents {
+                    tracing::info!(path = %p.display(), "config loaded");
+                    Some(
+                        toml::from_str::<ConfigFile>(contents)
+                            .map_err(|e| format!("invalid config file {}: {e}", p.display()))?,
+                    )
+                } else {
+                    tracing::debug!("no config file found at default location");
+                    None
+                }
+            }
+            None => {
+                tracing::debug!("no default config path available");
+                None
+            }
+        }
     } else {
+        tracing::debug!("config file loading skipped (--no-default-config)");
         None
     };
 

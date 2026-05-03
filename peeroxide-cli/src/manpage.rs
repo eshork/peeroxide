@@ -181,6 +181,7 @@ fn is_global_arg(arg: &clap::Arg) -> bool {
             | "public"
             | "no_public"
             | "bootstrap"
+            | "verbose"
             | "help"
     )
 }

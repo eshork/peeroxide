@@ -126,9 +126,9 @@ These flags apply to all subcommands:
 | `--config <FILE>` | Use a specific config file |
 | `--no-default-config` | Ignore the default config entirely |
 | `--bootstrap <ADDR>` | Add bootstrap nodes (repeatable) |
-| `--public` | Mark this node as publicly reachable |
-| `--no-public` | Force NAT mode (override config) |
-| `--firewalled` | Force firewalled status for testing |
+| `--public` | Use the public HyperDHT bootstrap network |
+| `--no-public` | Do not use the public HyperDHT bootstrap network |
+| `-v`, `--verbose` | Increase output verbosity (-v info, -vv debug) |
 
 ## Examples
 
