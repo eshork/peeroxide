@@ -106,23 +106,23 @@ async fn test_live_announce_then_lookup() {
 }
 
 #[tokio::test]
-#[ignore = "requires internet — deaddrop roundtrip on public HyperDHT"]
-async fn test_live_deaddrop_roundtrip() {
+#[ignore = "requires internet — dd roundtrip on public HyperDHT"]
+async fn test_live_dd_roundtrip() {
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         let dir = tempfile::tempdir().unwrap();
         let msg_path = dir.path().join("live-msg.txt");
-        std::fs::write(&msg_path, b"live deaddrop test message").unwrap();
+        std::fs::write(&msg_path, b"live dd test message").unwrap();
 
         let msg_path_str = msg_path.to_str().unwrap().to_string();
         let mut leave_child = Command::new(bin_path())
             .args([
                 "--no-default-config", "--public",
-                "deaddrop", "leave", &msg_path_str, "--ttl", "45",
+                "dd", "put", &msg_path_str, "--ttl", "45",
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("failed to spawn deaddrop leave");
+            .expect("failed to spawn dd put");
 
         let stdout = leave_child.stdout.take().unwrap();
         let pickup_key = tokio::task::spawn_blocking(move || {
@@ -139,7 +139,7 @@ async fn test_live_deaddrop_roundtrip() {
         .await
         .unwrap();
 
-        let pickup_key = pickup_key.expect("deaddrop leave did not output pickup key");
+        let pickup_key = pickup_key.expect("dd put did not output pickup key");
 
         tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -147,12 +147,12 @@ async fn test_live_deaddrop_roundtrip() {
             Command::new(bin_path())
                 .args([
                     "--no-default-config", "--public",
-                    "deaddrop", "pickup", &pickup_key,
+                    "dd", "get", &pickup_key,
                     "--timeout", "30",
                     "--no-ack",
                 ])
                 .output()
-                .expect("failed to run deaddrop pickup")
+                .expect("failed to run dd get")
         })
         .await
         .unwrap();
@@ -164,17 +164,17 @@ async fn test_live_deaddrop_roundtrip() {
 
         assert!(
             pickup_output.status.success(),
-            "live deaddrop pickup failed: {pickup_stderr}"
+            "live dd get failed: {pickup_stderr}"
         );
 
         assert_eq!(
-            pickup_stdout.as_ref(), "live deaddrop test message",
-            "pickup content mismatch.\nstdout: {pickup_stdout}\nstderr: {pickup_stderr}"
+            pickup_stdout.as_ref(), "live dd test message",
+            "get content mismatch.\nstdout: {pickup_stdout}\nstderr: {pickup_stderr}"
         );
     })
     .await;
 
-    assert!(result.is_ok(), "test_live_deaddrop_roundtrip timed out after 60s");
+    assert!(result.is_ok(), "test_live_dd_roundtrip timed out after 60s");
 }
 
 #[tokio::test]

@@ -21,15 +21,15 @@ const NON_ROOT_PAYLOAD_MAX: usize = MAX_PAYLOAD - NON_ROOT_HEADER_SIZE;
 const VERSION: u8 = 0x01;
 
 #[derive(Subcommand)]
-pub enum DeaddropCommands {
-    /// Store data on DHT, print pickup key
-    Leave(LeaveArgs),
-    /// Retrieve data from DHT using pickup key
-    Pickup(PickupArgs),
+pub enum DdCommands {
+    /// Store data at a dead drop location on the DHT
+    Put(PutArgs),
+    /// Retrieve data from a dead drop location on the DHT
+    Get(GetArgs),
 }
 
 #[derive(Args)]
-pub struct LeaveArgs {
+pub struct PutArgs {
     /// File path or - for stdin
     file: String,
 
@@ -59,7 +59,7 @@ pub struct LeaveArgs {
 }
 
 #[derive(Args)]
-pub struct PickupArgs {
+pub struct GetArgs {
     /// Pickup key (64-char hex or passphrase text)
     #[arg(required_unless_present_any = ["passphrase", "interactive_passphrase"])]
     key: Option<String>,
@@ -85,10 +85,10 @@ pub struct PickupArgs {
     no_ack: bool,
 }
 
-pub async fn run(cmd: DeaddropCommands, cfg: &ResolvedConfig) -> i32 {
+pub async fn run(cmd: DdCommands, cfg: &ResolvedConfig) -> i32 {
     match cmd {
-        DeaddropCommands::Leave(args) => run_leave(args, cfg).await,
-        DeaddropCommands::Pickup(args) => run_pickup(args, cfg).await,
+        DdCommands::Put(args) => run_put(args, cfg).await,
+        DdCommands::Get(args) => run_get(args, cfg).await,
     }
 }
 
@@ -138,7 +138,7 @@ fn parse_max_speed(s: &str) -> Result<u64, String> {
     }
 }
 
-async fn run_leave(args: LeaveArgs, cfg: &ResolvedConfig) -> i32 {
+async fn run_put(args: PutArgs, cfg: &ResolvedConfig) -> i32 {
     if args.refresh_interval == 0 {
         eprintln!("error: --refresh-interval must be greater than 0");
         return 1;
@@ -240,7 +240,7 @@ async fn run_leave(args: LeaveArgs, cfg: &ResolvedConfig) -> i32 {
         (None, None)
     };
 
-    eprintln!("DEADDROP LEAVE {} chunks ({} bytes)", total_chunks, data.len());
+    eprintln!("DD PUT {} chunks ({} bytes)", total_chunks, data.len());
 
     if let Err(e) = publish_chunks(&handle, &chunks, max_concurrency, dispatch_delay, true).await {
         eprintln!("error: publish failed: {e}");
@@ -548,7 +548,7 @@ async fn publish_chunks(
     Ok(())
 }
 
-async fn run_pickup(args: PickupArgs, cfg: &ResolvedConfig) -> i32 {
+async fn run_get(args: GetArgs, cfg: &ResolvedConfig) -> i32 {
     if args.timeout == 0 {
         eprintln!("error: --timeout must be greater than 0");
         return 1;
@@ -585,7 +585,7 @@ async fn run_pickup(args: PickupArgs, cfg: &ResolvedConfig) -> i32 {
     };
 
     let pk_hex = to_hex(&root_public_key);
-    eprintln!("DEADDROP PICKUP @{}...", &pk_hex[..8]);
+    eprintln!("DD GET @{}...", &pk_hex[..8]);
 
     let dht_config = build_dht_config(cfg);
     let runtime = match UdxRuntime::new() {

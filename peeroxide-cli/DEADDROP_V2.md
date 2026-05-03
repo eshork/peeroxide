@@ -1,6 +1,6 @@
-# Deaddrop v2: Two-Chain Storage Protocol
+# Dead Drop v2: Two-Chain Storage Protocol
 
-Future revision of the deaddrop frame format. Supersedes the v1 single linked-list design with a two-chain architecture that enables parallel data fetch while preserving read-only pickup semantics.
+Future revision of the dead drop frame format. Supersedes the v1 single linked-list design with a two-chain architecture that enables parallel data fetch while preserving read-only get semantics.
 
 ## Motivation
 
@@ -133,8 +133,8 @@ Refresh: re-put all data chunks and all index chunks with `seq = current Unix ti
 ## Migration Notes
 
 - Version byte 0x02 distinguishes v2 frames from v1 (0x01)
-- A v2-aware `pickup` client can detect the version from the root chunk and handle both formats
-- `leave` would default to v2 but could support `--format v1` for compatibility during transition
+- A v2-aware `dd get` client can detect the version from the root chunk and handle both formats
+- `dd put` would default to v2 but could support `--format v1` for compatibility during transition
 - The pickup key format is unchanged (64-char hex root public key)
 - Passphrase mode works identically (passphrase → blake2b → root_seed → root_keypair → root_pubkey)
 

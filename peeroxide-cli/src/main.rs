@@ -56,10 +56,11 @@ enum Commands {
         #[command(subcommand)]
         command: cmd::cp::CpCommands,
     },
-    /// Anonymous store-and-forward via the DHT
-    Deaddrop {
+    /// Dead Drop: anonymous store-and-forward via the DHT
+    #[command(name = "dd")]
+    Dd {
         #[command(subcommand)]
-        command: cmd::deaddrop::DeaddropCommands,
+        command: cmd::deaddrop::DdCommands,
     },
 }
 
@@ -136,7 +137,7 @@ fn main() {
                     Commands::Announce(args) => cmd::announce::run(args, &cfg).await,
                     Commands::Ping(args) => cmd::ping::run(args, &cfg).await,
                     Commands::Cp { command } => cmd::cp::run(command, &cfg).await,
-                    Commands::Deaddrop { command } => cmd::deaddrop::run(command, &cfg).await,
+                    Commands::Dd { command } => cmd::deaddrop::run(command, &cfg).await,
                     Commands::Init(_) => unreachable!(),
                 }
             }

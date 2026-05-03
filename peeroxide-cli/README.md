@@ -44,7 +44,7 @@ peeroxide --public ping
 | `announce` | Announce presence on a topic |
 | `ping` | Diagnose reachability; bootstrap check, NAT classification, or targeted ping |
 | `cp` | Copy files between peers over the swarm |
-| `deaddrop` | Anonymous store-and-forward via the DHT |
+| `dd` | Dead Drop: anonymous store-and-forward via the DHT |
 
 Run `peeroxide <command> --help` for detailed usage of each command.
 
@@ -72,7 +72,7 @@ peeroxide-lookup(1)   — DHT topic lookup
 peeroxide-announce(1) — DHT topic announcement
 peeroxide-ping(1)     — connectivity diagnostics
 peeroxide-cp(1)       — file transfer (send + recv)
-peeroxide-deaddrop(1) — anonymous messaging (leave + pickup)
+peeroxide-dd(1)       — dead drop messaging (put + get)
 ```
 
 ## Configuration
@@ -163,11 +163,11 @@ peeroxide cp recv my-transfer-topic ./downloads/
 # Stream from stdin
 cat data.bin | peeroxide cp send - my-transfer-topic
 
-# Leave a dead drop message
-echo 'secret' | peeroxide deaddrop leave - --passphrase s3cret
+# Put a message at a dead drop
+echo 'secret' | peeroxide dd put - --passphrase s3cret
 
-# Pick up a dead drop message
-peeroxide deaddrop pickup --passphrase s3cret
+# Get a message from a dead drop
+peeroxide dd get --passphrase s3cret
 
 # Run a public bootstrap node
 peeroxide node --public --port 49737

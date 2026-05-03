@@ -1,14 +1,14 @@
-# Deaddrop Output Formats
+# Dead Drop Output Formats
 
-The `deaddrop` command supports both human-readable terminal output and machine-readable JSON output for integration with other tools.
+The `dd` command supports both human-readable terminal output and machine-readable JSON output for integration with other tools.
 
 ## Human-Readable Output (Default)
 
-By default, `deaddrop` prints status messages to `stderr` and the resulting data (for `pickup`) or key (for `leave`) to `stdout`.
+By default, `dd` prints status messages to `stderr` and the resulting data (for `get`) or key (for `put`) to `stdout`.
 
-### `leave` status output
+### `put` status output
 ```text
-DEADDROP LEAVE 5 chunks (4500 bytes)
+DD PUT 5 chunks (4500 bytes)
   published chunk 1/5
   published chunk 2/5
   ...
@@ -17,9 +17,9 @@ DEADDROP LEAVE 5 chunks (4500 bytes)
   refreshing every 600s, monitoring for acks...
 ```
 
-### `pickup` status output
+### `get` status output
 ```text
-DEADDROP PICKUP @a1b2c3d4...
+DD GET @a1b2c3d4...
   fetching chunk 1/5...
   fetching chunk 2/5...
   ...
@@ -32,7 +32,7 @@ DEADDROP PICKUP @a1b2c3d4...
 
 Using the `--json` flag changes the output to a single-line JSON object per event or result.
 
-### `leave` result
+### `put` result
 When data is successfully published, the pickup key is returned:
 
 ```json
@@ -44,7 +44,7 @@ When data is successfully published, the pickup key is returned:
 }
 ```
 
-### `pickup` result
+### `get` result
 When data is successfully retrieved:
 
 ```json

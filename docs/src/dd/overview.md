@@ -1,8 +1,8 @@
-# Deaddrop Overview
+# Dead Drop Overview
 
-The `deaddrop` tool provides an anonymous, asynchronous store-and-forward mechanism using the DHT. It allows a sender to "leave" data on the network that a receiver can later "pickup" using a unique key, without requiring both parties to be online at the same time.
+The `dd` command provides an anonymous, asynchronous store-and-forward mechanism using the DHT. It allows a sender to "put" data on the network that a receiver can later "get" using a unique key, without requiring both parties to be online at the same time.
 
-Unlike the `cp` command, which establishes a direct peer-to-peer connection between a sender and receiver, `deaddrop` uses mutable DHT values to store data. This makes it ideal for scenarios where the sender and receiver have intermittent connectivity or want to avoid direct IP discovery.
+Unlike the `cp` command, which establishes a direct peer-to-peer connection between a sender and receiver, `dd` uses mutable DHT values to store data. This makes it ideal for scenarios where the sender and receiver have intermittent connectivity or want to avoid direct IP discovery.
 
 ## Key Features
 
@@ -15,30 +15,30 @@ Unlike the `cp` command, which establishes a direct peer-to-peer connection betw
 
 ## Basic Usage
 
-### Leaving Data
+### Putting Data
 
-To leave a message or file on the DHT:
+To put a message or file at a dead drop on the DHT:
 
 ```bash
-echo "Hello from the void" | peeroxide deaddrop leave - --passphrase "my secret drop"
+echo "Hello from the void" | peeroxide dd put - --passphrase "my secret drop"
 ```
 
 The tool will print a 64-character hexadecimal pickup key (unless a passphrase is used). It will then continue to run, refreshing the data on the DHT to ensure it doesn't expire.
 
-### Picking Up Data
+### Getting Data
 
 To retrieve data:
 
 ```bash
-peeroxide deaddrop pickup --passphrase "my secret drop"
+peeroxide dd get --passphrase "my secret drop"
 ```
 
 The receiver fetches each chunk sequentially, reassembles the original data, and verifies its integrity using a CRC-32C checksum.
 
 ## How it Differs from `cp`
 
-| Feature | `cp` | `deaddrop` |
-|---------|------|------------|
+| Feature | `cp` | `dd` |
+|---------|------|------|
 | **Connection** | Direct P2P (UDX) | Mediated via DHT storage |
 | **Online Requirement** | Both must be online | Asynchronous |
 | **Discovery** | Topic-based | Key-based (Public Key) |

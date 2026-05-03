@@ -15,7 +15,7 @@ docs/
     ├── announce/      — announce command documentation (echo protocol defined here)
     ├── ping/          — ping command documentation (cross-refs echo protocol)
     ├── cp/            — cp command documentation
-    ├── deaddrop/      — deaddrop command documentation
+    ├── dd/            — dd (Dead Drop) command documentation
     └── appendices/    — Security model, limits & performance
 ```
 
@@ -40,7 +40,7 @@ Output goes to `docs/book/` (gitignored).
 - Cross-references use relative `[text](../path/to/file.md)` links (mdBook requirement).
 - Human output examples go on **stderr**; structured JSON output goes on **stdout**.
 - The Echo Protocol is defined exactly once in `src/announce/echo-protocol.md`. All other chapters that reference it must link there rather than re-documenting it.
-- `deaddrop/future-direction.md` describes v2 (not yet implemented) — keep clearly labeled.
+- `dd/future-direction.md` describes v2 (not yet implemented) — keep clearly labeled.
 
 ## Deployment
 

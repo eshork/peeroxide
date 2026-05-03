@@ -11,10 +11,10 @@ This appendix documents hard limits, configurable bounds, and observed performan
 | `IDLE_TIMEOUT` | 30 s | Echo session idle timeout |
 | `ECHO_MSG_LEN` | 16 bytes | Echo probe frame size (fixed) |
 | `ECHO_TIMEOUT` (ping) | 5 s | Per-probe timeout in `ping --connect` mode |
-| `MAX_CHUNKS` | 65 535 | Maximum chunks in a single `deaddrop` message |
-| `MAX_PAYLOAD` | 1 000 bytes | Maximum payload per `deaddrop` chunk |
-| `ROOT_HEADER_SIZE` | 39 bytes | `deaddrop` root chunk header size |
-| `NON_ROOT_HEADER_SIZE` | 33 bytes | `deaddrop` non-root chunk header size |
+| `MAX_CHUNKS` | 65 535 | Maximum chunks in a single `dd` message |
+| `MAX_PAYLOAD` | 1 000 bytes | Maximum payload per `dd` chunk |
+| `ROOT_HEADER_SIZE` | 39 bytes | `dd` root chunk header size |
+| `NON_ROOT_HEADER_SIZE` | 33 bytes | `dd` non-root chunk header size |
 | `CHUNK_SIZE` (cp) | 65 536 bytes | `cp` file chunk size |
 | `--data` max (announce) | 1 000 bytes | Maximum `--data` payload for `announce` |
 | lookup `--with-data` concurrency | 16 | `buffer_unordered(16)` for mutable DHT gets |
@@ -22,7 +22,7 @@ This appendix documents hard limits, configurable bounds, and observed performan
 
 ## Derived Limits
 
-**Maximum `deaddrop` message size:**
+**Maximum `dd` message size:**
 
 ```
 MAX_CHUNKS × MAX_PAYLOAD = 65 535 × 1 000 = ~65.5 MB

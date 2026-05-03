@@ -12,7 +12,7 @@ The toolkit consists of five primary commands:
 - **[announce](./announce/overview.md)**: Announce your presence on a topic so others can discover you.
 - **[ping](./ping/overview.md)**: Diagnose reachability through bootstrap checks, NAT classification, or targeted peer pings.
 - **[cp](./cp/overview.md)**: Transfer files directly between peers over an encrypted swarm connection.
-- **[deaddrop](./deaddrop/overview.md)**: Perform anonymous store-and-forward messaging via the DHT.
+- **[dd (Dead Drop)](./dd/overview.md)**: Perform anonymous store-and-forward messaging via the DHT.
 
 ## Key Concepts
 
