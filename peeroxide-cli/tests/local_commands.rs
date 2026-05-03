@@ -253,10 +253,10 @@ async fn test_config_file_loading() {
     assert!(result.is_ok(), "test_config_file_loading timed out");
 }
 
-// ── Test: deaddrop leave then pickup (local DHT) ────────────────────────────
+// ── Test: dd put then get (local DHT) ───────────────────────────────────────
 
 #[tokio::test]
-async fn test_deaddrop_local_roundtrip() {
+async fn test_dd_local_roundtrip() {
     let result = tokio::time::timeout(Duration::from_secs(45), async {
         let (ports, _cluster) = spawn_dht_cluster(3).await;
         let bs_addr = format!("127.0.0.1:{}", ports[0]);
@@ -264,7 +264,7 @@ async fn test_deaddrop_local_roundtrip() {
         let input_path = dir.path().join("input.txt");
         let output_path = dir.path().join("output.txt");
 
-        let msg = b"local deaddrop test payload";
+        let msg = b"local dd test payload";
         std::fs::write(&input_path, msg).unwrap();
 
         let input_path_str = input_path.to_str().unwrap().to_string();
@@ -272,14 +272,14 @@ async fn test_deaddrop_local_roundtrip() {
         let mut leave = Command::new(bin_path())
             .args([
                 "--no-default-config", "--public",
-                "deaddrop", "leave", &input_path_str,
+                "dd", "put", &input_path_str,
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "35",
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("failed to spawn deaddrop leave");
+            .expect("failed to spawn dd put");
 
         let stdout = leave.stdout.take().unwrap();
         let pickup_key = tokio::task::spawn_blocking(move || {
@@ -296,7 +296,7 @@ async fn test_deaddrop_local_roundtrip() {
         .await
         .unwrap();
 
-        let pickup_key = pickup_key.expect("deaddrop leave did not output a pickup key");
+        let pickup_key = pickup_key.expect("dd put did not output a pickup key");
 
         tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -306,14 +306,14 @@ async fn test_deaddrop_local_roundtrip() {
             Command::new(bin_path())
                 .args([
                     "--no-default-config", "--public",
-                    "deaddrop", "pickup", &pickup_key,
+                    "dd", "get", &pickup_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--output", &output_path_str,
                     "--timeout", "20",
                     "--no-ack",
                 ])
                 .output()
-                .expect("failed to run deaddrop pickup")
+                .expect("failed to run dd get")
         })
         .await
         .unwrap();
@@ -323,7 +323,7 @@ async fn test_deaddrop_local_roundtrip() {
         let stderr = String::from_utf8_lossy(&pickup_output.stderr);
         assert!(
             pickup_output.status.success(),
-            "deaddrop pickup failed: {stderr}"
+            "dd get failed: {stderr}"
         );
 
         let received = std::fs::read(&output_path).expect("output file not found");
@@ -331,7 +331,7 @@ async fn test_deaddrop_local_roundtrip() {
     })
     .await;
 
-    assert!(result.is_ok(), "test_deaddrop_local_roundtrip timed out");
+    assert!(result.is_ok(), "test_dd_local_roundtrip timed out");
 }
 
 // ── Test: --help works for all subcommands ──────────────────────────────────
@@ -339,7 +339,7 @@ async fn test_deaddrop_local_roundtrip() {
 #[tokio::test]
 async fn test_help_all_subcommands() {
     let result = tokio::time::timeout(Duration::from_secs(10), async {
-        let subcommands = ["init", "node", "lookup", "announce", "ping", "cp", "deaddrop"];
+        let subcommands = ["init", "node", "lookup", "announce", "ping", "cp", "dd"];
 
         for subcmd in subcommands {
             let subcmd_owned = subcmd.to_string();
@@ -655,7 +655,7 @@ async fn test_init_man_pages() {
         "peeroxide-announce.1",
         "peeroxide-ping.1",
         "peeroxide-cp.1",
-        "peeroxide-deaddrop.1",
+        "peeroxide-dd.1",
     ];
 
     for page in &expected_pages {
@@ -664,6 +664,52 @@ async fn test_init_man_pages() {
         let content = std::fs::read(&path).unwrap();
         assert!(!content.is_empty(), "empty manpage: {page}");
     }
+}
+
+// ── Test: init --man-pages removes stale pages ─────────────────────────────
+
+#[tokio::test]
+async fn test_init_man_pages_removes_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let man1_dir = dir.path().join("man1");
+    std::fs::create_dir_all(&man1_dir).unwrap();
+
+    std::fs::write(man1_dir.join("peeroxide-deaddrop.1"), b"stale").unwrap();
+    std::fs::write(man1_dir.join("peeroxide-config.1"), b"stale").unwrap();
+    std::fs::write(man1_dir.join("unrelated.1"), b"keep").unwrap();
+
+    let dir_str = dir.path().to_str().unwrap().to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(bin_path())
+            .args(["init", "--man-pages", &dir_str])
+            .output()
+            .expect("failed to run init --man-pages")
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init --man-pages failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !man1_dir.join("peeroxide-deaddrop.1").exists(),
+        "stale peeroxide-deaddrop.1 should have been removed"
+    );
+    assert!(
+        !man1_dir.join("peeroxide-config.1").exists(),
+        "stale peeroxide-config.1 should have been removed"
+    );
+    assert!(
+        man1_dir.join("unrelated.1").exists(),
+        "non-peeroxide files should be preserved"
+    );
+    assert!(
+        man1_dir.join("peeroxide-dd.1").exists(),
+        "current peeroxide-dd.1 should exist"
+    );
 }
 
 // ── Test: init --man-pages conflicts with config flags ──────────────────────
@@ -878,7 +924,7 @@ async fn test_global_help() {
     assert!(stdout.contains("announce"));
     assert!(stdout.contains("ping"));
     assert!(stdout.contains("cp"));
-    assert!(stdout.contains("deaddrop"));
+    assert!(stdout.contains("dd"));
 }
 
 // ── Test: ping direct with --json produces valid NDJSON ─────────────────────
@@ -1428,7 +1474,7 @@ async fn test_cp_isolated_no_bootstrap_times_out() {
 }
 
 #[tokio::test]
-async fn test_deaddrop_passphrase_roundtrip() {
+async fn test_dd_passphrase_roundtrip() {
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         let (ports, _cluster) = spawn_dht_cluster(3).await;
         let bs_addr = format!("127.0.0.1:{}", ports[0]);
@@ -1436,7 +1482,7 @@ async fn test_deaddrop_passphrase_roundtrip() {
         let input_path = dir.path().join("input.txt");
         let output_path = dir.path().join("output.txt");
 
-        let msg = b"passphrase deaddrop roundtrip payload";
+        let msg = b"passphrase dd roundtrip payload";
         std::fs::write(&input_path, msg).unwrap();
 
         let input_path_str = input_path.to_str().unwrap().to_string();
@@ -1446,10 +1492,10 @@ async fn test_deaddrop_passphrase_roundtrip() {
         leave_cmd
             .args([
                 "--no-default-config", "--public",
-                "deaddrop", "leave", &input_path_str,
+                "dd", "put", &input_path_str,
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "40",
-                "--passphrase", "deaddrop-test-pass-abc",
+                "--passphrase", "dd-test-pass-abc",
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1461,7 +1507,7 @@ async fn test_deaddrop_passphrase_roundtrip() {
             unsafe { leave_cmd.pre_exec(|| { setsid(); Ok(()) }); }
         }
 
-        let mut leave = leave_cmd.spawn().expect("failed to spawn deaddrop leave --passphrase");
+        let mut leave = leave_cmd.spawn().expect("failed to spawn dd put --passphrase");
 
         let stdout = leave.stdout.take().unwrap();
         let pickup_key = tokio::task::spawn_blocking(move || {
@@ -1478,7 +1524,7 @@ async fn test_deaddrop_passphrase_roundtrip() {
         .await
         .unwrap();
 
-        let pickup_key = pickup_key.expect("deaddrop leave --passphrase did not output pickup key");
+        let pickup_key = pickup_key.expect("dd put --passphrase did not output pickup key");
 
         tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -1488,14 +1534,14 @@ async fn test_deaddrop_passphrase_roundtrip() {
             Command::new(bin_path())
                 .args([
                     "--no-default-config", "--public",
-                    "deaddrop", "pickup", &pickup_key,
+                    "dd", "get", &pickup_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--output", &output_path_str,
                     "--timeout", "20",
                     "--no-ack",
                 ])
                 .output()
-                .expect("failed to run deaddrop pickup after passphrase leave")
+                .expect("failed to run dd get after passphrase put")
         })
         .await
         .unwrap();
@@ -1505,19 +1551,19 @@ async fn test_deaddrop_passphrase_roundtrip() {
         let stderr = String::from_utf8_lossy(&pickup_output.stderr);
         assert!(
             pickup_output.status.success(),
-            "pickup after passphrase leave failed: {stderr}"
+            "get after passphrase put failed: {stderr}"
         );
 
         let received = std::fs::read(&output_path).expect("output file not found");
-        assert_eq!(received, msg, "payload mismatch after passphrase leave.\nstderr: {stderr}");
+        assert_eq!(received, msg, "payload mismatch after passphrase put.\nstderr: {stderr}");
     })
     .await;
 
-    assert!(result.is_ok(), "test_deaddrop_passphrase_roundtrip timed out");
+    assert!(result.is_ok(), "test_dd_passphrase_roundtrip timed out");
 }
 
 #[tokio::test]
-async fn test_deaddrop_large_payload() {
+async fn test_dd_large_payload() {
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         let (ports, _cluster) = spawn_dht_cluster(3).await;
         let bs_addr = format!("127.0.0.1:{}", ports[0]);
@@ -1533,14 +1579,14 @@ async fn test_deaddrop_large_payload() {
         let mut leave = Command::new(bin_path())
             .args([
                 "--no-default-config", "--public",
-                "deaddrop", "leave", &input_path_str,
+                "dd", "put", &input_path_str,
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "40",
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("failed to spawn deaddrop leave (large payload)");
+            .expect("failed to spawn dd put (large payload)");
 
         let stdout = leave.stdout.take().unwrap();
         let pickup_key = tokio::task::spawn_blocking(move || {
@@ -1557,7 +1603,7 @@ async fn test_deaddrop_large_payload() {
         .await
         .unwrap();
 
-        let pickup_key = pickup_key.expect("deaddrop leave (large) did not output pickup key");
+        let pickup_key = pickup_key.expect("dd put (large) did not output pickup key");
 
         tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -1567,14 +1613,14 @@ async fn test_deaddrop_large_payload() {
             Command::new(bin_path())
                 .args([
                     "--no-default-config", "--public",
-                    "deaddrop", "pickup", &pickup_key,
+                    "dd", "get", &pickup_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--output", &output_path_str,
                     "--timeout", "25",
                     "--no-ack",
                 ])
                 .output()
-                .expect("failed to run deaddrop pickup (large payload)")
+                .expect("failed to run dd get (large payload)")
         })
         .await
         .unwrap();
@@ -1584,7 +1630,7 @@ async fn test_deaddrop_large_payload() {
         let stderr = String::from_utf8_lossy(&pickup_output.stderr);
         assert!(
             pickup_output.status.success(),
-            "deaddrop pickup (large payload) failed: {stderr}"
+            "dd get (large payload) failed: {stderr}"
         );
 
         let received = std::fs::read(&output_path).expect("output file not found (large payload)");
@@ -1597,22 +1643,22 @@ async fn test_deaddrop_large_payload() {
     })
     .await;
 
-    assert!(result.is_ok(), "test_deaddrop_large_payload timed out");
+    assert!(result.is_ok(), "test_dd_large_payload timed out");
 }
 
 #[tokio::test]
-async fn test_deaddrop_stdin_stdout() {
+async fn test_dd_stdin_stdout() {
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         let (ports, _cluster) = spawn_dht_cluster(3).await;
         let bs_addr = format!("127.0.0.1:{}", ports[0]);
 
-        let msg = b"stdin-to-stdout deaddrop test payload";
+        let msg = b"stdin-to-stdout dd test payload";
 
         let bs_addr_clone = bs_addr.clone();
         let mut leave = Command::new(bin_path())
             .args([
                 "--no-default-config", "--public",
-                "deaddrop", "leave", "-",
+                "dd", "put", "-",
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "40",
             ])
@@ -1620,7 +1666,7 @@ async fn test_deaddrop_stdin_stdout() {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("failed to spawn deaddrop leave (stdin)");
+            .expect("failed to spawn dd put (stdin)");
 
         let mut leave_stdin = leave.stdin.take().unwrap();
         let msg_clone = msg.to_vec();
@@ -1642,7 +1688,7 @@ async fn test_deaddrop_stdin_stdout() {
         });
 
         let (_, pickup_key_result) = tokio::join!(stdin_writer, key_reader);
-        let pickup_key = pickup_key_result.unwrap().expect("deaddrop leave (stdin) did not output pickup key");
+        let pickup_key = pickup_key_result.unwrap().expect("dd put (stdin) did not output pickup key");
 
         tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -1651,13 +1697,13 @@ async fn test_deaddrop_stdin_stdout() {
             Command::new(bin_path())
                 .args([
                     "--no-default-config", "--public",
-                    "deaddrop", "pickup", &pickup_key,
+                    "dd", "get", &pickup_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--timeout", "20",
                     "--no-ack",
                 ])
                 .output()
-                .expect("failed to run deaddrop pickup (stdout mode)")
+                .expect("failed to run dd get (stdout mode)")
         })
         .await
         .unwrap();
@@ -1667,7 +1713,7 @@ async fn test_deaddrop_stdin_stdout() {
         let stderr = String::from_utf8_lossy(&pickup_output.stderr);
         assert!(
             pickup_output.status.success(),
-            "deaddrop pickup (stdout mode) failed: {stderr}"
+            "dd get (stdout mode) failed: {stderr}"
         );
 
         assert_eq!(
@@ -1677,11 +1723,11 @@ async fn test_deaddrop_stdin_stdout() {
     })
     .await;
 
-    assert!(result.is_ok(), "test_deaddrop_stdin_stdout timed out");
+    assert!(result.is_ok(), "test_dd_stdin_stdout timed out");
 }
 
 #[tokio::test]
-async fn test_deaddrop_pickup_timeout() {
+async fn test_dd_get_timeout() {
     let result = tokio::time::timeout(Duration::from_secs(30), async {
         let (ports, _cluster) = spawn_dht_cluster(3).await;
         let bs_addr = format!("127.0.0.1:{}", ports[0]);
@@ -1692,20 +1738,20 @@ async fn test_deaddrop_pickup_timeout() {
             Command::new(bin_path())
                 .args([
                     "--no-default-config", "--public",
-                    "deaddrop", "pickup", nonexistent_key,
+                    "dd", "get", nonexistent_key,
                     "--bootstrap", &bs_addr,
                     "--timeout", "5",
                     "--no-ack",
                 ])
                 .output()
-                .expect("failed to run deaddrop pickup (timeout test)")
+                .expect("failed to run dd get (timeout test)")
         })
         .await
         .unwrap();
 
         assert!(
             !pickup_output.status.success(),
-            "pickup of nonexistent key should fail, but exited 0"
+            "get of nonexistent key should fail, but exited 0"
         );
 
         let stderr = String::from_utf8_lossy(&pickup_output.stderr);
@@ -1716,11 +1762,11 @@ async fn test_deaddrop_pickup_timeout() {
     })
     .await;
 
-    assert!(result.is_ok(), "test_deaddrop_pickup_timeout timed out");
+    assert!(result.is_ok(), "test_dd_get_timeout timed out");
 }
 
 #[tokio::test]
-async fn test_deaddrop_wrong_passphrase_fails() {
+async fn test_dd_wrong_passphrase_fails() {
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         let (ports, _cluster) = spawn_dht_cluster(3).await;
         let bs_addr = format!("127.0.0.1:{}", ports[0]);
@@ -1737,7 +1783,7 @@ async fn test_deaddrop_wrong_passphrase_fails() {
         leave_cmd
             .args([
                 "--no-default-config", "--public",
-                "deaddrop", "leave", &input_path_str,
+                "dd", "put", &input_path_str,
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "40",
                 "--passphrase", "correct-secret-passphrase",
@@ -1752,7 +1798,7 @@ async fn test_deaddrop_wrong_passphrase_fails() {
             unsafe { leave_cmd.pre_exec(|| { setsid(); Ok(()) }); }
         }
 
-        let mut leave = leave_cmd.spawn().expect("failed to spawn deaddrop leave (wrong passphrase test)");
+        let mut leave = leave_cmd.spawn().expect("failed to spawn dd put (wrong passphrase test)");
 
         let stdout = leave.stdout.take().unwrap();
         let leave_key_result = tokio::task::spawn_blocking(move || {
@@ -1769,7 +1815,7 @@ async fn test_deaddrop_wrong_passphrase_fails() {
         .await
         .unwrap();
 
-        assert!(leave_key_result.is_some(), "deaddrop leave did not output a key");
+        assert!(leave_key_result.is_some(), "dd put did not output a key");
 
         tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -1779,13 +1825,13 @@ async fn test_deaddrop_wrong_passphrase_fails() {
             Command::new(bin_path())
                 .args([
                     "--no-default-config", "--public",
-                    "deaddrop", "pickup", wrong_key,
+                    "dd", "get", wrong_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--timeout", "8",
                     "--no-ack",
                 ])
                 .output()
-                .expect("failed to run deaddrop pickup (wrong passphrase test)")
+                .expect("failed to run dd get (wrong passphrase test)")
         })
         .await
         .unwrap();
@@ -1794,10 +1840,10 @@ async fn test_deaddrop_wrong_passphrase_fails() {
 
         assert!(
             !pickup_output.status.success(),
-            "pickup with wrong key should fail, but succeeded"
+            "get with wrong key should fail, but succeeded"
         );
     })
     .await;
 
-    assert!(result.is_ok(), "test_deaddrop_wrong_passphrase_fails timed out");
+    assert!(result.is_ok(), "test_dd_wrong_passphrase_fails timed out");
 }

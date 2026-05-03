@@ -3,7 +3,7 @@
 use clap::CommandFactory;
 use std::io::Write;
 
-const CONSOLIDATED: &[&str] = &["peeroxide-cp", "peeroxide-deaddrop"];
+const CONSOLIDATED: &[&str] = &["peeroxide-cp", "peeroxide-dd"];
 
 /// Generate all man pages and return them as (filename_stem, content) pairs.
 pub fn generate_all() -> Vec<(String, Vec<u8>)> {
@@ -347,16 +347,16 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              renamed to the final path only after the full transfer succeeds and the size \
              is validated.",
         ),
-        "peeroxide-deaddrop" => Some(
-            "Anonymous store-and-forward messaging via the DHT's mutable record storage. \
-             Messages are encrypted with a passphrase-derived key and stored as mutable \
+        "peeroxide-dd" => Some(
+            "Dead Drop: anonymous store-and-forward messaging via the DHT's mutable record \
+             storage. Messages are encrypted with a passphrase-derived key and stored as mutable \
              DHT records that any peer can retrieve without knowing the sender's identity.\n\n\
              The dead drop uses a chunked binary format with CRC32c integrity checks. \
              Messages are limited to approximately 1000 bytes per chunk (with multi-chunk \
              support for larger payloads).",
         ),
-        "peeroxide-deaddrop-leave" => Some(
-            "Leave an anonymous message at a dead drop location in the DHT. The message \
+        "peeroxide-dd-put" => Some(
+            "Store an anonymous message at a dead drop location in the DHT. The message \
              is encrypted with a passphrase-derived keypair and stored as a mutable DHT \
              record.\n\n\
              The passphrase can be provided inline with --passphrase or prompted \
@@ -368,7 +368,7 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              peers. Records persist in the DHT as long as nodes cache them (typically hours \
              to days depending on network conditions).",
         ),
-        "peeroxide-deaddrop-pickup" => Some(
+        "peeroxide-dd-get" => Some(
             "Retrieve a message from a dead drop location in the DHT. The pickup key \
              can be a 64-character hex public key, a passphrase string (if less than 64 \
              hex chars), or derived interactively.\n\n\
@@ -378,8 +378,8 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              The retrieved message is written to stdout (or to a file with --output). If \
              no message is found at the specified location, or if decryption fails (wrong \
              passphrase), an error is reported.\n\n\
-             The pickup operation is read-only and does not modify or consume the stored \
-             record -- the same message can be picked up multiple times by different peers.",
+             The get operation is read-only and does not modify or consume the stored \
+             record -- the same message can be retrieved multiple times by different peers.",
         ),
 
         "peeroxide-init" => Some(
@@ -523,26 +523,26 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
                 "Receive to stdout:",
             ),
         ]),
-        "peeroxide-deaddrop" => Some(&[
+        "peeroxide-dd" => Some(&[
             (
-                "echo 'secret message' | peeroxide deaddrop leave - --passphrase s3cret",
-                "Leave a message with an inline passphrase (read from stdin):",
+                "echo 'secret message' | peeroxide dd put - --passphrase s3cret",
+                "Put a message at a dead drop with an inline passphrase (read from stdin):",
             ),
             (
-                "peeroxide deaddrop leave ./msg.txt --interactive-passphrase",
-                "Leave a file with a prompted passphrase (hidden input):",
+                "peeroxide dd put ./msg.txt --interactive-passphrase",
+                "Put a file at a dead drop with a prompted passphrase (hidden input):",
             ),
             (
-                "peeroxide deaddrop pickup --passphrase s3cret",
-                "Pick up a message using the same passphrase:",
+                "peeroxide dd get --passphrase s3cret",
+                "Get a message from a dead drop using the same passphrase:",
             ),
             (
-                "peeroxide deaddrop pickup --interactive-passphrase --output ./msg.txt",
-                "Pick up with prompted passphrase, write to file:",
+                "peeroxide dd get --interactive-passphrase --output ./msg.txt",
+                "Get with prompted passphrase, write to file:",
             ),
             (
-                "peeroxide deaddrop pickup a1b2c3...64chars",
-                "Pick up using a raw hex public key:",
+                "peeroxide dd get a1b2c3...64chars",
+                "Get using a raw hex public key:",
             ),
         ]),
 
@@ -579,7 +579,7 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
 fn exit_status_for(name: &str) -> Option<&'static str> {
     match name {
         "peeroxide" | "peeroxide-init" | "peeroxide-node" | "peeroxide-lookup"
-        | "peeroxide-announce" | "peeroxide-cp" | "peeroxide-deaddrop" => Some(
+        | "peeroxide-announce" | "peeroxide-cp" | "peeroxide-dd" => Some(
             ".TP\n\\fB0\\fR\nSuccess.\n\
              .TP\n\\fB1\\fR\nFailure or partial failure.\n\
              .TP\n\\fB2\\fR\nUsage error (invalid arguments).\n\
@@ -604,7 +604,7 @@ fn see_also_for(name: &str) -> Option<&'static [&'static str]> {
             "peeroxide-announce",
             "peeroxide-ping",
             "peeroxide-cp",
-            "peeroxide-deaddrop",
+            "peeroxide-dd",
         ]),
         "peeroxide-init" => Some(&["peeroxide"]),
         "peeroxide-node" => Some(&["peeroxide"]),
@@ -616,9 +616,9 @@ fn see_also_for(name: &str) -> Option<&'static [&'static str]> {
             "peeroxide-lookup",
             "peeroxide",
         ]),
-        "peeroxide-cp" => Some(&["peeroxide-deaddrop", "peeroxide"]),
+        "peeroxide-cp" => Some(&["peeroxide-dd", "peeroxide"]),
 
-        "peeroxide-deaddrop" => Some(&["peeroxide-cp", "peeroxide"]),
+        "peeroxide-dd" => Some(&["peeroxide-cp", "peeroxide"]),
         _ => None,
     }
 }

@@ -1,6 +1,6 @@
-# Deaddrop Wire Format
+# Dead Drop Wire Format
 
-Deaddrop uses a versioned binary format for its DHT records. Each record consists of a header followed by the payload.
+The dead drop uses a versioned binary format for its DHT records. Each record consists of a header followed by the payload.
 
 ## Constants
 
@@ -11,7 +11,7 @@ Deaddrop uses a versioned binary format for its DHT records. Each record consist
 
 ## Root Chunk (v1)
 
-The root chunk is the entry point of the deaddrop. Its public key is the "pickup key".
+The root chunk is the entry point of the dead drop. Its public key is the "pickup key".
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|

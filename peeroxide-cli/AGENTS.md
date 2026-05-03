@@ -1,6 +1,6 @@
 # AGENTS.md — peeroxide-cli/
 
-This crate implements the `peeroxide` CLI binary with five subcommands: `lookup`, `announce`, `ping`, `cp`, `deaddrop`.
+This crate implements the `peeroxide` CLI binary with five subcommands: `lookup`, `announce`, `ping`, `cp`, `dd`.
 
 ## Source Layout
 
@@ -13,7 +13,7 @@ src/
 │   ├── announce.rs   — announce subcommand + echo protocol server
 │   ├── ping.rs       — ping subcommand (bootstrap check, direct, pubkey, topic, --connect)
 │   ├── cp.rs         — cp subcommand (send/recv file transfer over swarm)
-│   └── deaddrop.rs   — deaddrop subcommand (mutable DHT store-and-forward)
+│   └── deaddrop.rs   — dd subcommand (mutable DHT store-and-forward, "Dead Drop")
 ```
 
 ## Key Shared Helpers (cmd/mod.rs)

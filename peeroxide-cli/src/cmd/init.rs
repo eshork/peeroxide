@@ -57,8 +57,13 @@ fn run_man_pages(base_path: &Path) -> i32 {
     }
 
     let pages = manpage::generate_all();
+    let mut generated_filenames: std::collections::HashSet<std::ffi::OsString> =
+        std::collections::HashSet::new();
+
     for (name, content) in &pages {
-        let path = man1_dir.join(format!("{name}.1"));
+        let filename = format!("{name}.1");
+        generated_filenames.insert(std::ffi::OsString::from(&filename));
+        let path = man1_dir.join(&filename);
         if let Err(e) = std::fs::write(&path, content) {
             eprintln!(
                 "error: failed to write {}: {e}\n\n\
@@ -70,6 +75,21 @@ fn run_man_pages(base_path: &Path) -> i32 {
             return 1;
         }
         eprintln!("{}", path.display());
+    }
+
+    // Clean up stale peeroxide-*.1 pages from previous installations (e.g. renamed commands).
+    if let Ok(entries) = std::fs::read_dir(&man1_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("peeroxide")
+                && name_str.ends_with(".1")
+                && !generated_filenames.contains(&name)
+                && std::fs::remove_file(entry.path()).is_ok()
+            {
+                eprintln!("removed stale: {}", entry.path().display());
+            }
+        }
     }
 
     eprintln!(

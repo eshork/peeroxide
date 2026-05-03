@@ -29,14 +29,14 @@ The DHT is **untrusted infrastructure**. Any node can relay packets, and routing
 - Immutable DHT values (used by `cp`) are addressed by the SHA-256 hash of their content. Content is verified on retrieval.
 - Topic keys are not secret — anyone who knows the topic can look up its peer list. Do not treat topic confidentiality as a security property.
 
-## `deaddrop` Threat Model
+## `dd` (Dead Drop) Threat Model
 
-`deaddrop` uses **mutable DHT storage** addressed by `(public_key, topic)`. Security properties:
+`dd` uses **mutable DHT storage** addressed by `(public_key, topic)`. Security properties:
 
 - Only the holder of the private key can write to a slot (signatures enforced by the DHT).
 - Anyone who knows `(public_key, topic)` can read the slot — there is no access control on reads.
-- Data is signed but **not encrypted** at the DHT layer. For sensitive payloads, encrypt the application data before using `deaddrop`.
-- `deaddrop` is designed for asynchronous communication where sender and receiver share a topic out-of-band.
+- Data is signed but **not encrypted** at the DHT layer. For sensitive payloads, encrypt the application data before using `dd`.
+- `dd` is designed for asynchronous communication where sender and receiver share a topic out-of-band.
 
 ## `cp` Threat Model
 

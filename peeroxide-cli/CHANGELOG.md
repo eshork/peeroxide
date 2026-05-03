@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed `deaddrop` command to `dd` (short for "Dead Drop")
+- Renamed `deaddrop leave` subcommand to `dd put`
+- Renamed `deaddrop pickup` subcommand to `dd get`
+
 ## [0.1.0] - 2026-04-29
 
 ### Added

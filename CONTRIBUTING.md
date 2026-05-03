@@ -8,7 +8,7 @@ This project is a Rust implementation of the Hyperswarm stack, focusing on wire 
 | `libudx` | Reliable UDP transport with BBR congestion control | crates.io |
 | `peeroxide-dht` | Kademlia DHT, Noise handshakes, hole-punching, relay | crates.io |
 | `peeroxide` | High-level swarm and topic-based discovery | crates.io |
-| `peeroxide-cli` | CLI toolkit: lookup, announce, ping, cp, deaddrop | crates.io (binary) |
+| `peeroxide-cli` | CLI toolkit: lookup, announce, ping, cp, dd | crates.io (binary) |
 
 ## Development Requirements
 

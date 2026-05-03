@@ -21,11 +21,11 @@
 - [cp](./cp/overview.md)
   - [Protocol](./cp/protocol.md)
   - [Reliability](./cp/reliability.md)
-- [deaddrop](./deaddrop/overview.md)
-  - [Architecture](./deaddrop/architecture.md)
-  - [Wire Format](./deaddrop/format.md)
-  - [Operations](./deaddrop/operations.md)
-  - [Future Direction](./deaddrop/future-direction.md)
+- [dd (Dead Drop)](./dd/overview.md)
+  - [Architecture](./dd/architecture.md)
+  - [Wire Format](./dd/format.md)
+  - [Operations](./dd/operations.md)
+  - [Future Direction](./dd/future-direction.md)
 
 # Appendices
 

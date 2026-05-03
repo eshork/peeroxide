@@ -1,12 +1,12 @@
 # Future Direction (Not Yet Implemented)
 
-**Note: The following features and protocol changes describe Deaddrop v2 and are not yet implemented.**
+**Note: The following features and protocol changes describe Dead Drop v2 and are not yet implemented.**
 
-The current Deaddrop v1 protocol uses a single linked-list of chunks. While functional, this requires sequential fetching where the receiver must download each chunk to discover the address of the next. For large files, this leads to high latency due to sequential round-trips.
+The current Dead Drop v1 protocol uses a single linked-list of chunks. While functional, this requires sequential fetching where the receiver must download each chunk to discover the address of the next. For large files, this leads to high latency due to sequential round-trips.
 
-## Deaddrop v2: Two-Chain Storage Protocol
+## Dead Drop v2: Two-Chain Storage Protocol
 
-Deaddrop v2 introduces a "two-chain" architecture to enable parallel data fetching while preserving anonymity and read-only pickup semantics.
+Dead Drop v2 introduces a "two-chain" architecture to enable parallel data fetching while preserving anonymity and read-only pickup semantics.
 
 ### Index Chain vs. Data Chain
 
