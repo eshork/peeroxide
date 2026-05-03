@@ -7,7 +7,6 @@ pub struct GlobalFlags {
     pub config_path: Option<String>,
     pub no_default_config: bool,
     pub public: Option<bool>,
-    pub firewalled: bool,
     pub bootstrap: Option<Vec<String>>,
 }
 
@@ -50,8 +49,7 @@ pub struct CpConfig {}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedConfig {
-    pub public: bool,
-    pub firewalled: bool,
+    pub public: Option<bool>,
     pub bootstrap: Vec<String>,
     pub node: NodeConfig,
 }
@@ -81,16 +79,7 @@ pub fn load_config(flags: &GlobalFlags) -> Result<ResolvedConfig, String> {
 
     let file_config = file_config.unwrap_or_default();
 
-    let mut public = flags
-        .public
-        .or(file_config.network.public)
-        .unwrap_or(false);
-
-    // --firewalled explicitly overrides any config-derived public=true.
-    // You cannot be both public and firewalled simultaneously.
-    if flags.firewalled {
-        public = false;
-    }
+    let public = flags.public.or(file_config.network.public);
 
     let bootstrap = flags
         .bootstrap
@@ -100,7 +89,6 @@ pub fn load_config(flags: &GlobalFlags) -> Result<ResolvedConfig, String> {
 
     Ok(ResolvedConfig {
         public,
-        firewalled: flags.firewalled,
         bootstrap,
         node: file_config.node,
     })
@@ -221,11 +209,10 @@ max_lru_age = 1200
             config_path: None,
             no_default_config: true,
             public: Some(true),
-            firewalled: false,
             bootstrap: Some(vec!["1.2.3.4:49737".to_string()]),
         };
         let cfg = load_config(&flags).unwrap();
-        assert!(cfg.public);
+        assert_eq!(cfg.public, Some(true));
         assert_eq!(cfg.bootstrap, vec!["1.2.3.4:49737"]);
     }
 
@@ -235,29 +222,10 @@ max_lru_age = 1200
             config_path: None,
             no_default_config: true,
             public: None,
-            firewalled: false,
             bootstrap: None,
         };
         let cfg = load_config(&flags).unwrap();
-        assert!(!cfg.public);
+        assert_eq!(cfg.public, None);
         assert!(cfg.bootstrap.is_empty());
-    }
-
-    #[test]
-    fn firewalled_flag_overrides_config_public() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.toml");
-        std::fs::write(&config_path, "[network]\npublic = true\n").unwrap();
-
-        let flags = GlobalFlags {
-            config_path: Some(config_path.to_str().unwrap().to_string()),
-            no_default_config: false,
-            public: None,
-            firewalled: true,
-            bootstrap: None,
-        };
-        let cfg = load_config(&flags).unwrap();
-        assert!(!cfg.public, "--firewalled must force public=false even when config says public=true");
-        assert!(cfg.firewalled);
     }
 }

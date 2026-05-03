@@ -21,18 +21,13 @@ struct Cli {
     #[arg(long, global = true)]
     no_default_config: bool,
 
-    /// Mark this node as publicly reachable
+    /// Use the public HyperDHT bootstrap network
     #[arg(long, global = true, conflicts_with = "no_public")]
     public: bool,
 
-    /// Mark this node as NOT publicly reachable (override config)
+    /// Do not use the public HyperDHT bootstrap network
     #[arg(long, global = true, conflicts_with = "public")]
     no_public: bool,
-
-    /// Force this node to report as firewalled (FIREWALL_CONSISTENT).
-    /// Useful for testing firewall-specific connection paths.
-    #[arg(long, global = true, conflicts_with = "public")]
-    firewalled: bool,
 
     /// Bootstrap node addresses (host:port or ip:port), repeatable
     #[arg(long, global = true, action = clap::ArgAction::Append)]
@@ -115,7 +110,6 @@ fn main() {
                     } else {
                         None
                     },
-                    firewalled: cli.firewalled,
                     bootstrap: if cli.bootstrap.is_empty() {
                         None
                     } else {

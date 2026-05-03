@@ -180,7 +180,6 @@ fn is_global_arg(arg: &clap::Arg) -> bool {
             | "no_default_config"
             | "public"
             | "no_public"
-            | "firewalled"
             | "bootstrap"
             | "help"
     )
@@ -260,18 +259,18 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              The tool connects to the public Hyperswarm DHT by default, or to custom \
              bootstrap nodes specified via --bootstrap flags or the configuration file. \
              All subcommands share a common set of global options for network configuration.\n\n\
-             Use --public to mark this node as publicly reachable (not behind NAT), \
-             --no-public to force NAT mode, or --firewalled to simulate a consistently \
-             firewalled node for testing firewall-specific connection paths.",
+             Use --public to include the public HyperDHT bootstrap nodes, or --no-public \
+             to exclude them. If no bootstrap nodes are configured and --no-public is not \
+             given, the public bootstrap is used automatically.",
         ),
         "peeroxide-node" => Some(
             "Run a long-lived DHT coordination (bootstrap) node that participates in the \
              distributed hash table routing layer. Bootstrap nodes help new peers discover \
              the network and facilitate Kademlia routing table population.\n\n\
              A node listens for incoming DHT RPC requests and maintains routing state. \
-             Use --public to mark the node as publicly reachable (required for production \
-             bootstrap nodes). The --port flag binds to a specific UDP port for consistent \
-             addressing.\n\n\
+             Use --public to include the public HyperDHT bootstrap nodes (required for \
+             production bootstrap nodes to join the network). The --port flag binds to a \
+             specific UDP port for consistent addressing.\n\n\
              The node runs until terminated by SIGTERM or SIGINT.",
         ),
         "peeroxide-lookup" => Some(
@@ -307,7 +306,8 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              Noise-encrypted connection and PING/PONG echo exchange.\n\n\
              <topic> — Look up the topic in the DHT, then ping all discovered peers.\n\n\
              In bootstrap check mode (no target), the resolved bootstrap list comes from \
-             the config file, --bootstrap flags, or public defaults (with --public). The \
+             the config file, --bootstrap flags, or public defaults (with --public or by \
+             default when no other bootstrap is configured). The \
              output includes per-node reachability and routing table size, your reflexive \
              public address, a NAT type classification (open, consistent, random, or \
              multi-homed), and the total unique peers discovered across all bootstraps.\n\n\

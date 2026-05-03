@@ -7,7 +7,7 @@ use tokio::signal;
 use tokio::io::AsyncWriteExt;
 
 use crate::config::ResolvedConfig;
-use super::{build_dht_config, parse_topic, to_hex, FIREWALL_CONSISTENT, FIREWALL_OPEN};
+use super::{build_dht_config, parse_topic, to_hex};
 
 const CHUNK_SIZE: usize = 65536;
 
@@ -122,11 +122,6 @@ async fn run_send(args: SendArgs, cfg: &ResolvedConfig) -> i32 {
     let dht_config = build_dht_config(cfg);
     let mut swarm_config = SwarmConfig::default();
     swarm_config.dht = dht_config;
-    if cfg.public {
-        swarm_config.firewall = FIREWALL_OPEN;
-    } else if cfg.firewalled {
-        swarm_config.firewall = FIREWALL_CONSISTENT;
-    }
 
     let (task, handle, mut conn_rx) = match spawn(swarm_config).await {
         Ok(v) => v,
@@ -354,11 +349,6 @@ async fn run_recv(args: RecvArgs, cfg: &ResolvedConfig) -> i32 {
     let dht_config = build_dht_config(cfg);
     let mut swarm_config = SwarmConfig::default();
     swarm_config.dht = dht_config;
-    if cfg.public {
-        swarm_config.firewall = FIREWALL_OPEN;
-    } else if cfg.firewalled {
-        swarm_config.firewall = FIREWALL_CONSISTENT;
-    }
 
     let (task, handle, mut conn_rx) = match spawn(swarm_config).await {
         Ok(v) => v,

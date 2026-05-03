@@ -167,7 +167,7 @@ async fn test_announce_then_lookup() {
 
         let mut announce = Command::new(bin_path())
             .args([
-                "--no-default-config", "--public",
+                "--no-default-config", "--no-public",
                 "announce", "local-test-announce-lookup",
                 "--bootstrap", &bs_addr,
                 "--duration", "20",
@@ -183,7 +183,7 @@ async fn test_announce_then_lookup() {
         let output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--public",
+                    "--no-default-config", "--no-public",
                     "lookup", "local-test-announce-lookup",
                     "--bootstrap", &bs_addr_clone,
                     "--json",
@@ -271,7 +271,7 @@ async fn test_dd_local_roundtrip() {
         let bs_addr_clone = bs_addr.clone();
         let mut leave = Command::new(bin_path())
             .args([
-                "--no-default-config", "--public",
+                "--no-default-config", "--no-public",
                 "dd", "put", &input_path_str,
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "35",
@@ -305,7 +305,7 @@ async fn test_dd_local_roundtrip() {
         let pickup_output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--public",
+                    "--no-default-config", "--no-public",
                     "dd", "get", &pickup_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--output", &output_path_str,
@@ -1123,12 +1123,12 @@ async fn test_ping_by_topic() {
 //
 // LIMITATION: On same-host, `should_direct_connect` always returns true
 // (same_host=true), so ALL these tests take the direct-connect path regardless
-// of --public/--firewalled flags. They do NOT verify topology-specific
+// of --public/--no-public flags. They do NOT verify topology-specific
 // relay/holepunch behavior (T3/T5/T6). Topology-specific connection path
 // decisions are covered by the unit-level 3×6 scenario matrix in cmd/mod.rs.
 //
-// The flag combinations (--public, --firewalled, default) verify that the
-// CLI correctly passes firewall config through to the swarm without causing
+// The flag combinations (--public, --no-public, default) verify that the
+// CLI correctly passes bootstrap config through to the swarm without causing
 // connection failures. Actual firewall-differentiated behavior requires
 // multi-host or network-namespace testing.
 
@@ -1152,7 +1152,7 @@ async fn test_cp_local_roundtrip() {
         let src_str = src_path.to_str().unwrap().to_string();
         let mut sender = Command::new(bin_path())
             .args([
-                "--no-default-config", "--public",
+                "--no-default-config", "--no-public",
                 "cp", "send", &src_str,
                 "--bootstrap", &bs_for_send,
             ])
@@ -1189,7 +1189,7 @@ async fn test_cp_local_roundtrip() {
         let recv_output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--public",
+                    "--no-default-config", "--no-public",
                     "cp", "recv", &topic,
                     &dest_str,
                     "--bootstrap", &bs_for_recv,
@@ -1226,13 +1226,13 @@ async fn test_cp_local_roundtrip() {
     assert!(result.is_ok(), "test_cp_local_roundtrip timed out");
 }
 
-async fn cp_roundtrip_with_flags(sender_public: bool, receiver_public: bool, test_name: &str) {
+async fn cp_roundtrip_with_flags(sender_no_public: bool, receiver_no_public: bool, test_name: &str) {
     let (port, _bs) = spawn_bootstrap().await;
     let bs_addr = format!("127.0.0.1:{port}");
     let dir = tempfile::tempdir().unwrap();
 
     let src_path = dir.path().join("testfile.txt");
-    let payload = b"firewall scenario test payload\n";
+    let payload = b"bootstrap scenario test payload\n";
     std::fs::write(&src_path, payload).unwrap();
 
     let dest_path = dir.path().join("received.txt");
@@ -1241,8 +1241,8 @@ async fn cp_roundtrip_with_flags(sender_public: bool, receiver_public: bool, tes
     let src_str = src_path.to_str().unwrap().to_string();
 
     let mut send_args: Vec<&str> = vec!["--no-default-config"];
-    if sender_public {
-        send_args.push("--public");
+    if sender_no_public {
+        send_args.push("--no-public");
     }
     send_args.extend(["cp", "send", &src_str, "--bootstrap"]);
 
@@ -1279,8 +1279,8 @@ async fn cp_roundtrip_with_flags(sender_public: bool, receiver_public: bool, tes
     let tn2 = test_name.to_string();
 
     let mut recv_args: Vec<String> = vec!["--no-default-config".to_string()];
-    if receiver_public {
-        recv_args.push("--public".to_string());
+    if receiver_no_public {
+        recv_args.push("--no-public".to_string());
     }
     recv_args.extend([
         "cp".to_string(),
@@ -1326,7 +1326,7 @@ async fn cp_roundtrip_with_flags(sender_public: bool, receiver_public: bool, tes
 #[tokio::test]
 async fn test_cp_sender_default_receiver_public() {
     let result = tokio::time::timeout(Duration::from_secs(45), async {
-        cp_roundtrip_with_flags(false, true, "sender_default_receiver_public").await;
+        cp_roundtrip_with_flags(false, true, "sender_default_receiver_no_public").await;
     })
     .await;
     assert!(result.is_ok(), "test_cp_sender_default_receiver_public timed out");
@@ -1335,7 +1335,7 @@ async fn test_cp_sender_default_receiver_public() {
 #[tokio::test]
 async fn test_cp_sender_public_receiver_default() {
     let result = tokio::time::timeout(Duration::from_secs(45), async {
-        cp_roundtrip_with_flags(true, false, "sender_public_receiver_default").await;
+        cp_roundtrip_with_flags(true, false, "sender_no_public_receiver_default").await;
     })
     .await;
     assert!(result.is_ok(), "test_cp_sender_public_receiver_default timed out");
@@ -1353,14 +1353,14 @@ async fn test_cp_both_default_same_host() {
 // ── Isolated mode: no bootstrap, graceful failure ────────────────────────────
 
 #[tokio::test]
-async fn test_cp_firewalled_flag_roundtrip() {
+async fn test_cp_no_public_flag_roundtrip() {
     let result = tokio::time::timeout(Duration::from_secs(45), async {
         let (port, _bs) = spawn_bootstrap().await;
         let bs_addr = format!("127.0.0.1:{port}");
         let dir = tempfile::tempdir().unwrap();
 
         let src_path = dir.path().join("testfile.txt");
-        let payload = b"firewalled flag e2e test\n";
+        let payload = b"no-public flag e2e test\n";
         std::fs::write(&src_path, payload).unwrap();
 
         let dest_path = dir.path().join("received.txt");
@@ -1370,14 +1370,14 @@ async fn test_cp_firewalled_flag_roundtrip() {
 
         let mut sender = Command::new(bin_path())
             .args([
-                "--no-default-config", "--firewalled",
+                "--no-default-config", "--no-public",
                 "cp", "send", &src_str,
                 "--bootstrap", &bs_for_send,
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("failed to spawn cp send with --firewalled");
+            .expect("failed to spawn cp send with --no-public");
 
         let stdout = sender.stdout.take().unwrap();
         let topic = tokio::task::spawn_blocking(move || {
@@ -1394,7 +1394,7 @@ async fn test_cp_firewalled_flag_roundtrip() {
         .await
         .unwrap();
 
-        let topic = topic.expect("cp send --firewalled did not output topic");
+        let topic = topic.expect("cp send --no-public did not output topic");
 
         tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -1403,7 +1403,7 @@ async fn test_cp_firewalled_flag_roundtrip() {
         let recv_output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--firewalled",
+                    "--no-default-config", "--no-public",
                     "cp", "recv", &topic,
                     &dest_str,
                     "--bootstrap", &bs_for_recv,
@@ -1412,7 +1412,7 @@ async fn test_cp_firewalled_flag_roundtrip() {
                     "--timeout", "30",
                 ])
                 .output()
-                .expect("failed to run cp recv with --firewalled")
+                .expect("failed to run cp recv with --no-public")
         })
         .await
         .unwrap();
@@ -1422,18 +1422,18 @@ async fn test_cp_firewalled_flag_roundtrip() {
         let stderr = String::from_utf8_lossy(&recv_output.stderr);
         assert!(
             recv_output.status.success(),
-            "cp recv --firewalled failed: {stderr}"
+            "cp recv --no-public failed: {stderr}"
         );
 
         let received = std::fs::read(&dest_path)
             .unwrap_or_else(|_| panic!("output file not found\nstderr: {stderr}"));
         assert_eq!(
             received, payload,
-            "file content mismatch with --firewalled flag.\nstderr: {stderr}"
+            "file content mismatch with --no-public flag.\nstderr: {stderr}"
         );
     })
     .await;
-    assert!(result.is_ok(), "test_cp_firewalled_flag_roundtrip timed out");
+    assert!(result.is_ok(), "test_cp_no_public_flag_roundtrip timed out");
 }
 
 #[tokio::test]
@@ -1491,7 +1491,7 @@ async fn test_dd_passphrase_roundtrip() {
         let mut leave_cmd = Command::new(bin_path());
         leave_cmd
             .args([
-                "--no-default-config", "--public",
+                "--no-default-config", "--no-public",
                 "dd", "put", &input_path_str,
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "40",
@@ -1533,7 +1533,7 @@ async fn test_dd_passphrase_roundtrip() {
         let pickup_output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--public",
+                    "--no-default-config", "--no-public",
                     "dd", "get", &pickup_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--output", &output_path_str,
@@ -1578,7 +1578,7 @@ async fn test_dd_large_payload() {
         let bs_addr_clone = bs_addr.clone();
         let mut leave = Command::new(bin_path())
             .args([
-                "--no-default-config", "--public",
+                "--no-default-config", "--no-public",
                 "dd", "put", &input_path_str,
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "40",
@@ -1612,7 +1612,7 @@ async fn test_dd_large_payload() {
         let pickup_output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--public",
+                    "--no-default-config", "--no-public",
                     "dd", "get", &pickup_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--output", &output_path_str,
@@ -1657,7 +1657,7 @@ async fn test_dd_stdin_stdout() {
         let bs_addr_clone = bs_addr.clone();
         let mut leave = Command::new(bin_path())
             .args([
-                "--no-default-config", "--public",
+                "--no-default-config", "--no-public",
                 "dd", "put", "-",
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "40",
@@ -1696,7 +1696,7 @@ async fn test_dd_stdin_stdout() {
         let pickup_output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--public",
+                    "--no-default-config", "--no-public",
                     "dd", "get", &pickup_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--timeout", "20",
@@ -1737,7 +1737,7 @@ async fn test_dd_get_timeout() {
         let pickup_output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--public",
+                    "--no-default-config", "--no-public",
                     "dd", "get", nonexistent_key,
                     "--bootstrap", &bs_addr,
                     "--timeout", "5",
@@ -1782,7 +1782,7 @@ async fn test_dd_wrong_passphrase_fails() {
         let mut leave_cmd = Command::new(bin_path());
         leave_cmd
             .args([
-                "--no-default-config", "--public",
+                "--no-default-config", "--no-public",
                 "dd", "put", &input_path_str,
                 "--bootstrap", &bs_addr_clone,
                 "--ttl", "40",
@@ -1824,7 +1824,7 @@ async fn test_dd_wrong_passphrase_fails() {
         let pickup_output = tokio::task::spawn_blocking(move || {
             Command::new(bin_path())
                 .args([
-                    "--no-default-config", "--public",
+                    "--no-default-config", "--no-public",
                     "dd", "get", wrong_key,
                     "--bootstrap", &bs_addr_clone2,
                     "--timeout", "8",
