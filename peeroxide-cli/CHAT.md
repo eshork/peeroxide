@@ -114,7 +114,10 @@ These apply regardless of usage discipline:
 - **DHT nodes see your IP** when you make requests (inherent to UDP). They
   can correlate "IP X operated on topic Y at time T" within a single epoch.
   Epoch rotation limits this to 1-minute windows for discovery, but feed
-  polling persists for the feed's lifetime.
+  polling persists for the feed's lifetime. **For best IP protection, run
+  peeroxide-chat behind a VPN or self-hosted relay.** This is the single
+  most effective mitigation against DHT-node-level traffic analysis and is
+  strongly recommended for careful-profile users.
 - **Feed-serving nodes see plaintext metadata.** Nodes handling `mutable_put`/
   `mutable_get` for your feed see `id_pubkey`, message hashes, and can
   correlate with source IP. Feed rotation limits the observation window.
