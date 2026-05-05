@@ -61,6 +61,8 @@ enum Commands {
         #[command(subcommand)]
         command: cmd::deaddrop::DdCommands,
     },
+    /// Anonymous verifiable P2P chat
+    Chat(cmd::chat::ChatArgs),
 }
 
 fn apply_config_footer(cmd: clap::Command, footer: &str) -> clap::Command {
@@ -149,6 +151,7 @@ fn main() {
                     Commands::Ping(args) => cmd::ping::run(args, &cfg).await,
                     Commands::Cp { command } => cmd::cp::run(command, &cfg).await,
                     Commands::Dd { command } => cmd::deaddrop::run(command, &cfg).await,
+                    Commands::Chat(args) => cmd::chat::run(args, &cfg).await,
                     Commands::Init(_) => unreachable!(),
                 }
             }

@@ -38,9 +38,16 @@ futures = "0.3"
 crc32c = "0.6"
 rand = "0.9"
 indexmap = "2"
+blake2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+curve25519-dalek = "4"
+sha2 = "0.10"
+xsalsa20poly1305 = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+rand = "0.9"

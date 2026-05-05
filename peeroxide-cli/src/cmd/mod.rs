@@ -1,4 +1,5 @@
 pub mod announce;
+pub mod chat;
 pub mod cp;
 pub mod deaddrop;
 pub mod init;
