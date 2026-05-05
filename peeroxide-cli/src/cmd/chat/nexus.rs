@@ -2,6 +2,7 @@ use clap::Parser;
 
 use peeroxide_dht::hyperdht::{HyperDhtHandle, KeyPair};
 
+use crate::cmd::chat::debug;
 use crate::cmd::chat::profile;
 use crate::cmd::chat::wire::NexusRecord;
 use crate::cmd::{build_dht_config, sigterm_recv};
@@ -172,6 +173,16 @@ async fn publish_nexus_once(handle: &HyperDhtHandle, id_keypair: &KeyPair, profi
     match handle.mutable_put(id_keypair, &data, seq).await {
         Ok(_) => {
             eprintln!("  nexus published (seq={seq})");
+            debug::log_event(
+                "Nexus publish",
+                "mutable_put",
+                &format!(
+                    "id_pubkey={}, seq={seq}, name_len={}, bio_len={}",
+                    debug::short_key(&id_keypair.public_key),
+                    record.name.len(),
+                    record.bio.len(),
+                ),
+            );
         }
         Err(e) => {
             eprintln!("warning: nexus publish failed: {e}");
@@ -276,6 +287,8 @@ pub async fn refresh_friends(handle: &HyperDhtHandle, profile_name: &str) {
             if let Ok(nexus) = NexusRecord::deserialize(&result.value) {
                 let mut updated = friend.clone();
                 let mut changed = false;
+                let name_len = nexus.name.len();
+                let bio_len = nexus.bio.len();
                 if !nexus.name.is_empty() && updated.cached_name.as_deref() != Some(&nexus.name)
                 {
                     updated.cached_name = Some(nexus.name);
@@ -289,6 +302,15 @@ pub async fn refresh_friends(handle: &HyperDhtHandle, profile_name: &str) {
                     }
                 }
                 if changed {
+                    debug::log_event(
+                        "Friend nexus update",
+                        "mutable_get",
+                        &format!(
+                            "friend_pubkey={}, seq={}, name_len={name_len}, bio_len={bio_len}",
+                            debug::short_key(&friend.pubkey),
+                            result.seq,
+                        ),
+                    );
                     let _ = profile::remove_friend(profile_name, &friend.pubkey);
                     let _ = profile::save_friend(profile_name, &updated);
                 }

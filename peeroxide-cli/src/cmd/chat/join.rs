@@ -3,6 +3,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::cmd::chat::crypto;
+use crate::cmd::chat::debug;
 use crate::cmd::chat::display;
 use crate::cmd::chat::feed;
 use crate::cmd::chat::post;
@@ -261,11 +262,32 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                         let new_data = new_fs.serialize_feed_record();
                         match handle.mutable_put(&new_fs.feed_keypair, &new_data, new_fs.seq).await {
                             Ok(_) => {
+                                debug::log_event(
+                                    "Feed rotation (new)",
+                                    "mutable_put",
+                                    &format!(
+                                        "new_feed_pubkey={}, old_feed_pubkey={}",
+                                        debug::short_key(&new_fs.feed_keypair.public_key),
+                                        debug::short_key(&fs.feed_keypair.public_key),
+                                    ),
+                                );
+
                                 // New feed is live; now update old feed with next_feed_pubkey pointer
                                 let old_record = fs.serialize_feed_record();
                                 fs.seq += 1;
                                 if let Err(e) = handle.mutable_put(&fs.feed_keypair, &old_record, fs.seq).await {
                                     tracing::warn!("rotation: old feed update failed (non-fatal): {e}");
+                                } else {
+                                    debug::log_event(
+                                        "Feed rotation (old ptr)",
+                                        "mutable_put",
+                                        &format!(
+                                            "old_feed_pubkey={}, seq={}, next_feed={}",
+                                            debug::short_key(&fs.feed_keypair.public_key),
+                                            fs.seq,
+                                            debug::short_key(&new_fs.feed_keypair.public_key),
+                                        ),
+                                    );
                                 }
 
                                 if let Some(h) = feed_refresh_handle.take() {

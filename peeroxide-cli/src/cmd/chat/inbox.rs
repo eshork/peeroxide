@@ -1,6 +1,7 @@
 use peeroxide_dht::hyperdht::{HyperDhtHandle, KeyPair};
 
 use crate::cmd::chat::crypto;
+use crate::cmd::chat::debug;
 use crate::cmd::chat::profile::KnownUser;
 use crate::cmd::chat::wire::{self, InviteRecord, INVITE_TYPE_DM};
 
@@ -43,10 +44,33 @@ pub async fn send_dm_invite(
         .await
         .map_err(|e| format!("invite mutable_put: {e}"))?;
 
+    debug::log_event(
+        "Invite sent",
+        "mutable_put",
+        &format!(
+            "invite_feed_pk={}, sender={}, recipient={}, invite_type=0x{:02x}, payload_len={}",
+            debug::short_key(&invite_feed_keypair.public_key),
+            debug::short_key(&id_keypair.public_key),
+            debug::short_key(recipient_pubkey),
+            INVITE_TYPE_DM,
+            message.len(),
+        ),
+    );
+
     let epoch = crypto::current_epoch();
     let bucket = 0u8;
     let topic = crypto::inbox_topic(recipient_pubkey, epoch, bucket);
     let _ = handle.announce(topic, invite_feed_keypair, &[]).await;
+
+    debug::log_event(
+        "Inbox announce",
+        "announce",
+        &format!(
+            "invite_feed_pk={}, recipient={}, epoch={epoch}, bucket={bucket}",
+            debug::short_key(&invite_feed_keypair.public_key),
+            debug::short_key(recipient_pubkey),
+        ),
+    );
 
     Ok(())
 }
@@ -98,10 +122,32 @@ pub async fn send_dm_nudge(
         .await
         .map_err(|e| format!("nudge mutable_put: {e}"))?;
 
+    debug::log_event(
+        "Inbox nudge sent",
+        "mutable_put",
+        &format!(
+            "invite_feed_pk={}, sender={}, recipient={}, seq={}",
+            debug::short_key(&invite_feed_keypair.public_key),
+            debug::short_key(&id_keypair.public_key),
+            debug::short_key(recipient_pubkey),
+            seq + 1,
+        ),
+    );
+
     let epoch = crypto::current_epoch();
     let bucket = 0u8;
     let topic = crypto::inbox_topic(recipient_pubkey, epoch, bucket);
     let _ = handle.announce(topic, invite_feed_keypair, &[]).await;
+
+    debug::log_event(
+        "Inbox announce",
+        "announce",
+        &format!(
+            "invite_feed_pk={}, recipient={}, epoch={epoch}, bucket={bucket}",
+            debug::short_key(&invite_feed_keypair.public_key),
+            debug::short_key(recipient_pubkey),
+        ),
+    );
 
     Ok(())
 }

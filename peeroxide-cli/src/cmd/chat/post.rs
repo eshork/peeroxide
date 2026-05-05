@@ -1,6 +1,7 @@
 use peeroxide_dht::hyperdht::{HyperDhtHandle, KeyPair};
 
 use crate::cmd::chat::crypto;
+use crate::cmd::chat::debug;
 use crate::cmd::chat::feed::FeedState;
 use crate::cmd::chat::wire::{self, MessageEnvelope};
 
@@ -47,6 +48,18 @@ pub async fn post_message(
 
     let msg_hash = put_result.hash;
 
+    debug::log_event(
+        "Message posted",
+        "immutable_put",
+        &format!(
+            "msg_hash={}, author={}, prev_hash={}, ts={timestamp}, content_type=0x{:02x}",
+            debug::short_key(&msg_hash),
+            debug::short_key(&id_keypair.public_key),
+            debug::short_key(&feed_state.prev_msg_hash),
+            envelope.content_type,
+        ),
+    );
+
     if feed_state.msg_hashes.len() >= 20 {
         publish_summary_block(handle, feed_state, id_keypair)
             .await
@@ -64,12 +77,33 @@ pub async fn post_message(
         .await
         .map_err(|e| format!("mutable_put (feed) failed: {e}"))?;
 
+    debug::log_event(
+        "Feed record update",
+        "mutable_put",
+        &format!(
+            "feed_pubkey={}, seq={}, msg_count={}",
+            debug::short_key(&feed_state.feed_keypair.public_key),
+            feed_state.seq,
+            feed_state.msg_count,
+        ),
+    );
+
     let epoch = crypto::current_epoch();
     let bucket = feed_state.next_bucket();
     let topic = crypto::announce_topic(channel_key, epoch, bucket);
     let _ = handle
         .announce(topic, &feed_state.feed_keypair, &[])
         .await;
+
+    debug::log_event(
+        "Channel announce",
+        "announce",
+        &format!(
+            "feed_pubkey={}, epoch={epoch}, bucket={bucket}, topic={}",
+            debug::short_key(&feed_state.feed_keypair.public_key),
+            debug::short_key(&topic),
+        ),
+    );
 
     Ok(())
 }
@@ -103,6 +137,18 @@ async fn publish_summary_block(
         .immutable_put(&summary_data)
         .await
         .map_err(|e| format!("immutable_put (summary) failed: {e}"))?;
+
+    debug::log_event(
+        "Summary block",
+        "immutable_put",
+        &format!(
+            "summary_hash={}, id_pubkey={}, msg_count={}, prev_summary={}",
+            debug::short_key(&put_result.hash),
+            debug::short_key(&id_keypair.public_key),
+            evict_count,
+            debug::short_key(&feed_state.summary_hash),
+        ),
+    );
 
     feed_state.summary_hash = put_result.hash;
     feed_state.msg_hashes.truncate(keep);

@@ -4,6 +4,7 @@ use peeroxide_dht::hyperdht::HyperDhtHandle;
 use tokio::sync::mpsc;
 
 use crate::cmd::chat::crypto;
+use crate::cmd::chat::debug;
 use crate::cmd::chat::display::DisplayMessage;
 use crate::cmd::chat::profile;
 use crate::cmd::chat::wire::{self, FeedRecord, MessageEnvelope, SummaryBlock};
@@ -34,6 +35,16 @@ pub async fn run_reader(
         for bucket in 0..4u8 {
             let topic = crypto::announce_topic(&channel_key, epoch, bucket);
             if let Ok(results) = handle.lookup(topic).await {
+                let peer_count: usize = results.iter().map(|r| r.peers.len()).sum();
+                if debug::is_enabled() && peer_count > 0 {
+                    debug::log_event(
+                        "Channel scan",
+                        "lookup",
+                        &format!(
+                            "epoch={epoch}, bucket={bucket}, results={peer_count}",
+                        ),
+                    );
+                }
                 for result in &results {
                     for peer in &result.peers {
                         let feed_pk = peer.public_key;
@@ -60,6 +71,19 @@ pub async fn run_reader(
                 ) {
                     continue;
                 }
+
+                debug::log_event(
+                    "Feed record discovered",
+                    "mutable_get",
+                    &format!(
+                        "feed_pubkey={}, id_pubkey={}, msg_count={}, next_feed={}",
+                        debug::short_key(feed_pk),
+                        debug::short_key(&record.id_pubkey),
+                        record.msg_count,
+                        debug::short_key(&record.next_feed_pubkey),
+                    ),
+                );
+
                 feed_info.id_pubkey = record.id_pubkey;
                 feed_info.last_seq = mget.seq;
 
@@ -117,6 +141,16 @@ pub async fn run_reader(
             for bucket in 0..4u8 {
                 let topic = crypto::announce_topic(&channel_key, epoch, bucket);
                 if let Ok(results) = handle.lookup(topic).await {
+                    let peer_count: usize = results.iter().map(|r| r.peers.len()).sum();
+                    if debug::is_enabled() && peer_count > 0 {
+                        debug::log_event(
+                            "Channel scan",
+                            "lookup",
+                            &format!(
+                                "epoch={epoch}, bucket={bucket}, results={peer_count}",
+                            ),
+                        );
+                    }
                     for result in &results {
                         for peer in &result.peers {
                             let feed_pk = peer.public_key;
@@ -167,6 +201,18 @@ pub async fn run_reader(
                         } else if record.id_pubkey != feed_info.id_pubkey {
                             continue;
                         }
+
+                        debug::log_event(
+                            "Feed record discovered",
+                            "mutable_get",
+                            &format!(
+                                "feed_pubkey={}, id_pubkey={}, msg_count={}, next_feed={}",
+                                debug::short_key(&feed_pk),
+                                debug::short_key(&record.id_pubkey),
+                                record.msg_count,
+                                debug::short_key(&record.next_feed_pubkey),
+                            ),
+                        );
 
                         let owner_pubkey = feed_info.id_pubkey;
                         let next_feed = record.next_feed_pubkey;
@@ -260,6 +306,18 @@ async fn fetch_and_validate_messages(
                     expected_next_hash = Some(env.prev_msg_hash);
 
                     seen_msg_hashes.insert(*msg_hash);
+                    debug::log_event(
+                        "Message received",
+                        "immutable_get",
+                        &format!(
+                            "msg_hash={}, author={}, prev_hash={}, ts={}, content_type=0x{:02x}",
+                            debug::short_key(msg_hash),
+                            debug::short_key(&env.id_pubkey),
+                            debug::short_key(&env.prev_msg_hash),
+                            env.timestamp,
+                            env.content_type,
+                        ),
+                    );
                     let _ = profile::append_known_user(
                         profile_name,
                         &env.id_pubkey,

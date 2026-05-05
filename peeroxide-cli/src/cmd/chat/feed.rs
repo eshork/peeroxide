@@ -3,6 +3,7 @@ use rand::Rng;
 use tokio::sync::watch;
 
 use crate::cmd::chat::crypto;
+use crate::cmd::chat::debug;
 use crate::cmd::chat::wire::FeedRecord;
 
 pub struct FeedState {
@@ -118,7 +119,16 @@ pub async fn run_feed_refresh(
         interval.tick().await;
         let (record_data, seq) = state_rx.borrow_and_update().clone();
         match handle.mutable_put(&feed_keypair, &record_data, seq).await {
-            Ok(_) => {}
+            Ok(_) => {
+                debug::log_event(
+                    "Feed refresh",
+                    "mutable_put",
+                    &format!(
+                        "feed_pubkey={}, seq={seq}",
+                        debug::short_key(&feed_keypair.public_key),
+                    ),
+                );
+            }
             Err(e) => {
                 tracing::warn!("feed refresh failed: {e}");
             }
@@ -127,6 +137,16 @@ pub async fn run_feed_refresh(
         let bucket = (epoch % 4) as u8;
         let topic = crypto::announce_topic(&channel_key, epoch, bucket);
         let _ = handle.announce(topic, &feed_keypair, &[]).await;
+
+        debug::log_event(
+            "Channel announce",
+            "announce",
+            &format!(
+                "feed_pubkey={}, epoch={epoch}, bucket={bucket}, topic={}",
+                debug::short_key(&feed_keypair.public_key),
+                debug::short_key(&topic),
+            ),
+        );
     }
 }
 

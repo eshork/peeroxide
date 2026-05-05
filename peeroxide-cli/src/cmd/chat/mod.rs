@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod crypto;
+pub mod debug;
 pub mod display;
 pub mod dm;
 pub mod dm_cmd;
@@ -22,6 +23,10 @@ use crate::config::ResolvedConfig;
 pub struct ChatArgs {
     #[command(subcommand)]
     pub command: ChatCommands,
+
+    /// Enable debug event logging to stderr
+    #[arg(long, global = true)]
+    pub debug: bool,
 }
 
 #[derive(Subcommand)]
@@ -96,6 +101,9 @@ pub enum FriendsCommands {
 }
 
 pub async fn run(args: ChatArgs, cfg: &ResolvedConfig) -> i32 {
+    if args.debug {
+        debug::enable();
+    }
     match args.command {
         ChatCommands::Join(join_args) => join::run(join_args, cfg).await,
         ChatCommands::Dm(dm_args) => dm_cmd::run(dm_args, cfg).await,

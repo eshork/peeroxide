@@ -1,6 +1,7 @@
 use clap::Parser;
 
 use crate::cmd::chat::crypto;
+use crate::cmd::chat::debug;
 use crate::cmd::chat::inbox;
 use crate::cmd::chat::profile;
 use crate::cmd::{build_dht_config, sigterm_recv};
@@ -80,6 +81,14 @@ pub async fn run(args: InboxArgs, cfg: &ResolvedConfig) -> i32 {
                     for bucket in 0..4u8 {
                         let topic = crypto::inbox_topic(&id_keypair.public_key, epoch, bucket);
                         if let Ok(results) = handle.lookup(topic).await {
+                            let peer_count: usize = results.iter().map(|r| r.peers.len()).sum();
+                            debug::log_event(
+                                "Inbox check",
+                                "lookup",
+                                &format!(
+                                    "epoch={epoch}, bucket={bucket}, results={peer_count}",
+                                ),
+                            );
                             for result in &results {
                                 for peer in &result.peers {
                                     let feed_pk = peer.public_key;
@@ -99,6 +108,17 @@ pub async fn run(args: InboxArgs, cfg: &ResolvedConfig) -> i32 {
                                         ) {
                                             seen_invite_feeds.insert(feed_pk, mget.seq);
                                             invite_count += 1;
+                                            debug::log_event(
+                                                "Invite received",
+                                                "mutable_get",
+                                                &format!(
+                                                    "invite_feed_pk={}, sender={}, invite_type=0x{:02x}, payload_len={}",
+                                                    debug::short_key(&feed_pk),
+                                                    debug::short_key(&invite.sender_pubkey),
+                                                    invite.invite_type,
+                                                    invite.payload.len(),
+                                                ),
+                                            );
                                             inbox::display_invite(
                                                 invite_count,
                                                 &invite,
