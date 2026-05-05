@@ -157,14 +157,16 @@ Options:
 5. Perform join scan on DM topic (20 epochs × 4 buckets)
 6. **Startup inbox nudge (only if `--message` provided):** Poke recipient's
    inbox once — announce a temporary invite feed containing Alice's identity
-   + the message text. This says "hey, come talk to me" and gives Bob a
+   + the lure text. This says "hey, come talk to me" and gives Bob a
    reason to open the DM. No `--message` = no startup nudge.
 7. Enter main loop (same as `chat join` but on DM topic)
 8. **Per-message inbox nudge (v1 policy):** When posting a message, poke
-   the recipient's inbox — but at most once per epoch (~1 min). This lets
-   Bob know Alice is still active without spamming his inbox on every
-   keystroke. Client tracks "last nudge epoch" in memory; if current epoch
-   matches, skip the nudge.
+   the recipient's inbox — but at most once per epoch (~1 min). The nudge
+   reuses the same invite_feed_keypair (incrementing seq) so Bob's client
+   can recognize it as a re-ping for an existing DM, not a new invitation.
+   The nudge payload contains the message text that triggered it (truncated
+   to fit the invite payload budget). Bob's inbox client may truncate
+   further for display.
 
 **Output/Input:** Same format as `chat join`.
 

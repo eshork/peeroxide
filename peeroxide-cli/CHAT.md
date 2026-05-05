@@ -222,7 +222,7 @@ MESSAGES (immutable_put/get) -- content-addressed, immutable
   Rotation prevents long-term traffic monitoring of any single address.
 - Messages are immutable_put — content-addressed, can't be altered, anyone
   can re-put to refresh TTL (Good Samaritan persistence).
-- Feed record contains ~26 recent message hashes — readers can fetch all
+- Feed record contains up to 26 recent message hashes — readers can fetch all
   new messages in parallel instead of sequential linked-list walking.
 
 ### Two-Layer Security Model
@@ -286,7 +286,7 @@ Feed keypair       -> used for announce + mutable_put (per channel)
 Users can maintain multiple named profiles, each with its own identity keypair:
 
 ```
-~/.peeroxide/profiles/
+~/.config/peeroxide/chat/profiles/
   +-- default/
   |   +-- seed       # Ed25519 seed (32 bytes, plaintext for v1)
   |   +-- name       # Optional display name
@@ -321,6 +321,11 @@ and keyed (`Blake2bMac`, same pattern as `discovery_key()`). No new
 dependencies. No HKDF.
 
 ### Channel Key (root secret per channel)
+
+`len4(x)` = `(x.len() as u32).to_le_bytes()` — a 4-byte little-endian
+length prefix. Required because `hash_batch` is equivalent to hashing
+the concatenation of all slices; without explicit lengths, different
+splits of the same bytes would hash identically.
 
 ```rust
 // Public channel
@@ -468,7 +473,7 @@ delivers messages independently.
 Each participant's feed (mutable_put) contains:
 - `id_pubkey` — author's identity public key
 - `ownership_proof` — cryptographic binding of feed_pubkey to id_pubkey
-- `msg_hashes` — up to ~26 recent message hashes (newest first)
+- `msg_hashes` — up to 26 recent message hashes (newest first)
 - `summary_hash` — optional link to a summary block for older history
 - `next_feed_pubkey` — optional; set before rotation to link old → new feed
 
@@ -490,9 +495,9 @@ incremented seq (even if unchanged) to prevent TTL expiration.
 
 ### Summary Blocks
 
-When a participant's message count exceeds the ~26-hash capacity of the
+When a participant's message count exceeds the 26-hash capacity of the
 feed record, older hashes are batched into **summary blocks** stored
-via `immutable_put`. Each summary block contains ~30 message hashes and a
+via `immutable_put`. Each summary block contains up to 27 message hashes and a
 `prev_summary` link to the next older block, forming a chain.
 
 Summary blocks are signed by the identity key and linked from the feed
@@ -507,11 +512,11 @@ encountering a feed that points to a not-yet-propagated summary.
 
 | Record type | Max size | Overhead | Content budget |
 |------------|---------|----------|---------------|
-| Message (immutable_put) | ~1100 bytes | ~210 bytes (envelope + encryption + signature) | ~890 bytes |
-| Feed record (mutable_put) | ~1002 bytes | ~100-132 bytes (fixed fields, no screen_name) | 27-28 msg hashes |
-| Invite feed record (mutable_put) | ~1002 bytes | ~140 bytes (ECDH encryption overhead + fixed fields) | ~860 bytes for invite payload |
-| Summary block (immutable_put) | ~1100 bytes | ~130 bytes (header + signature) | ~30 msg hashes |
-| Personal nexus (mutable_put) | ~1002 bytes | ~132 bytes (fixed fields) | ~870 bytes for bio |
+| Message (immutable_put) | 1000 bytes | 179 bytes (envelope + encryption + signature) | 821 bytes |
+| Feed record (mutable_put) | 1000 bytes | 161 bytes (fixed fields) | 26 msg hashes |
+| Invite feed record (mutable_put) | 1000 bytes | 171 bytes (encryption + fixed fields) | 829 bytes for invite payload |
+| Summary block (immutable_put) | 1000 bytes | 129 bytes (header + signature) | 27 msg hashes |
+| Personal nexus (mutable_put) | 1000 bytes | 3 bytes (fixed fields) | 997 bytes for name + bio |
 
 ### Encryption Details
 
@@ -582,16 +587,14 @@ user request.
 2. **Alice generates a temporary invite feed keypair** — random Ed25519,
    same as any other per-channel feed keypair. Short-lived.
 
-3. **Alice builds an invite feed record** (same structure as normal feed
-   records, with optional extensions):
+3. **Alice builds an invite feed record** (see §7.5 for wire format):
    - `id_pubkey` — Alice's real identity public key
    - `ownership_proof` — `sign(alice_id_sk, b"peeroxide-chat:ownership:v1:" || invite_feed_pubkey || channel_key)`
-   - `msg_hashes` — optional initial encrypted message(s)
    - `next_feed_pubkey` — Alice's real ongoing feed_pubkey for this channel
      (so Bob can immediately start polling the conversation)
-   - Optional: `channel_name`, `salt` (the actual secret, not a hint —
-     Bob needs this to derive the channel key), `invite_type` ("dm" | "private"),
-     `invite_message` (welcome text)
+   - `invite_type` — "dm" (0x01) or "private" (0x02)
+   - `payload` — invite-type-specific: optional message for DMs,
+     channel_name + salt + optional message for group invites
 
 4. **Alice encrypts the invite payload** under Bob's X25519 public key
    (derived from Bob's Ed25519 id_pubkey, same conversion used for DM ECDH).
@@ -827,6 +830,479 @@ Background channel (same scenario):
 
 ---
 
+## Track 7: Wire Formats
+
+All multi-byte integers are **little-endian**. Hash references are
+always 32 bytes (BLAKE2b-256). Public keys are always 32
+bytes (Ed25519). Signatures are always 64 bytes (Ed25519 detached).
+
+No version byte is needed in record payloads — the `:v1:` namespace
+in all key derivation paths (announce topics, message keys, ownership
+proofs, invite keys) means a v2 protocol would produce entirely
+different DHT addresses. A v1 client will never encounter a v2 record.
+
+### Size Budgets
+
+| Storage method | Practical max value | Source |
+|---|---|---|
+| `mutable_put` value | 1000 bytes | UDP packet budget (established by deaddrop) |
+| `immutable_put` value | 1000 bytes | Same UDP constraint |
+| Encryption overhead | 40 bytes | 24 (nonce) + 16 (Poly1305 tag) |
+
+### 7.1 Message Envelope (immutable_put, encrypted)
+
+Stored via `immutable_put`. The value is the encrypted ciphertext.
+`target = hash(ciphertext)` (content-addressed).
+
+**On-wire (what DHT nodes store):**
+```
+nonce(24) || tag(16) || ciphertext(N)
+```
+
+**Plaintext (inside encryption):**
+```
+Offset  Size  Field
+─────────────────────────────────────────────────
+0       32    id_pubkey (author's identity public key)
+32      32    prev_msg_hash (previous msg from this feed, or 32 zeros)
+64      8     timestamp (unix_time_secs, u64 LE)
+72      1     content_type (enum, see below)
+73      2     content_len (u16 LE)
+75      N     content (UTF-8 text for type 0x01)
+75+N    64    signature (Ed25519 detached)
+```
+
+**Signature covers** (sign-then-encrypt):
+```
+b"peeroxide-chat:msg:v1:" || prev_msg_hash(32) || timestamp(8) || content_type(1) || content(N)
+```
+
+**Content types:**
+| Value | Meaning |
+|-------|---------|
+| 0x01 | UTF-8 text message |
+| 0x02–0xFF | Reserved for future use |
+
+**Size budget:**
+- Fixed overhead (plaintext): 32 + 32 + 8 + 1 + 2 + 64 = 139 bytes
+- Encryption overhead: 40 bytes
+- Total overhead: 179 bytes
+- **Max content: 821 bytes** (1000 - 179)
+- At ~4 bytes/word average, that's ~205 words per message
+
+### 7.2 Feed Record (mutable_put, plaintext)
+
+Stored via `mutable_put(feed_keypair, value, seq)`. The DHT handles
+signing and seq enforcement — no application-level signature needed in
+the value. Addressed by `hash(feed_pubkey)`.
+
+**On-wire (the mutable_put value):**
+```
+Offset  Size  Field
+─────────────────────────────────────────────────
+0       32    id_pubkey (author's identity public key)
+32      64    ownership_proof (see below)
+96      32    next_feed_pubkey (32 zeros if no rotation pending)
+128     32    summary_hash (32 zeros if no summary blocks yet)
+160     1     msg_count (number of message hashes, 0-26)
+161     N×32  msg_hashes (newest first, N = msg_count)
+```
+
+**Ownership proof:**
+```
+sign(id_secret_key, b"peeroxide-chat:ownership:v1:" || feed_pubkey(32) || channel_key(32))
+```
+
+This binds the feed to both the identity AND the specific channel.
+Readers verify by reconstructing the signable from the feed_pubkey
+(known from the mutable_get address) and their own channel_key.
+
+**Size budget:**
+- Fixed overhead: 161 bytes
+- Remaining: 839 bytes / 32 = **26 message hashes max**
+- With 26 hashes: total = 161 + 832 = 993 bytes ✓
+
+### 7.3 Summary Block (immutable_put, plaintext)
+
+Batches older message hashes that no longer fit in the feed record.
+Chained via `prev_summary_hash`. Signed by identity key for integrity.
+
+**On-wire (the immutable_put value):**
+```
+Offset  Size  Field
+─────────────────────────────────────────────────
+0       32    id_pubkey (author's identity public key)
+32      32    prev_summary_hash (32 zeros if this is the first summary)
+64      1     msg_count (number of message hashes in this block)
+65      N×32  msg_hashes (oldest first — chronological within block)
+65+N×32 64    signature (Ed25519 detached)
+```
+
+**Signature covers:**
+```
+b"peeroxide-chat:summary:v1:" || prev_summary_hash(32) || msg_hashes(N×32)
+```
+
+**Size budget:**
+- Fixed overhead: 129 bytes
+- Remaining: 871 bytes / 32 = **27 message hashes per block**
+- With 27 hashes: total = 129 + 864 = 993 bytes ✓
+
+### 7.4 Personal Nexus (mutable_put, plaintext)
+
+Stored via `mutable_put(id_keypair, value, seq)`. Addressed by
+`hash(id_pubkey)`. The DHT's built-in signature verification ensures
+only the identity holder can update it. Seq uses `unix_time_secs`.
+
+**On-wire (the mutable_put value):**
+```
+Offset  Size  Field
+─────────────────────────────────────────────────
+0       1     name_len (0-255)
+1       N     name (UTF-8 screen name, N = name_len)
+1+N     2     bio_len (u16 LE, 0-65535)
+3+N     M     bio (UTF-8 bio text, M = bio_len)
+```
+
+**Size budget:**
+- Fixed overhead: 3 bytes
+- **Max name + bio: 997 bytes**
+- Practical: 32-byte name + 960-byte bio, or any split
+
+No application-level signature needed — `mutable_put` is already
+authenticated by the DHT layer (Ed25519 signature over the value
+verified by storing nodes).
+
+### 7.5 Invite Feed Record (mutable_put, encrypted)
+
+Stored via `mutable_put(invite_feed_keypair, encrypted_value, seq=0)`.
+The entire value is encrypted under the recipient's X25519 public key
+(derived from their Ed25519 id_pubkey via birational map).
+
+**On-wire (what DHT nodes store):**
+```
+nonce(24) || tag(16) || ciphertext(N)
+```
+
+**Encryption key derivation:**
+```
+invite_feed_x25519_pub = ed25519_to_x25519(invite_feed_pubkey)
+invite_feed_x25519_priv = ed25519_to_x25519(invite_feed_secret_key)
+recipient_x25519_pub = ed25519_to_x25519(recipient_id_pubkey)
+
+// Alice (sender):
+ecdh_secret = X25519(invite_feed_x25519_priv, recipient_x25519_pub)
+
+// Bob (recipient) — knows invite_feed_pubkey from mutable_get address:
+ecdh_secret = X25519(bob_x25519_priv, invite_feed_x25519_pub)
+
+invite_key = keyed_blake2b(key = ecdh_secret,
+    msg = b"peeroxide-chat:invite-key:v1:" || invite_feed_pubkey(32))
+```
+
+Using the invite_feed_keypair (not Alice's identity keypair) for ECDH
+means Bob can decrypt without knowing who sent the invite. Alice's
+identity is revealed only after successful decryption (inside the
+plaintext). This also means each invite feed has a unique ECDH secret
+even between the same sender/recipient pair.
+
+**Plaintext (inside encryption):**
+```
+Offset  Size  Field
+─────────────────────────────────────────────────
+0       32    id_pubkey (sender's identity public key)
+32      64    ownership_proof (same format as feed record)
+96      32    next_feed_pubkey (sender's real feed for this channel)
+128     1     invite_type (enum, see below)
+129     2     payload_len (u16 LE)
+131     N     payload (invite-type-specific content)
+```
+
+**Invite types:**
+| Value | Meaning | Payload contents |
+|-------|---------|-----------------|
+| 0x01 | DM invite | optional message (UTF-8) |
+| 0x02 | Private channel invite | name_len(1) + name + salt_len(2) + salt + optional message |
+
+**Ownership proof for invites:**
+```
+sign(id_secret_key, b"peeroxide-chat:ownership:v1:" || invite_feed_pubkey(32) || channel_key(32))
+```
+
+Same formula as regular feed records. Bob verifies by computing the
+candidate channel_key (DM: from sorted pubkeys; group: from name+salt
+in the decrypted payload) and checking the proof.
+
+**Size budget:**
+- Fixed plaintext overhead: 131 bytes
+- Encryption overhead: 40 bytes
+- Total overhead: 171 bytes
+- **Max invite payload: 829 bytes**
+- For a DM invite with message: 829 bytes of lure text
+- For a group invite: ~800 bytes after name+salt headers
+
+### 7.6 Inbox Nudge (mutable_put, encrypted)
+
+The per-message DM nudge (max once per epoch) uses the same invite feed
+record format (§7.5). The sender maintains **one invite_feed_keypair per
+DM session** for nudging — incrementing seq on each nudge rather than
+generating a new keypair each time. The `next_feed_pubkey` points to the
+sender's current DM feed, giving the recipient a direct path to the
+conversation.
+
+Bob's inbox client tracks seen invite_feed_pubkeys. A new feed_pubkey =
+new notification to display. Same feed_pubkey with higher seq = refresh
+(don't re-display, but update `next_feed_pubkey` if it changed due to
+feed rotation).
+
+No separate wire format needed — reuses §7.5 exactly.
+
+### 7.7 Encryption Details
+
+All encryption uses **XSalsa20Poly1305** with:
+- 24-byte random nonce (birthday-safe at 2^96)
+- 16-byte Poly1305 authentication tag
+- Empty associated data (b"")
+- Wire format: `nonce(24) || tag(16) || ciphertext`
+
+**Key derivation per context:**
+
+| Context | Encryption key |
+|---------|---------------|
+| Channel messages | `keyed_blake2b(key=channel_key, msg=b"peeroxide-chat:msgkey:v1")` |
+| DM messages | `keyed_blake2b(key=ecdh_secret, msg=b"peeroxide-chat:dm-msgkey:v1:" \|\| channel_key)` |
+| Invite records | `keyed_blake2b(key=ecdh_secret, msg=b"peeroxide-chat:invite-key:v1:" \|\| invite_feed_pubkey)` |
+
+---
+
+## Track 8: Operation Sequences
+
+Step-by-step choreography for key operations. All DHT operations within
+a sequence that have no data dependency on each other should be executed
+concurrently (tokio tasks). Operations with ordering dependencies are
+marked with **"← MUST complete before next step"**.
+
+### 8.1 Joining a Channel (Cold Start)
+
+What happens when a user runs `peeroxide chat join <channel>`.
+
+```
+SETUP:
+  1. Load identity seed from profile → derive id_keypair
+  2. channel_key = hash_batch([b"peeroxide-chat:channel:v1:", len4(name), name])
+     (add salt for private channels)
+  3. msg_key = keyed_blake2b(key=channel_key, msg=b"peeroxide-chat:msgkey:v1")
+  4. Bootstrap DHT node (bind UDP, connect to bootstraps, warm routing table)
+  5. feed_keypair = KeyPair::generate()
+  6. ownership_proof = sign(id_sk, b"peeroxide-chat:ownership:v1:" || feed_pubkey || channel_key)
+  7. Pick random bucket permutation [0,1,2,3] for this feed_keypair
+  8. Initialize empty feed record (msg_count=0)
+
+COLD-START SCAN (all parallel):
+  9. current_epoch = unix_time_secs / 60
+  10. Spawn 80 lookup tasks (20 epochs × 4 buckets) concurrently
+      As each returns → collect new feed_pubkeys into known_feeds set
+      As each new feed_pubkey discovered → immediately spawn mutable_get
+      As each feed record returns:
+        Verify ownership_proof against id_pubkey and channel_key
+        If invalid → discard
+        Extract msg_hashes → spawn immutable_get for each unknown hash
+      As each message returns:
+        Decrypt with msg_key, verify signature
+        If valid → cache message, update known_users file
+        If invalid → skip, do NOT mark hash as "seen"
+
+DISPLAY:
+  11. Sort all cached messages by timestamp
+  12. Display chronologically
+  13. Print "*** — live —" separator
+
+MAIN LOOP (concurrent tasks):
+  14a. Discovery: scan current + previous epoch (8 lookups, every 5-8s)
+  14b. Feed polling: mutable_get per known feed (every 5-8s)
+       → fetch new msg_hashes via immutable_get, decrypt, display
+  14c. Stdin reader: read lines, post as messages (see §8.2)
+  14d. Feed refresh: re-mutable_put own feed record (every ~8 min)
+  14e. Nexus refresh: re-mutable_put own nexus (every ~8 min, unless --no-nexus)
+  14f. Friend refresh: mutable_get one friend's nexus per poll cycle (unless --no-friends)
+  14g. Feed rotation check: if feed_keypair age > lifetime → rotate (see §8.3)
+```
+
+### 8.2 Posting a Message
+
+What happens when the user types a line and hits enter.
+
+```
+BUILD:
+  1. prev_msg_hash = last msg_hash posted from THIS feed (or 32 zeros if first)
+  2. timestamp = unix_time_secs as u64
+  3. content_type = 0x01 (text)
+  4. content = UTF-8 input bytes
+  5. signable = b"peeroxide-chat:msg:v1:" || prev_msg_hash || timestamp || content_type || content
+  6. signature = sign(id_sk, signable)
+  7. Assemble plaintext per §7.1 layout (fields + signature appended)
+
+ENCRYPT:
+  8. nonce = random 24 bytes
+  9. encrypted = nonce || tag || XSalsa20Poly1305::encrypt(msg_key, nonce, plaintext)
+
+PUBLISH (ordered):
+  10. immutable_put(encrypted) → msg_hash          ← MUST complete before step 11
+  11. Prepend msg_hash to feed record's msg_hashes
+      If msg_count reaches 20 → summary block first (see §8.4)
+      Increment seq
+  12. mutable_put(feed_keypair, updated_record, seq)  ← can parallel with step 13
+  13. announce(current_epoch_topic, feed_keypair, [])
+
+LOCAL:
+  14. Display message immediately (no round-trip wait)
+  15. Update prev_msg_hash = msg_hash
+```
+
+### 8.3 Feed Rotation
+
+Triggered when feed_keypair age exceeds configured lifetime (default
+60 min ± 50% random wobble).
+
+```
+PREPARE:
+  1. new_feed_keypair = KeyPair::generate()
+  2. new_ownership_proof = sign(id_sk, b"peeroxide-chat:ownership:v1:" || new_feed_pubkey || channel_key)
+
+HANDOFF (old feed):
+  3. Set next_feed_pubkey = new_feed_keypair.public_key in current feed record
+  4. mutable_put(old_feed_keypair, updated_record, seq+1)
+     Readers now see the handoff link.
+
+SWITCH:
+  5. Active feed = new_feed_keypair
+  6. Reset: msg_hashes=[], msg_count=0, prev_msg_hash=zeros, seq=0
+  7. New random bucket permutation
+  8. Record rotation timestamp (for next rotation check)
+
+OVERLAP:
+  9. Continue refreshing old feed record for ONE more cycle (~8 min)
+     so readers have time to discover and follow next_feed_pubkey
+  10. After that refresh, stop. Old feed expires via DHT TTL (~20 min).
+```
+
+### 8.4 Summary Block Publish
+
+Triggered when msg_count reaches 20. Happens
+inline during §8.2 step 11, before the feed record update.
+
+```
+EVICT:
+  1. Take the oldest 15 hashes from msg_hashes, leave newest 5
+     Trigger threshold: 20/26. Headroom: 21 posts before next eviction.
+
+BUILD:
+  2. prev_summary_hash = current feed record's summary_hash (or 32 zeros)
+  3. Assemble summary block per §7.3:
+     - id_pubkey, prev_summary_hash, msg_count, msg_hashes (evicted, oldest first)
+  4. signable = b"peeroxide-chat:summary:v1:" || prev_summary_hash || msg_hashes
+  5. signature = sign(id_sk, signable)
+  6. Append signature to summary block
+
+PUBLISH (ordered):
+  7. immutable_put(summary_block) → summary_hash   ← MUST complete before step 8
+  8. Update feed record:
+     - summary_hash = new summary_hash
+     - msg_hashes = kept hashes only
+     - msg_count = updated count
+  9. Return to §8.2 step 11 (prepend new msg_hash, mutable_put)
+```
+
+### 8.5 Starting a DM
+
+What happens when Alice runs `peeroxide chat dm <bob_pubkey>`.
+
+```
+SETUP:
+  1. Load identity → derive id_keypair
+  2. channel_key = hash_batch([b"peeroxide-chat:dm:v1:", lex_min(alice_id, bob_id), lex_max(alice_id, bob_id)])
+  3. Derive dm_msg_key:
+     - bob_x25519_pub = ed25519_to_x25519(bob_id_pubkey)
+     - ecdh_secret = X25519(alice_x25519_priv, bob_x25519_pub)
+     - dm_msg_key = keyed_blake2b(key=ecdh_secret, msg=b"peeroxide-chat:dm-msgkey:v1:" || channel_key)
+  4. Bootstrap DHT, generate feed_keypair, compute ownership_proof
+  5. Cold-start scan on DM topic (20 epochs × 4 buckets, same as §8.1)
+
+STARTUP NUDGE (only if --message provided):
+  6. invite_feed_keypair = KeyPair::generate()
+  7. Build invite plaintext per §7.5:
+     - id_pubkey = alice's
+     - ownership_proof over invite_feed_pubkey + channel_key
+     - next_feed_pubkey = alice's real feed_pubkey for this DM
+     - invite_type = 0x01 (DM)
+     - payload = --message text
+  8. Encrypt invite:
+     - ecdh_secret = X25519(invite_feed_x25519_priv, bob_x25519_pub)
+     - invite_key = keyed_blake2b(key=ecdh_secret, msg=b"peeroxide-chat:invite-key:v1:" || invite_feed_pubkey)
+     - encrypted = XSalsa20Poly1305::encrypt(invite_key, random_nonce, plaintext)
+  9. mutable_put(invite_feed_keypair, encrypted, seq=0)
+  10. inbox_topic = keyed_blake2b(key=hash(bob_id_pubkey), msg=b"peeroxide-chat:inbox:v1:" || epoch || bucket)
+  11. announce(inbox_topic, invite_feed_keypair, [])
+
+MAIN LOOP:
+  12. Same as §8.1 step 14, but using dm_msg_key for encryption
+  13. Per-message inbox nudge: on each post, if current_epoch != last_nudge_epoch:
+      - Update invite record's next_feed_pubkey if feed rotated
+      - mutable_put(invite_feed_keypair, re-encrypted, seq+1)
+      - announce(bob_inbox_topic_current_epoch, invite_feed_keypair, [])
+      - last_nudge_epoch = current_epoch
+```
+
+### 8.6 Receiving an Invite
+
+What happens in Bob's inbox client when a new invite_feed_pubkey is
+discovered on his inbox topic.
+
+```
+FETCH:
+  1. mutable_get(invite_feed_pubkey) → encrypted record
+
+DECRYPT:
+  2. invite_feed_x25519_pub = ed25519_to_x25519(invite_feed_pubkey)
+  3. ecdh_secret = X25519(bob_x25519_priv, invite_feed_x25519_pub)
+  4. invite_key = keyed_blake2b(key=ecdh_secret, msg=b"peeroxide-chat:invite-key:v1:" || invite_feed_pubkey)
+  5. Decrypt. If fails → not for Bob (or spam), discard silently.
+
+PARSE:
+  6. Extract: id_pubkey, ownership_proof, next_feed_pubkey, invite_type, payload
+
+VERIFY (determine channel type):
+  7. Try DM:
+     candidate_key = hash_batch([b"peeroxide-chat:dm:v1:", lex_min(sender, bob), lex_max(sender, bob)])
+     Verify: verify(sender_id_pubkey, b"peeroxide-chat:ownership:v1:" || invite_feed_pubkey || candidate_key)
+     If valid → DM invite confirmed.
+
+  8. If DM failed, try group (invite_type must be 0x02):
+     Extract name_len, name, salt_len, salt from payload
+     candidate_key = hash_batch([b"peeroxide-chat:channel:v1:", len4(name), name, b":salt:", len4(salt), salt])
+     Verify ownership_proof against candidate_key
+     If valid → group invite confirmed.
+
+  9. If neither verifies → discard.
+
+DISPLAY:
+  10. DM invite:
+      [INVITE] DM from <sender_name@shortkey>
+        → peeroxide chat dm <sender_full_pubkey> --profile <current>
+
+  11. Group invite:
+      [INVITE] Channel "name" from <sender_name@shortkey>
+        → peeroxide chat join "name" --group "salt" --profile <current>
+
+  12. Update known_users cache with sender's id_pubkey
+
+DEDUP:
+  13. Track seen invite_feed_pubkeys. Same pubkey with higher seq =
+      refresh (update next_feed_pubkey, don't re-display).
+```
+
+---
+
 ## CLI Interface
 
 See [`CHAT_CLI.md`](./CHAT_CLI.md) for the command-line interface design.
@@ -891,7 +1367,7 @@ refresh TTL.
 
 | Property | Detail |
 |----------|--------|
-| Max payload | ~1100 bytes |
+| Max payload | 1000 bytes |
 | Addressing | `hash(value)` -- immutable |
 | Authentication | None (content-addressed) |
 | Multi-writer | N/A (content-addressed, anyone can re-put) |
@@ -903,7 +1379,7 @@ can update.
 
 | Property | Detail |
 |----------|--------|
-| Max payload (value) | ~1002 bytes |
+| Max payload (value) | 1000 bytes |
 | Addressing | `hash(public_key)` -- one slot per keypair |
 | Seq semantics | Strictly monotonic; higher wins |
 | Authentication | Ed25519 signature verified by DHT nodes |
