@@ -534,8 +534,8 @@ encountering a feed that points to a not-yet-propagated summary.
 
 A DM between Alice and Bob is simply a **deterministic private 2-person
 channel**. It works exactly like any other channel:
+- Both generate their own `feed_keypair` for that channel (random per session)
 - Both derive the same `channel_key` from their sorted pubkeys
-- Both derive their own `feed_keypair` for that channel
 - Both announce on the DM's epoch+bucket topics when they post (same
   rotation scheme as channels)
 - Messages encrypted with ECDH-derived key (not channel_key)
@@ -589,7 +589,8 @@ user request.
    - `msg_hashes` — optional initial encrypted message(s)
    - `next_feed_pubkey` — Alice's real ongoing feed_pubkey for this channel
      (so Bob can immediately start polling the conversation)
-   - Optional: `channel_name`, `salt`/keyfile hint, `invite_type` ("dm" | "private"),
+   - Optional: `channel_name`, `salt` (the actual secret, not a hint —
+     Bob needs this to derive the channel key), `invite_type` ("dm" | "private"),
      `invite_message` (welcome text)
 
 4. **Alice encrypts the invite payload** under Bob's X25519 public key
@@ -609,18 +610,21 @@ user request.
 
 Bob polls his inbox topic periodically (same cadence as background channels):
 
-1. `lookup(inbox_topic)` → discovers temporary invite feed_pubkeys
-2. For each new feed_pubkey: `mutable_get(invite_feed_pubkey)`
+1. Scan current + previous epoch × 4 buckets for his inbox topics
+   (8 lookups per cycle, 15-30s interval)
+2. For each new feed_pubkey discovered: `mutable_get(invite_feed_pubkey)`
 3. **Decrypt** the feed record using his X25519 private key + the invite
    feed's X25519 public key (ECDH). If decryption fails → not for Bob
    (or spam); discard.
 4. **Verify ownership proof** against the `id_pubkey` in the decrypted record.
 5. **Discern channel type automatically**:
    - Compute the DM `channel_key` between Alice's `id_pubkey` and Bob's own.
-   - If it matches the `channel_key` from the ownership proof → **DM invite**.
+   - Verify the ownership proof using that candidate key: if the signature
+     over `(invite_feed_pubkey || candidate_channel_key)` verifies against
+     Alice's `id_pubkey` → **DM invite**.
    - Otherwise → **group/private channel invite**. Use the provided
      `channel_name` + `salt` (from inside the encrypted payload) to derive
-     the channel key and join.
+     the channel key, then verify the ownership proof against that key.
 6. **Begin normal operation**: add Alice's real feed (via `next_feed_pubkey`)
    to the channel's known feeds and start polling.
 7. Ignore invites for channels Bob is already participating in.
@@ -633,7 +637,9 @@ Bob polls his inbox topic periodically (same cadence as background channels):
   operation.** The last exception (old inbox announce) is eliminated.
 - **Better metadata hygiene**: inbox DHT nodes see only opaque feed_pubkeys
   in announce records and encrypted blobs in feed records. They cannot
-  determine who is inviting whom or to what channel.
+  determine the sender, the channel, or the invite contents. (Note: if
+  Bob's `id_pubkey` is publicly known, his inbox topics are computable —
+  an observer can infer that *someone* is inviting Bob, but not who or to what.)
 - **Rich invites**: initial message, welcome text, channel name/salt all
   fit inside the encrypted feed record.
 - **Group administration**: moderators can invite people to private channels
@@ -821,39 +827,10 @@ Background channel (same scenario):
 
 ---
 
-## Track 7: CLI Interface
+## CLI Interface
 
-### Command Shape (Sketch)
-
-```bash
-# Join a public channel
-peeroxide chat join "general"
-
-# Join a private channel (group name salt)
-peeroxide chat join "general" --group "My Buddies"
-
-# Join a private channel (keyfile salt)
-peeroxide chat join "general" --keyfile ~/.config/peeroxide/mykey.bin
-
-# Use a specific profile
-peeroxide chat --profile work join "engineering"
-
-# Send a direct message (sends invite via inbox, then joins DM channel)
-peeroxide chat dm <pubkey-hex>
-
-# Show your identity
-peeroxide chat whoami
-
-# List profiles
-peeroxide chat profiles
-```
-
-### Open Questions
-
-- [ ] TUI vs line-mode (TUI is better UX, more implementation work)
-- [ ] Multiple rooms simultaneously (likely yes, separate polling tasks)
-- [ ] Message history depth on join (configurable?)
-- [ ] Notification mechanism for background channels
+See [`CHAT_CLI.md`](./CHAT_CLI.md) for the command-line interface design.
+The protocol spec (this document) is implementation-agnostic.
 
 ---
 
