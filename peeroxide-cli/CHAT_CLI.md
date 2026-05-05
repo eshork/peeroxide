@@ -22,22 +22,25 @@ Users manage multiple conversations via multiple terminals (or tmux panes,
 background jobs, etc.). This matches the existing `peeroxide` CLI style
 where `cp` and `dd` are also long-running.
 
-### Shared State (Read-Only)
+### Shared State
 
-All processes share the **identity profile** on disk (read-only):
-- `~/.config/peeroxide/chat/profiles/<name>/seed` — Ed25519 seed (32 bytes)
-- `~/.config/peeroxide/chat/profiles/<name>/name` — optional display name
-- `~/.config/peeroxide/chat/profiles/<name>/bio` — optional bio text
+All processes share the **identity profile** on disk:
+- `~/.config/peeroxide/chat/profiles/<name>/seed` — Ed25519 seed (32 bytes, read-only)
+- `~/.config/peeroxide/chat/profiles/<name>/name` — optional display name (read-only during sessions)
+- `~/.config/peeroxide/chat/profiles/<name>/bio` — optional bio text (read-only during sessions)
 - `~/.config/peeroxide/chat/profiles/<name>/friends` — friends list (pubkeys + aliases + cached nexus)
 - `~/.config/peeroxide/chat/profiles/<name>/known_users` — seen users cache (pubkey → last screen name)
 
-No file locking needed — profile files are read-only during chat sessions
-(only `chat profiles`, `chat nexus --set-*`, and `chat friends` modify them).
+**Concurrency model**: `seed`, `name`, and `bio` are read-only during chat
+sessions (only `chat profiles`, `chat nexus --set-*`, and `chat friends`
+modify them). `known_users` and `friends` are append-only during sessions —
+each line is self-contained, so concurrent appends from multiple processes
+are safe without locking. Periodic compaction (dedup) happens on read.
 Runtime state (known feeds, cached messages, seq numbers) lives entirely
 in memory and is discarded on exit.
 
 **Known users cache**: Every chat process appends to `known_users` when it
-encounters a new `id_pubkey` (from a decrypted message or feed record).
+encounters a new `id_pubkey` (from a decrypted message or nexus lookup).
 Stores the full pubkey and last-seen screen name. This allows users to
 look up full pubkeys later for friending, even for resolved users whose
 full key was never displayed. The file is append-friendly (no coordination
@@ -70,8 +73,8 @@ by other participants without running a dedicated process.
 
 - Duplicate bootstrap/routing table warmup per process (~2-3s each)
 - No cross-session notifications or unified unread state
-- No persistent message history (ephemeral by design; local caching is
-  a future enhancement, not v1)
+- No persistent message history — in-memory cache only, lost on exit
+  (persistent local caching is a future enhancement, not v1)
 
 If these become painful, a shared background DHT node (via Unix socket)
 can be added later without changing the command surface.
@@ -92,11 +95,12 @@ Arguments:
 
 Options:
   --group <salt>       Private channel with group name as salt
-  --keyfile <path>     Private channel with keyfile as salt
+  --keyfile <path>     Private channel with keyfile as salt (mutually exclusive with --group)
   --profile <name>     Identity profile to use (default: "default")
   --no-nexus           Do not publish personal nexus
+  --no-friends         Do not refresh friend nexus data
   --read-only          Listen only; no posting, no feed, no announce
-  --stealth            Equivalent to --no-nexus --read-only (zero DHT writes)
+  --stealth            Equivalent to --no-nexus --read-only --no-friends (zero DHT writes)
   --feed-lifetime <duration>  Max feed keypair lifetime before rotation
                               (default: 60m, with ±50% wobble)
 ```
@@ -105,12 +109,12 @@ Options:
 1. Load identity from profile
 2. Bootstrap DHT node
 3. Derive channel_key from channel name (+ salt if private)
-4. Generate random feed keypair
+4. Generate random feed keypair (skip if `--read-only` or `--stealth`)
 5. Perform join scan (20 epochs × 4 buckets = 80 lookups)
 6. Enter main loop:
    - Discovery: scan current + previous epoch (8 lookups, every 5-8s)
    - Content: poll known feeds, fetch new messages, display
-   - Input: read lines from stdin, post as messages
+   - Input: read lines from stdin, post as messages (disabled in `--read-only`)
 7. On feed rotation: generate new keypair, set next_feed_pubkey, overlap
 
 **Output format (stdout):**
@@ -122,7 +126,8 @@ Options:
 **Input (stdin):**
 Lines typed are posted as messages. Empty lines are ignored.
 
-**Exit:** Ctrl-C or EOF on stdin. Feed expires naturally via TTL.
+**Exit:** Ctrl-C (graceful shutdown). EOF on stdin enters read-only mode
+(continue displaying, stop accepting input). Ctrl-C from read-only mode exits.
 
 ---
 
@@ -143,10 +148,11 @@ Arguments:
 Options:
   --profile <name>     Identity profile to use (default: "default")
   --no-nexus           Do not publish personal nexus
+  --no-friends         Do not refresh friend nexus data
   --read-only          Listen only; no posting, no feed, no announce
-  --stealth            Equivalent to --no-nexus --read-only (zero DHT writes)
+  --stealth            Equivalent to --no-nexus --read-only --no-friends (zero DHT writes)
   --message <text>     Message to include in the startup inbox nudge
-  --feed-lifetime <duration>  Max feed keypair lifetime (default: 60m)
+  --feed-lifetime <duration>  Max feed keypair lifetime (default: 60m, with ±50% wobble)
 ```
 
 **Behavior:**
@@ -159,6 +165,7 @@ Options:
    inbox once — announce a temporary invite feed containing Alice's identity
    + the lure text. This says "hey, come talk to me" and gives Bob a
    reason to open the DM. No `--message` = no startup nudge.
+   (`--message` is silently ignored in `--read-only` / `--stealth` mode.)
 7. Enter main loop (same as `chat join` but on DM topic)
 8. **Per-message inbox nudge (v1 policy):** When posting a message, poke
    the recipient's inbox — but at most once per epoch (~1 min). The nudge
@@ -182,6 +189,8 @@ peeroxide chat inbox [OPTIONS]
 Options:
   --profile <name>     Identity profile to use (default: "default")
   --poll-interval <secs>  Inbox polling interval (default: 15s)
+  --no-nexus           Do not publish personal nexus
+  --no-friends         Do not refresh friend nexus data
 ```
 
 **Behavior:**
@@ -194,16 +203,23 @@ Options:
 
 **Output format:**
 ```
-[INVITE #1] DM from alice (a3f2b...c891)
-  → peeroxide chat dm a3f2b...c891 --profile default
+[INVITE #1] DM from alice (a3f2b4c5)
+  "hey, let's talk about the project"
+  → peeroxide chat dm a3f2b4c5d6e7f80910111213141516171819202122232425262728293031 --profile default
 
-[INVITE #2] Channel "engineering" from bob (7e4a1...d023)
+[INVITE #2] Channel "engineering" from bob (7e4a1b2c)
   → peeroxide chat join "engineering" --group "TeamX" --profile default
 ```
 
 Invites that fail decryption or verification are silently discarded.
 Invites for channels already joined (if detectable) are noted but not
-re-displayed.
+re-displayed. Same invite_feed_pubkey with higher seq = refresh (update
+`next_feed_pubkey` internally, update lure text in-place if changed,
+don't create a new invite line).
+
+**Sender name resolution** (for display): nexus lookup → known_users cache
+→ shortkey-only fallback. The invite record contains `id_pubkey` but not
+a screen name directly.
 
 ---
 
@@ -296,7 +312,14 @@ Subcommands:
 ```
 
 **Storage:** `~/.config/peeroxide/chat/profiles/<name>/friends`
-(simple format: one pubkey per line, with optional alias and cached nexus data)
+
+Format: one entry per line, tab-separated fields:
+```
+<64-char-hex-pubkey>\t<alias-or-empty>\t<cached-screen-name>\t<cached-bio-first-line>
+```
+Empty fields are empty strings between tabs. Lines starting with `#` are
+comments. File is append-only during sessions; compacted (deduped, latest
+entry per pubkey wins) on read.
 
 **Opportunistic refresh:** All active chat processes (`join`, `dm`, `inbox`,
 `nexus --daemon`) automatically cycle through the friends list in the
@@ -318,9 +341,11 @@ All commands that display messages use the same format:
 [TIMESTAMP] [DISPLAY_NAME]: MESSAGE_CONTENT
 ```
 
-- Timestamp: local time, `YYYY-MM-DD HH:MM:SS`
+- Timestamp: local time, `YYYY-MM-DD HH:MM:SS` (date omitted if today: `HH:MM:SS`)
 - Display name wrapped in `[]` with `:` separator to clearly delimit identity from message text
 - Messages from self are displayed immediately (no round-trip wait)
+- **Terminology**: "screen name" = the name a user sets for themselves (in messages and nexus).
+  "Alias" = the name YOU assign to a friend locally. "Display name" = whatever is shown in `[]`.
 
 ### Display Name Rules
 
@@ -330,8 +355,10 @@ The delimiter itself signals trust level:
 
 | Situation | Format | Example |
 |-----------|--------|---------|
-| Friend, alias matches screen name | `[(alias)]` | `[(alice)]` |
-| Friend, alias differs from screen name | `[(alias) <screen_name>]` | `[(bob) <alice>]` |
+| Friend, has alias, matches screen name | `[(alias)]` | `[(alice)]` |
+| Friend, has alias, differs from screen name | `[(alias) <screen_name>]` | `[(bob) <alice>]` |
+| Friend, no alias, has screen name | `[(screen_name)]` | `[(alice)]` |
+| Friend, no alias, no screen name | `[(@shortkey)]` | `[(@a3f2b4c5)]` |
 | Non-friend, has screen name | `[<screen_name@shortkey>]` | `[<alice@7e4a1b2c>]` |
 | Non-friend, no screen name | `[<@shortkey>]` | `[<@c9d8e7f6>]` |
 | Non-friend, name recently changed | `[<!screen_name@shortkey>]` | `[<!alice@7e4a1b2c>]` |
@@ -369,7 +396,8 @@ minutes ago (or never shown). This means:
 - First message from them → identity line shown
 - Rapid messages → no repeat (already shown recently)
 - Gap of >10 min then another message → identity line shown again
-- Friends never get identity lines (alias is your identifier)
+- Friends with alias never get identity lines (alias is your identifier)
+- Friends without alias: identity line shown on same schedule as non-friends
 
 ```
 *** @a3f2b4c5 is a3f2b4c5d6e7f80910111213141516171819202122232425262728293031
@@ -402,7 +430,7 @@ it is history; everything below is real-time. This helps users distinguish
   naturally (no explicit "leave" announcement needed).
 - **SIGTERM**: same as SIGINT.
 - **stdin EOF**: stop accepting input but continue displaying messages
-  (read-only mode). Second EOF or SIGINT exits.
+  (enters read-only mode). Ctrl-C exits from this state.
 - **DHT bootstrap failure**: retry with backoff, print warning. Exit after
   N failures (configurable).
 
@@ -410,6 +438,7 @@ it is history; everything below is real-time. This helps users distinguish
 
 ## Future Enhancements (Not v1)
 
+- `chat invite <pubkey> --channel <name> --group <salt>` — sender-side group/private channel invites
 - `--json` output mode for machine consumption / piping to other tools
 - Local message cache (SQLite) for history persistence across sessions
 - Optional shared DHT node (background daemon) to reduce bootstrap cost

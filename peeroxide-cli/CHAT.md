@@ -16,7 +16,8 @@
 3. **Content confidentiality** — all messages are encrypted. Only intended
    participants can decrypt. Author identity is hidden inside ciphertext.
 4. **Ephemeral by default** — no permanent network storage. DHT TTL (~20 min)
-   is acceptable. Local clients cache received messages for UX continuity.
+   is acceptable. Local clients maintain in-memory message caches for session
+   continuity (no persistent on-disk cache in v1).
 5. **Pure DHT transport** — uses only existing peeroxide DHT operations
    (`announce`, `lookup`, `mutable_put`, `mutable_get`, `immutable_put`,
    `immutable_get`). No protocol changes, no custom relay code, no peer
@@ -90,7 +91,7 @@ This is what you CAN get with disciplined operational security.
 
 | Adversary Goal | Protection | How |
 |---|---|---|
-| 1. Unmask identity | **Strong vs participants; Medium vs DHT nodes** | Same as casual — IP never exposed to other participants. DHT nodes serving feeds still see source IP + `id_pubkey` in plaintext feed record. Mitigated by: id_pubkey has no public footprint, feed rotation limits observation window. |
+| 1. Unmask identity | **Strong vs participants; Medium vs DHT nodes** | Same as casual — IP never exposed to other participants. DHT nodes serving feeds still see source IP + `id_pubkey` in plaintext feed record. Mitigated by: feed rotation limits observation window. If personal nexus is enabled, `hash(id_pubkey)` is a stable address — use `--no-nexus` for maximum privacy. |
 | 2. Read content | **Strong (message bodies); Weak (feed metadata)** | Private channel requires name + salt (or keyfile). DMs require ECDH. Brute-force infeasible with high-entropy salt. But feed records are unencrypted — `id_pubkey` and message-hash structure visible to feed-serving nodes. |
 | 3. Map relationships | **Strong vs outsiders; Medium vs DHT nodes** | Channel topic unguessable without the salt. Outsiders cannot discover the channel. Feed-serving DHT nodes see `id_pubkey` in plaintext feed records. Invite inbox reveals only opaque feed_pubkeys and encrypted payloads to serving nodes. |
 | 4. Cross-channel correlation | **Strong (between profiles); Medium (within one profile)** | Different profiles = unique id_pubkey, cryptographically unlinkable. But one profile used across multiple private channels is linkable wherever those feed records are discovered (same `id_pubkey` appears in each). |
@@ -111,6 +112,13 @@ censorship, or low-entropy channel secrets enabling brute-force.
 
 These apply regardless of usage discipline:
 
+- **Personal nexus is an opt-in privacy trade-off.** When enabled (the
+  default), `mutable_put(id_keypair, ...)` gives `id_pubkey` a stable DHT
+  address (`hash(id_pubkey)`). The K-closest nodes serving that address can
+  correlate IP↔identity for as long as the nexus is refreshed (~8 min
+  intervals). Users requiring source-IP anonymity from DHT nodes should use
+  `--no-nexus`. This does NOT affect participant-to-participant anonymity
+  (no direct connections regardless).
 - **DHT nodes see your IP** when you make requests (inherent to UDP). They
   can correlate "IP X operated on topic Y at time T" within a single epoch.
   Epoch rotation limits this to 1-minute windows for discovery, but feed
@@ -136,8 +144,9 @@ These apply regardless of usage discipline:
   Announce slots can be exhausted by spam.
 - **No deniability** — messages are signed. Signatures are proof of authorship.
   This is deliberate (verifiable authorship is a core requirement).
-- **Local client caches** persist beyond DHT TTL. Physical access to a
-  device = access to chat history.
+- **Local client caches** are in-memory for v1 (lost on exit). Future
+  persistent caches would survive beyond DHT TTL — physical access to a
+  device would then mean access to chat history.
 - **Ephemerality is not enforceable** — any participant or DHT node that
   captured immutable records can re-`immutable_put` them to keep them alive
   indefinitely. TTL is "default retention on honest nodes," not guaranteed
@@ -262,7 +271,8 @@ Each user has two kinds of keypairs:
 **Identity keypair** (`id_keypair`): Long-term, persistent across all channels
 and devices. The public key IS the identity. Used ONLY to sign message
 content (inside encryption), ownership proofs, and the personal nexus record.
-Never used for DHT transport operations (announce, mutable_put, etc.).
+Never used for DHT transport operations (announce, mutable_put, etc.)
+**except** the personal nexus record (one mutable slot, opt-out via `--no-nexus`).
 
 **Per-channel feed keypair** (`feed_keypair`): Random, generated per session
 (or rotated by the client on a configurable schedule). Used for `announce`
@@ -271,9 +281,9 @@ feed rotation is a client-side privacy decision.
 
 ```
 Identity keypair   -> signs message content (inside encryption)
-                   -> signs personal nexus record
+                   -> signs personal nexus record (mutable_put under id_keypair — opt-out via --no-nexus)
                    -> signs ownership proofs (including invite feed proofs)
-                   -> NEVER used for announce or mutable_put
+                   -> NEVER used for channel announce or channel feed mutable_put
 
 Feed keypair       -> used for announce + mutable_put (per channel)
                    -> random per session, rotated by client
@@ -383,7 +393,14 @@ This means:
 DMs use X25519 ECDH instead of deriving from channel_key:
 
 ```rust
-// Ed25519 -> X25519 conversion (curve25519-dalek already a dep)
+// Ed25519 -> X25519 conversion
+// Public key: birational map (Edwards -> Montgomery), per RFC 7748 §4.1
+//   Equivalent to crypto_sign_ed25519_pk_to_curve25519 in libsodium
+//   In Rust: curve25519_dalek CompressedEdwardsY -> MontgomeryPoint
+// Private key: SHA-512(ed25519_seed)[0..32], clamped per X25519 spec
+//   Equivalent to crypto_sign_ed25519_sk_to_curve25519 in libsodium
+//   In Rust: use ed25519_dalek ExpandedSecretKey, take scalar bytes
+
 ecdh_secret = X25519(my_x25519_priv, their_x25519_pub)
 dm_msg_key = keyed_blake2b(key = ecdh_secret,
     msg = b"peeroxide-chat:dm-msgkey:v1:" || channel_key)
@@ -445,11 +462,17 @@ Two-phase process: **discover** active feeds, then **poll** known feeds.
 4. `immutable_get(hash)` for each new message (parallelizable)
 5. Decrypt, verify signature, verify prev_msg_hash chain, display
 6. If `next_feed_pubkey` is set: add new feed to known set (rotation handoff)
-7. Never mark a hash "seen" until decrypt+verify succeeds; retry on next cycle
+7. If `summary_hash` is set and not yet fetched: `immutable_get(summary_hash)`
+   → verify signature, extract msg_hashes, fetch referenced messages.
+   Follow `prev_summary_hash` chain for deeper history (cap at 100 blocks).
+8. Never mark a hash "seen" until decrypt+verify succeeds; retry on next cycle
 
-Once a feed_pubkey is discovered, it stays in the known set permanently
-(for this channel session). The reader polls it directly via mutable_get
-without needing to re-discover it through announce. This means the announce
+Once a feed_pubkey is discovered, it stays in the known set for the
+channel session. Stale feeds (3+ consecutive polls with unchanged seq)
+are deprioritized (reduced poll frequency). Feeds are removed from active
+polling only after TTL expiry with no seq change (presumed dead). The reader
+polls it directly via mutable_get without needing to re-discover it through
+announce. Re-discovery through announce reactivates a deprioritized feed. This means the announce
 layer handles discovery of new/active posters, while the content layer
 delivers messages independently.
 
@@ -495,9 +518,9 @@ incremented seq (even if unchanged) to prevent TTL expiration.
 
 ### Summary Blocks
 
-When a participant's message count exceeds the 26-hash capacity of the
-feed record, older hashes are batched into **summary blocks** stored
-via `immutable_put`. Each summary block contains up to 27 message hashes and a
+When a participant's feed reaches 20 message hashes (out of a maximum
+26-hash capacity), older hashes are proactively evicted into **summary
+blocks** stored via `immutable_put`. Each summary block contains up to 27 message hashes and a
 `prev_summary` link to the next older block, forming a chain.
 
 Summary blocks are signed by the identity key and linked from the feed
@@ -512,7 +535,7 @@ encountering a feed that points to a not-yet-propagated summary.
 
 | Record type | Max size | Overhead | Content budget |
 |------------|---------|----------|---------------|
-| Message (immutable_put) | 1000 bytes | 179 bytes (envelope + encryption + signature) | 821 bytes |
+| Message (immutable_put) | 1000 bytes | 180 bytes (envelope + encryption + signature) | 820 bytes (screen_name + content) |
 | Feed record (mutable_put) | 1000 bytes | 161 bytes (fixed fields) | 26 msg hashes |
 | Invite feed record (mutable_put) | 1000 bytes | 171 bytes (encryption + fixed fields) | 829 bytes for invite payload |
 | Summary block (immutable_put) | 1000 bytes | 129 bytes (header + signature) | 27 msg hashes |
@@ -607,7 +630,8 @@ user request.
    announce(bob_inbox_topic, invite_feed_keypair, [])
    ```
    She re-announces across subsequent epochs (client-side decision on
-   duration) until she observes Bob's activity on the channel.
+   duration, default: 20 minutes / one full TTL cycle) until she observes
+   Bob's activity on the channel, or the duration expires.
 
 ### Bob's Side (Receiving Invites)
 
@@ -636,8 +660,10 @@ Bob polls his inbox topic periodically (same cadence as background channels):
 
 - **Total uniformity**: every form of discovery (channels, DMs, group invites)
   uses identical feed/announce/mutable_put machinery. No special cases.
-- **The long-term `id_keypair` is NEVER used for announce or any DHT transport
-  operation.** The last exception (old inbox announce) is eliminated.
+- **The long-term `id_keypair` is NEVER used for channel announce or channel
+  feed mutable_put.** The only transport use is the personal nexus record
+  (opt-out via `--no-nexus`). The last exception (old inbox announce) is
+  eliminated.
 - **Better metadata hygiene**: inbox DHT nodes see only opaque feed_pubkeys
   in announce records and encrypted blobs in feed records. They cannot
   determine the sender, the channel, or the invite contents. (Note: if
@@ -646,7 +672,9 @@ Bob polls his inbox topic periodically (same cadence as background channels):
 - **Rich invites**: initial message, welcome text, channel name/salt all
   fit inside the encrypted feed record.
 - **Group administration**: moderators can invite people to private channels
-  without prior DM contact.
+  without prior DM contact. (Note: v1 CLI only exposes DM invites as a
+  sender-side command. Group/private channel invite sending is deferred to v2.
+  The protocol and inbox receiver support group invites already.)
 - **Forward compatible**: future extensions (read-only invites, multi-person
   invites, expiration times) fit naturally in the feed record.
 
@@ -680,6 +708,10 @@ Bob polls his inbox topic periodically (same cadence as background channels):
 Announce is used strictly as a **new content signal**, not as idle presence.
 A participant announces on the channel's epoch+bucket topic only when they
 post a new message. Idle readers do not announce.
+
+**Exception**: Invite inbox re-announces (§8.5 per-message nudges) are exempt
+from the new-content-only rule — they signal availability to the recipient,
+not new channel content. These use the inbox topic, not the channel topic.
 
 This means:
 - Announce slots are consumed only by active posters, not lurkers
@@ -810,9 +842,11 @@ CONTENT (poll known feeds):
 ADAPTIVE BEHAVIOR:
   - Back off quiet feeds: if unchanged for 3+ cycles, reduce poll rate
   - Cap known-feed set: max ~100 active feeds per channel
-  - Expire stale feeds: remove after 3 consecutive missed refreshes (seq unchanged + TTL likely expired)
+  - Expire stale feeds: remove from active polling after 3 consecutive missed refreshes (seq unchanged + TTL likely expired); re-activate on re-discovery via announce
   - Never mark a msg_hash "seen" until immutable_get + decrypt + verify succeeds
   - Retry failed fetches on next poll cycle
+  - Malformed records: silently discard (truncated, invalid lengths, bad UTF-8, failed signature). In verbose mode, log a warning with feed_pubkey and failure reason.
+  - Cyclic summary chains: cap traversal depth (e.g., 100 blocks) to prevent infinite loops from malicious data
 ```
 
 ### Cost Estimates
@@ -867,14 +901,16 @@ Offset  Size  Field
 32      32    prev_msg_hash (previous msg from this feed, or 32 zeros)
 64      8     timestamp (unix_time_secs, u64 LE)
 72      1     content_type (enum, see below)
-73      2     content_len (u16 LE)
-75      N     content (UTF-8 text for type 0x01)
-75+N    64    signature (Ed25519 detached)
+73      1     screen_name_len (0-255)
+74      N     screen_name (UTF-8, N = screen_name_len)
+74+N    2     content_len (u16 LE)
+76+N    M     content (UTF-8 text for type 0x01)
+76+N+M  64    signature (Ed25519 detached)
 ```
 
 **Signature covers** (sign-then-encrypt):
 ```
-b"peeroxide-chat:msg:v1:" || prev_msg_hash(32) || timestamp(8) || content_type(1) || content(N)
+b"peeroxide-chat:msg:v1:" || prev_msg_hash(32) || timestamp(8) || content_type(1) || screen_name_len(1) || screen_name(N) || content(M)
 ```
 
 **Content types:**
@@ -884,11 +920,11 @@ b"peeroxide-chat:msg:v1:" || prev_msg_hash(32) || timestamp(8) || content_type(1
 | 0x02–0xFF | Reserved for future use |
 
 **Size budget:**
-- Fixed overhead (plaintext): 32 + 32 + 8 + 1 + 2 + 64 = 139 bytes
+- Fixed overhead (plaintext): 32 + 32 + 8 + 1 + 1 + 2 + 64 = 140 bytes
 - Encryption overhead: 40 bytes
-- Total overhead: 179 bytes
-- **Max content: 821 bytes** (1000 - 179)
-- At ~4 bytes/word average, that's ~205 words per message
+- Total overhead: 180 bytes
+- **Max screen_name + content: 820 bytes** (1000 - 180)
+- With a 32-byte screen name: max content = 788 bytes (~197 words)
 
 ### 7.2 Feed Record (mutable_put, plaintext)
 
@@ -972,6 +1008,12 @@ Offset  Size  Field
 No application-level signature needed — `mutable_put` is already
 authenticated by the DHT layer (Ed25519 signature over the value
 verified by storing nodes).
+
+**Multi-device note**: If two devices update the nexus in the same second,
+they produce the same seq. The DHT accepts whichever arrives first at each
+node; the other is silently dropped (SEQ_REUSED). Clock skew between devices
+may cause a lower-seq update to be rejected (SEQ_TOO_LOW). This is acceptable
+for v1 — nexus is best-effort profile data, not critical state.
 
 ### 7.5 Invite Feed Record (mutable_put, encrypted)
 
@@ -1138,25 +1180,26 @@ BUILD:
   2. timestamp = unix_time_secs as u64
   3. content_type = 0x01 (text)
   4. content = UTF-8 input bytes
-  5. signable = b"peeroxide-chat:msg:v1:" || prev_msg_hash || timestamp || content_type || content
-  6. signature = sign(id_sk, signable)
-  7. Assemble plaintext per §7.1 layout (fields + signature appended)
+  5. screen_name = user's configured display name (from profile)
+  6. signable = b"peeroxide-chat:msg:v1:" || prev_msg_hash || timestamp || content_type || screen_name_len || screen_name || content
+  7. signature = sign(id_sk, signable)
+  8. Assemble plaintext per §7.1 layout (fields + signature appended)
 
 ENCRYPT:
-  8. nonce = random 24 bytes
-  9. encrypted = nonce || tag || XSalsa20Poly1305::encrypt(msg_key, nonce, plaintext)
+  9. nonce = random 24 bytes
+  10. encrypted = nonce || tag || XSalsa20Poly1305::encrypt(msg_key, nonce, plaintext)
 
 PUBLISH (ordered):
-  10. immutable_put(encrypted) → msg_hash          ← MUST complete before step 11
-  11. Prepend msg_hash to feed record's msg_hashes
+  11. immutable_put(encrypted) → msg_hash          ← MUST complete before step 12
+  12. Prepend msg_hash to feed record's msg_hashes
       If msg_count reaches 20 → summary block first (see §8.4)
       Increment seq
-  12. mutable_put(feed_keypair, updated_record, seq)  ← can parallel with step 13
-  13. announce(current_epoch_topic, feed_keypair, [])
+  13. mutable_put(feed_keypair, updated_record, seq)  ← can parallel with step 14
+  14. announce(current_epoch_topic, feed_keypair, [])
 
 LOCAL:
-  14. Display message immediately (no round-trip wait)
-  15. Update prev_msg_hash = msg_hash
+  15. Display message immediately (no round-trip wait)
+  16. Update prev_msg_hash = msg_hash
 ```
 
 ### 8.3 Feed Rotation
@@ -1169,27 +1212,30 @@ PREPARE:
   1. new_feed_keypair = KeyPair::generate()
   2. new_ownership_proof = sign(id_sk, b"peeroxide-chat:ownership:v1:" || new_feed_pubkey || channel_key)
 
-HANDOFF (old feed):
-  3. Set next_feed_pubkey = new_feed_keypair.public_key in current feed record
-  4. mutable_put(old_feed_keypair, updated_record, seq+1)
+HANDOFF (ordered — publish target before pointer):
+  3. Initialize new feed record (empty, msg_count=0, ownership_proof=new_ownership_proof)
+  4. mutable_put(new_feed_keypair, new_feed_record, seq=0)  ← MUST complete before step 5
+  5. Set next_feed_pubkey = new_feed_keypair.public_key in current feed record
+  6. mutable_put(old_feed_keypair, updated_record, seq+1)
      Readers now see the handoff link.
 
 SWITCH:
-  5. Active feed = new_feed_keypair
-  6. Reset: msg_hashes=[], msg_count=0, prev_msg_hash=zeros, seq=0
-  7. New random bucket permutation
-  8. Record rotation timestamp (for next rotation check)
+  7. Active feed = new_feed_keypair
+  8. Reset: msg_hashes=[], msg_count=0, prev_msg_hash=zeros, seq=1 (already used 0)
+  9. New random bucket permutation
+  10. Record rotation timestamp (for next rotation check)
 
 OVERLAP:
-  9. Continue refreshing old feed record for ONE more cycle (~8 min)
-     so readers have time to discover and follow next_feed_pubkey
-  10. After that refresh, stop. Old feed expires via DHT TTL (~20 min).
+  11. Continue refreshing old feed record for ONE more cycle (~8 min)
+      so readers have time to discover and follow next_feed_pubkey
+  12. After that refresh, stop. Old feed expires via DHT TTL (~20 min).
 ```
 
 ### 8.4 Summary Block Publish
 
-Triggered when msg_count reaches 20. Happens
-inline during §8.2 step 11, before the feed record update.
+Triggered when msg_count reaches 20 (before prepending the new hash). Happens
+inline during §8.2 step 12, before the feed record update. Eviction operates
+on the existing 20 hashes; the new message hash is prepended afterward.
 
 ```
 EVICT:
@@ -1210,7 +1256,7 @@ PUBLISH (ordered):
      - summary_hash = new summary_hash
      - msg_hashes = kept hashes only
      - msg_count = updated count
-  9. Return to §8.2 step 11 (prepend new msg_hash, mutable_put)
+  9. Return to §8.2 step 12 (prepend new msg_hash, mutable_put)
 ```
 
 ### 8.5 Starting a DM
@@ -1240,13 +1286,22 @@ STARTUP NUDGE (only if --message provided):
      - ecdh_secret = X25519(invite_feed_x25519_priv, bob_x25519_pub)
      - invite_key = keyed_blake2b(key=ecdh_secret, msg=b"peeroxide-chat:invite-key:v1:" || invite_feed_pubkey)
      - encrypted = XSalsa20Poly1305::encrypt(invite_key, random_nonce, plaintext)
-  9. mutable_put(invite_feed_keypair, encrypted, seq=0)
-  10. inbox_topic = keyed_blake2b(key=hash(bob_id_pubkey), msg=b"peeroxide-chat:inbox:v1:" || epoch || bucket)
-  11. announce(inbox_topic, invite_feed_keypair, [])
+  9. Publish Alice's real DM feed record first:
+     mutable_put(feed_keypair, initial_feed_record, seq=0)  ← MUST complete before step 10
+  10. mutable_put(invite_feed_keypair, encrypted, seq=0)
+  11. inbox_topic = keyed_blake2b(key=hash(bob_id_pubkey), msg=b"peeroxide-chat:inbox:v1:" || epoch || bucket)
+  12. announce(inbox_topic, invite_feed_keypair, [])
+
+  If --message is NOT provided:
+  6. invite_feed_keypair = KeyPair::generate()
+     (Created but not published yet — held for per-message nudges later)
+  7. Publish Alice's real DM feed record:
+     mutable_put(feed_keypair, initial_feed_record, seq=0)
 
 MAIN LOOP:
-  12. Same as §8.1 step 14, but using dm_msg_key for encryption
-  13. Per-message inbox nudge: on each post, if current_epoch != last_nudge_epoch:
+  13. Same as §8.1 step 14, but using dm_msg_key for encryption
+  14. Per-message inbox nudge: on each post, if current_epoch != last_nudge_epoch:
+      - Build invite plaintext (same as startup nudge but payload = triggering message text, truncated to fit)
       - Update invite record's next_feed_pubkey if feed rotated
       - mutable_put(invite_feed_keypair, re-encrypted, seq+1)
       - announce(bob_inbox_topic_current_epoch, invite_feed_keypair, [])
@@ -1321,7 +1376,7 @@ The protocol spec (this document) is implementation-agnostic.
 | Messages | immutable_put (content-addressed) | Immutable, refreshable by anyone, no write conflicts |
 | Feed records | mutable_put per feed keypair | One record per participant per channel; stable address across epochs; includes `next_feed_pubkey` for rotation handoff |
 | Encryption | XSalsa20Poly1305, random 24-byte nonce | Already in codebase; birthday-safe nonce eliminates reuse risk |
-| All messages encrypted | Yes, including public channels | Author identity hidden inside ciphertext; screen_name only in encrypted messages |
+| All messages encrypted | Yes, including public channels | Author identity and screen_name hidden inside ciphertext; not in feed metadata |
 | KDF | Keyed BLAKE2b-256 (no HKDF) | Already used (`discovery_key` pattern); no new dependencies |
 | DM encryption | X25519 ECDH (Ed25519 -> Curve25519) | `curve25519-dalek` already a dependency; static keys for v1 |
 | Feed keypair | Random per session, client-rotated with ±50% wobble | No multi-device conflicts; rotation is client privacy decision, not protocol |
@@ -1334,7 +1389,7 @@ The protocol spec (this document) is implementation-agnostic.
 | Cold-start discovery | Scan 20 epochs on join (one-time) | Catches up on 20 min of history; prevents ghost-channel problem |
 | Feed rotation handoff | `next_feed_pubkey` in old feed + brief overlap | Readers follow the link; prevents losing track of rotated feeds |
 | Message chaining | `prev_msg_hash` scoped per-feed (not per-identity) | Avoids forks from multi-device concurrent posting |
-| Screen name location | Inside encrypted messages only (not in feed record) | Prevents DHT nodes from building identity profiles from feed metadata |
+| Screen name location | Inside encrypted message payloads (as a field) and personal nexus | Prevents DHT nodes from building identity profiles from feed metadata; recipients always have a display name per message |
 
 ---
 
