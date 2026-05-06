@@ -55,8 +55,9 @@ pub struct KnownUser {
 
 /// Returns `~/.config/peeroxide/chat/profiles/`.
 pub fn profiles_dir() -> PathBuf {
-    dirs::config_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
         .join("peeroxide")
         .join("chat")
         .join("profiles")

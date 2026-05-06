@@ -185,6 +185,7 @@ fn run_profiles(command: ProfilesCommands) -> i32 {
                     let kp = peeroxide_dht::hyperdht::KeyPair::from_seed(prof.seed);
                     let pubkey_hex = hex::encode(kp.public_key);
                     println!("Created profile '{name}'");
+                    println!("Name:       {name}");
                     println!("Public key: {pubkey_hex}");
                     0
                 }
