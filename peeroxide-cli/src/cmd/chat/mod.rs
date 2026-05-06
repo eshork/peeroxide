@@ -245,7 +245,10 @@ fn run_friends_sync(command: FriendsCommands) -> i32 {
                 let pk_hex = hex::encode(f.pubkey);
                 let short = &pk_hex[..8];
                 let alias_str = f.alias.as_deref().unwrap_or("");
-                let name_str = f.cached_name.as_deref().unwrap_or("(unknown)");
+                let name_str = f
+                    .cached_name
+                    .clone()
+                    .unwrap_or_else(|| names::generate_name_from_seed(&f.pubkey));
                 if alias_str.is_empty() {
                     println!("  {short}  {name_str}");
                 } else {
@@ -262,6 +265,23 @@ fn run_friends_sync(command: FriendsCommands) -> i32 {
                     eprintln!("error: {e}");
                     return 1;
                 }
+            };
+            if let Err(e) = std::fs::create_dir_all(profile::profile_dir(&profile)) {
+                eprintln!("error: {e}");
+                return 1;
+            }
+            let alias = match alias {
+                Some(alias) => Some(alias),
+                None => known_users::load_shared_users()
+                    .ok()
+                    .and_then(|users| {
+                        users
+                            .into_iter()
+                            .find(|user| user.pubkey == pubkey)
+                            .map(|user| user.screen_name)
+                            .filter(|name| !name.is_empty())
+                    })
+                    .or_else(|| Some(names::generate_name_from_seed(&pubkey))),
             };
             let friend = profile::Friend {
                 pubkey,
@@ -424,6 +444,25 @@ mod tests {
         home.join(".config/peeroxide/chat/profiles")
     }
 
+    struct HomeGuard(Option<std::ffi::OsString>);
+
+    impl HomeGuard {
+        fn set(home: &Path) -> Self {
+            let prev = std::env::var_os("HOME");
+            unsafe { std::env::set_var("HOME", home) };
+            Self(prev)
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(prev) => unsafe { std::env::set_var("HOME", prev) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+
     fn write_profile(home: &Path, name: &str, seed: [u8; 32]) -> io::Result<()> {
         let dir = profile_root(home).join(name);
         fs::create_dir_all(&dir)?;
@@ -454,6 +493,25 @@ mod tests {
             writeln!(file, "{}\t{}\t\t", hex::encode(pubkey), alias.unwrap_or(""))?;
         }
         Ok(())
+    }
+
+    fn prepare_profile(home: &Path, profile_name: &str) -> io::Result<()> {
+        fs::create_dir_all(profile_root(home).join(profile_name))
+    }
+
+    fn friend_output(friend: &profile::Friend) -> String {
+        let pk_hex = hex::encode(friend.pubkey);
+        let short = &pk_hex[..8];
+        let alias_str = friend.alias.as_deref().unwrap_or("");
+        let name_str = friend
+            .cached_name
+            .clone()
+            .unwrap_or_else(|| names::generate_name_from_seed(&friend.pubkey));
+        if alias_str.is_empty() {
+            format!("  {short}  {name_str}")
+        } else {
+            format!("  {short}  {alias_str} ({name_str})")
+        }
     }
 
     fn current_test_binary() -> std::path::PathBuf {
@@ -556,6 +614,78 @@ mod tests {
         write_known_users(tmp.path(), &[(pk(10), "grace")]).unwrap();
         let shortkey = &hex::encode(pk(10))[..8];
         run_child_case(tmp.path(), "name_mismatch", "default", &format!("wrong@{shortkey}"));
+    }
+
+    #[test]
+    fn test_friends_add_auto_alias_vendor() {
+        let tmp = TempDir::new().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+        prepare_profile(tmp.path(), "default").unwrap();
+        let pubkey = pk(11);
+        let expected = names::generate_name_from_seed(&pubkey);
+        let friend = profile::Friend {
+            pubkey,
+            alias: Some(expected.clone()),
+            cached_name: None,
+            cached_bio_line: None,
+        };
+        profile::save_friend("default", &friend).unwrap();
+        let loaded = profile::load_friends("default").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].alias.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn test_friends_add_auto_alias_explicit_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+        prepare_profile(tmp.path(), "default").unwrap();
+        let friend = profile::Friend {
+            pubkey: pk(12),
+            alias: Some("buddy".to_string()),
+            cached_name: None,
+            cached_bio_line: None,
+        };
+        profile::save_friend("default", &friend).unwrap();
+        let loaded = profile::load_friends("default").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].alias.as_deref(), Some("buddy"));
+    }
+
+    #[test]
+    fn test_friends_list_vendor_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+        prepare_profile(tmp.path(), "default").unwrap();
+        let pubkey = pk(13);
+        let friend = profile::Friend {
+            pubkey,
+            alias: None,
+            cached_name: None,
+            cached_bio_line: None,
+        };
+        profile::save_friend("default", &friend).unwrap();
+        let loaded = profile::load_friends("default").unwrap();
+        let line = friend_output(&loaded[0]);
+        let expected = names::generate_name_from_seed(&pubkey);
+        assert!(line.contains(&expected));
+        assert!(!line.contains("(unknown)"));
+    }
+
+    #[test]
+    fn test_friends_list_cached_name_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+        prepare_profile(tmp.path(), "default").unwrap();
+        let friend = profile::Friend {
+            pubkey: pk(14),
+            alias: Some("pal".to_string()),
+            cached_name: Some("Alice".to_string()),
+            cached_bio_line: None,
+        };
+        let line = friend_output(&friend);
+        assert!(line.contains("Alice"));
+        assert!(!line.contains("(unknown)"));
     }
 
     #[test]
