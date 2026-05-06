@@ -3,6 +3,7 @@ use clap::Parser;
 use peeroxide_dht::hyperdht::{HyperDhtHandle, KeyPair};
 
 use crate::cmd::chat::debug;
+use crate::cmd::chat::known_users;
 use crate::cmd::chat::profile;
 use crate::cmd::chat::wire::NexusRecord;
 use crate::cmd::{build_dht_config, sigterm_recv};
@@ -295,10 +296,12 @@ async fn refresh_one_friend(handle: &HyperDhtHandle, profile_name: &str, index: 
         if let Ok(nexus) = NexusRecord::deserialize(&result.value) {
             let mut updated = friend.clone();
             let mut changed = false;
+            let name = nexus.name.clone();
             let name_len = nexus.name.len();
             let bio_len = nexus.bio.len();
-            if !nexus.name.is_empty() && updated.cached_name.as_deref() != Some(&nexus.name) {
-                updated.cached_name = Some(nexus.name);
+            if !name.is_empty() && updated.cached_name.as_deref() != Some(&name) {
+                updated.cached_name = Some(name.clone());
+                let _ = known_users::update_shared(&friend.pubkey, &name);
                 changed = true;
             }
             if !nexus.bio.is_empty() {
@@ -336,11 +339,12 @@ pub async fn refresh_friends(handle: &HyperDhtHandle, profile_name: &str) {
             if let Ok(nexus) = NexusRecord::deserialize(&result.value) {
                 let mut updated = friend.clone();
                 let mut changed = false;
+                let name = nexus.name.clone();
                 let name_len = nexus.name.len();
                 let bio_len = nexus.bio.len();
-                if !nexus.name.is_empty() && updated.cached_name.as_deref() != Some(&nexus.name)
-                {
-                    updated.cached_name = Some(nexus.name);
+                if !name.is_empty() && updated.cached_name.as_deref() != Some(&name) {
+                    updated.cached_name = Some(name.clone());
+                    let _ = known_users::update_shared(&updated.pubkey, &name);
                     changed = true;
                 }
                 if !nexus.bio.is_empty() {

@@ -8,7 +8,7 @@ use tokio::time::{Duration, Instant};
 use crate::cmd::chat::crypto;
 use crate::cmd::chat::debug;
 use crate::cmd::chat::display::DisplayMessage;
-use crate::cmd::chat::profile;
+use crate::cmd::chat::known_users;
 use crate::cmd::chat::wire::{self, FeedRecord, MessageEnvelope, SummaryBlock};
 
 struct KnownFeed {
@@ -464,6 +464,7 @@ async fn fetch_and_validate_messages(
     profile_name: &str,
     self_id_pubkey: &[u8; 32],
 ) -> Vec<DisplayMessage> {
+    let _ = profile_name;
     let mut messages = Vec::new();
 
     // Fetch all unseen messages concurrently
@@ -545,11 +546,7 @@ async fn fetch_and_validate_messages(
                         env.content_type,
                     ),
                 );
-                let _ = profile::append_known_user(
-                    profile_name,
-                    &env.id_pubkey,
-                    &env.screen_name,
-                );
+                let _ = known_users::update_shared(&env.id_pubkey, &env.screen_name);
                 messages.push(DisplayMessage {
                     id_pubkey: env.id_pubkey,
                     screen_name: env.screen_name,
