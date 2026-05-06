@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cmd::chat::known_users::SharedKnownUsers;
+use super::names;
 use crate::cmd::chat::profile::Friend;
 
 pub struct DisplayMessage {
@@ -76,6 +77,7 @@ impl DisplayState {
 
     fn format_display_name(&mut self, msg: &DisplayMessage, now_secs: u64) -> String {
         let shortkey = &hex::encode(msg.id_pubkey)[..8];
+        let vendor_name = names::generate_name_from_seed(&msg.id_pubkey);
 
         let name_cooldown_active = self
             .name_change_at
@@ -92,16 +94,16 @@ impl DisplayState {
                     format!("({alias}) <{}>{bang}", msg.screen_name)
                 }
             } else if !msg.screen_name.is_empty() {
-                format!("({}){bang}", msg.screen_name)
+                format!("({vendor_name}) <{}@{}>{bang}", msg.screen_name, shortkey)
             } else {
-                format!("(@{shortkey}){bang}")
+                format!("({vendor_name}){bang}")
             }
         } else if !msg.screen_name.is_empty() {
             format!("<{}@{}>{bang}", msg.screen_name, shortkey)
         } else if let Some(cached_name) = self.known_users.get(&msg.id_pubkey) {
             format!("<{}@{}>{bang}", cached_name, shortkey)
         } else {
-            format!("<@{shortkey}>{bang}")
+            format!("<{vendor_name}@{shortkey}>{bang}")
         }
     }
 
@@ -193,6 +195,24 @@ mod tests {
     }
 
     #[test]
+    fn format_display_name_non_friend_vendor_fallback() {
+        let dir = TempDir::new().unwrap();
+        let ku = SharedKnownUsers::new(dir.path().join("known_users"));
+        let mut state = DisplayState::new(vec![], ku);
+        let msg = DisplayMessage {
+            id_pubkey: [0x11; 32],
+            screen_name: "".to_string(),
+            content: "hi".to_string(),
+            timestamp: 0,
+            is_self: false,
+        };
+        let vendor = names::generate_name_from_seed(&msg.id_pubkey);
+        let shortkey = &hex::encode(msg.id_pubkey)[..8];
+        let name = state.format_display_name(&msg, 0);
+        assert_eq!(name, format!("<{vendor}@{shortkey}>"));
+    }
+
+    #[test]
     fn format_display_name_with_name_change_cooldown() {
         let dir = TempDir::new().unwrap();
         let ku = SharedKnownUsers::new(dir.path().join("known_users"));
@@ -231,6 +251,55 @@ mod tests {
         let name = state.format_display_name(&msg, 0);
         let shortkey = &hex::encode([0xabu8; 32])[..8];
         assert_eq!(name, format!("<bob@{shortkey}>"));
+    }
+
+    #[test]
+    fn format_display_name_friend_no_alias_no_wire_uses_vendor_name() {
+        let dir = TempDir::new().unwrap();
+        let ku = SharedKnownUsers::new(dir.path().join("known_users"));
+
+        let friend = Friend {
+            pubkey: [2u8; 32],
+            alias: None,
+            cached_name: None,
+            cached_bio_line: None,
+        };
+        let mut state = DisplayState::new(vec![friend], ku);
+        let msg = DisplayMessage {
+            id_pubkey: [2u8; 32],
+            screen_name: "".to_string(),
+            content: "hi".to_string(),
+            timestamp: 0,
+            is_self: false,
+        };
+        let vendor = names::generate_name_from_seed(&msg.id_pubkey);
+        let name = state.format_display_name(&msg, 0);
+        assert_eq!(name, format!("({vendor})"));
+    }
+
+    #[test]
+    fn format_display_name_friend_no_alias_with_wire_uses_vendor_anchor() {
+        let dir = TempDir::new().unwrap();
+        let ku = SharedKnownUsers::new(dir.path().join("known_users"));
+
+        let friend = Friend {
+            pubkey: [3u8; 32],
+            alias: None,
+            cached_name: None,
+            cached_bio_line: None,
+        };
+        let mut state = DisplayState::new(vec![friend], ku);
+        let msg = DisplayMessage {
+            id_pubkey: [3u8; 32],
+            screen_name: "wire_name".to_string(),
+            content: "hi".to_string(),
+            timestamp: 0,
+            is_self: false,
+        };
+        let vendor = names::generate_name_from_seed(&msg.id_pubkey);
+        let shortkey = &hex::encode(msg.id_pubkey)[..8];
+        let name = state.format_display_name(&msg, 0);
+        assert_eq!(name, format!("({vendor}) <wire_name@{shortkey}>"));
     }
 
     #[test]
