@@ -52,7 +52,8 @@ impl DisplayState {
         if self.should_show_identity(msg, now_secs) {
             let shortkey = &hex::encode(msg.id_pubkey)[..8];
             let fullkey = hex::encode(msg.id_pubkey);
-            eprintln!("*** @{shortkey} is {fullkey}");
+            let vendor_name = names::generate_name_from_seed(&msg.id_pubkey);
+            eprintln!("*** {vendor_name}@{shortkey} is {fullkey}");
             self.last_identity_shown.insert(msg.id_pubkey, now_secs);
         }
 
@@ -343,5 +344,25 @@ mod tests {
         };
         let name = state.format_display_name(&msg, 0);
         assert!(name.starts_with("(bestie)"), "friend alias should take priority: {}", name);
+    }
+
+    #[test]
+    fn render_identity_notice_includes_vendor_name() {
+        let dir = TempDir::new().unwrap();
+        let ku = SharedKnownUsers::new(dir.path().join("known_users"));
+        let mut state = DisplayState::new(vec![], ku);
+        let msg = DisplayMessage {
+            id_pubkey: [0x11; 32],
+            screen_name: "".to_string(),
+            content: "hi".to_string(),
+            timestamp: 0,
+            is_self: false,
+        };
+
+        let vendor = names::generate_name_from_seed(&msg.id_pubkey);
+        let shortkey = &hex::encode(msg.id_pubkey)[..8];
+        assert!(state.should_show_identity(&msg, 0));
+        let expected = format!("*** {vendor}@{shortkey} is {}", hex::encode(msg.id_pubkey));
+        assert!(expected.contains(&format!("{vendor}@{shortkey}")));
     }
 }
