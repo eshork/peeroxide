@@ -1,4 +1,5 @@
 use peeroxide_dht::hyperdht::{HyperDhtHandle, KeyPair};
+use rand::Rng;
 
 use crate::cmd::chat::crypto;
 use crate::cmd::chat::debug;
@@ -58,7 +59,7 @@ pub async fn send_dm_invite(
     );
 
     let epoch = crypto::current_epoch();
-    let bucket = 0u8;
+    let bucket = rand::rng().random_range(0..4u8);
     let topic = crypto::inbox_topic(recipient_pubkey, epoch, bucket);
     let _ = handle.announce(topic, invite_feed_keypair, &[]).await;
 
@@ -135,7 +136,7 @@ pub async fn send_dm_nudge(
     );
 
     let epoch = crypto::current_epoch();
-    let bucket = 0u8;
+    let bucket = rand::rng().random_range(0..4u8);
     let topic = crypto::inbox_topic(recipient_pubkey, epoch, bucket);
     let _ = handle.announce(topic, invite_feed_keypair, &[]).await;
 

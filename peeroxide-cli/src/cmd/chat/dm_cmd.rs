@@ -187,8 +187,10 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
         let handle = handle.clone();
         let msg_tx = msg_tx.clone();
         let profile_name = args.profile.clone();
+        let self_feed_pubkey = feed_keypair.as_ref().map(|fkp| fkp.public_key);
+        let self_id = id_keypair.public_key;
         tokio::spawn(async move {
-            reader::run_reader(handle, channel_key, message_key, msg_tx, profile_name).await;
+            reader::run_reader(handle, channel_key, message_key, msg_tx, profile_name, self_feed_pubkey, self_id).await;
         })
     };
 
@@ -203,7 +205,7 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
         let h = handle.clone();
         let kp = fs.feed_keypair.clone();
         feed_refresh_handle = Some(tokio::spawn(async move {
-            feed::run_feed_refresh(h, kp, rx, channel_key).await;
+                                    feed::run_feed_refresh(h, kp, rx).await;
         }));
     }
 
@@ -255,23 +257,12 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
                                 &channel_key,
                                 &screen_name,
                                 &text,
-                            ).await {
+                            ) {
                                 eprintln!("error: failed to post: {e}");
                             } else {
                                 if let Some(ref tx) = feed_state_tx {
                                     let _ = tx.send((fs.serialize_feed_record(), fs.seq));
                                 }
-                                let dm = display::DisplayMessage {
-                                    id_pubkey: id_keypair.public_key,
-                                    screen_name: prof.screen_name.clone().unwrap_or_default(),
-                                    content: text.clone(),
-                                    timestamp: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs(),
-                                    is_self: true,
-                                };
-                                display_state.render(&dm);
 
                                 let current_ep = crypto::current_epoch();
                                 if current_ep != last_nudge_epoch {
@@ -349,14 +340,25 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
                                     h.abort();
                                 }
 
+                                let overlap_h = handle.clone();
+                                let overlap_kp = fs.feed_keypair.clone();
+                                let overlap_data = old_record.clone();
+                                let overlap_seq = fs.seq;
+                                tokio::spawn(async move {
+                                    feed::run_rotation_overlap_refresh(
+                                        overlap_h, overlap_kp, overlap_data, overlap_seq,
+                                    ).await;
+                                });
+
                                 let (tx, rx) = watch::channel((new_data, new_fs.seq));
                                 feed_state_tx = Some(tx);
 
                                 let h = handle.clone();
                                 let kp = new_fs.feed_keypair.clone();
                                 feed_refresh_handle = Some(tokio::spawn(async move {
-                                    feed::run_feed_refresh(h, kp, rx, channel_key).await;
-                                }));
+            feed::run_feed_refresh(h, kp, rx).await;
+        }));
+
 
                                 std::mem::swap(fs, &mut new_fs);
                                 eprintln!("*** feed keypair rotated");

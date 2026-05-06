@@ -142,6 +142,8 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         let handle = handle.clone();
         let msg_tx = msg_tx.clone();
         let profile_name = args.profile.clone();
+        let self_feed_pubkey = feed_keypair.as_ref().map(|fkp| fkp.public_key);
+        let self_id = id_keypair.public_key;
         tokio::spawn(async move {
             reader::run_reader(
                 handle,
@@ -149,6 +151,8 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                 message_key,
                 msg_tx,
                 profile_name,
+                self_feed_pubkey,
+                self_id,
             )
             .await;
         })
@@ -159,13 +163,16 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
 
     if let Some(ref fs) = feed_state {
         let initial_data = fs.serialize_feed_record();
+        if let Err(e) = handle.mutable_put(&fs.feed_keypair, &initial_data, fs.seq).await {
+            eprintln!("warning: initial feed publish failed: {e}");
+        }
         let (tx, rx) = watch::channel((initial_data, fs.seq));
         feed_state_tx = Some(tx);
 
         let h = handle.clone();
         let kp = fs.feed_keypair.clone();
         feed_refresh_handle = Some(tokio::spawn(async move {
-            feed::run_feed_refresh(h, kp, rx, channel_key).await;
+                                    feed::run_feed_refresh(h, kp, rx).await;
         }));
     }
 
@@ -217,20 +224,10 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                                 &channel_key,
                                 &screen_name,
                                 &text,
-                            ).await {
+                            ) {
                                 eprintln!("error: failed to post: {e}");
-                            } else {
-                                if let Some(ref tx) = feed_state_tx {
-                                    let _ = tx.send((fs.serialize_feed_record(), fs.seq));
-                                }
-                                let dm = display::DisplayMessage {
-                                    id_pubkey: id_keypair.public_key,
-                                    screen_name: prof.screen_name.clone().unwrap_or_default(),
-                                    content: text,
-                                    timestamp: crypto::current_epoch() * 60,
-                                    is_self: true,
-                                };
-                                display_state.render(&dm);
+                            } else if let Some(ref tx) = feed_state_tx {
+                                let _ = tx.send((fs.serialize_feed_record(), fs.seq));
                             }
                         }
                     }
@@ -257,7 +254,7 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                     if fs.needs_rotation() {
                         let mut new_fs = fs.rotate();
 
-                        // Pointer-before-target: publish NEW feed first so readers
+                        // Target-before-pointer: publish NEW feed first so readers
                         // can resolve it, THEN update old feed to point at it.
                         let new_data = new_fs.serialize_feed_record();
                         match handle.mutable_put(&new_fs.feed_keypair, &new_data, new_fs.seq).await {
@@ -294,14 +291,25 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                                     h.abort();
                                 }
 
+                                let overlap_h = handle.clone();
+                                let overlap_kp = fs.feed_keypair.clone();
+                                let overlap_data = old_record.clone();
+                                let overlap_seq = fs.seq;
+                                tokio::spawn(async move {
+                                    feed::run_rotation_overlap_refresh(
+                                        overlap_h, overlap_kp, overlap_data, overlap_seq,
+                                    ).await;
+                                });
+
                                 let (tx, rx) = watch::channel((new_data, new_fs.seq));
                                 feed_state_tx = Some(tx);
 
                                 let h = handle.clone();
                                 let kp = new_fs.feed_keypair.clone();
                                 feed_refresh_handle = Some(tokio::spawn(async move {
-                                    feed::run_feed_refresh(h, kp, rx, channel_key).await;
-                                }));
+            feed::run_feed_refresh(h, kp, rx).await;
+        }));
+
 
                                 std::mem::swap(fs, &mut new_fs);
                                 eprintln!("*** feed keypair rotated");

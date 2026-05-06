@@ -73,9 +73,11 @@ pub async fn run(args: InboxArgs, cfg: &ResolvedConfig) -> i32 {
 
     let known_users = profile::load_known_users(&args.profile).unwrap_or_default();
 
+    let mut interval = tokio::time::interval(poll_interval);
+
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(poll_interval) => {
+            _ = interval.tick() => {
                 let current_epoch = crypto::current_epoch();
                 for epoch in [current_epoch, current_epoch.saturating_sub(1)] {
                     for bucket in 0..4u8 {

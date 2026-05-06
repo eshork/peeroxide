@@ -269,10 +269,59 @@ async fn run_lookup(pubkey_hex: &str, cfg: &ResolvedConfig) -> i32 {
 pub async fn run_friend_refresh(handle: HyperDhtHandle, profile_name: String) {
     let refresh_interval = tokio::time::Duration::from_secs(600);
     let mut interval = tokio::time::interval(refresh_interval);
+    let mut friend_index: usize = 0;
 
     loop {
         interval.tick().await;
-        refresh_friends(&handle, &profile_name).await;
+        refresh_one_friend(&handle, &profile_name, &mut friend_index).await;
+    }
+}
+
+async fn refresh_one_friend(handle: &HyperDhtHandle, profile_name: &str, index: &mut usize) {
+    let friends = match profile::load_friends(profile_name) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+
+    if friends.is_empty() {
+        return;
+    }
+
+    *index %= friends.len();
+    let friend = &friends[*index];
+    *index += 1;
+
+    if let Ok(Some(result)) = handle.mutable_get(&friend.pubkey, 0).await {
+        if let Ok(nexus) = NexusRecord::deserialize(&result.value) {
+            let mut updated = friend.clone();
+            let mut changed = false;
+            let name_len = nexus.name.len();
+            let bio_len = nexus.bio.len();
+            if !nexus.name.is_empty() && updated.cached_name.as_deref() != Some(&nexus.name) {
+                updated.cached_name = Some(nexus.name);
+                changed = true;
+            }
+            if !nexus.bio.is_empty() {
+                let first_line = nexus.bio.lines().next().unwrap_or("").to_owned();
+                if updated.cached_bio_line.as_deref() != Some(&first_line) {
+                    updated.cached_bio_line = Some(first_line);
+                    changed = true;
+                }
+            }
+            if changed {
+                debug::log_event(
+                    "Friend nexus update",
+                    "mutable_get",
+                    &format!(
+                        "friend_pubkey={}, seq={}, name_len={name_len}, bio_len={bio_len}",
+                        debug::short_key(&friend.pubkey),
+                        result.seq,
+                    ),
+                );
+                let _ = profile::remove_friend(profile_name, &friend.pubkey);
+                let _ = profile::save_friend(profile_name, &updated);
+            }
+        }
     }
 }
 

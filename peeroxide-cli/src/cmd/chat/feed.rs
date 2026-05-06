@@ -110,10 +110,10 @@ pub async fn run_feed_refresh(
     handle: HyperDhtHandle,
     feed_keypair: KeyPair,
     mut state_rx: watch::Receiver<(Vec<u8>, u64)>,
-    channel_key: [u8; 32],
 ) {
     let refresh_interval = tokio::time::Duration::from_secs(480);
     let mut interval = tokio::time::interval(refresh_interval);
+    interval.tick().await;
 
     loop {
         interval.tick().await;
@@ -133,20 +133,30 @@ pub async fn run_feed_refresh(
                 tracing::warn!("feed refresh failed: {e}");
             }
         }
-        let epoch = crypto::current_epoch();
-        let bucket = (epoch % 4) as u8;
-        let topic = crypto::announce_topic(&channel_key, epoch, bucket);
-        let _ = handle.announce(topic, &feed_keypair, &[]).await;
+    }
+}
 
-        debug::log_event(
-            "Channel announce",
-            "announce",
-            &format!(
-                "feed_pubkey={}, epoch={epoch}, bucket={bucket}, topic={}",
-                debug::short_key(&feed_keypair.public_key),
-                debug::short_key(&topic),
-            ),
-        );
+pub async fn run_rotation_overlap_refresh(
+    handle: HyperDhtHandle,
+    feed_keypair: KeyPair,
+    record_data: Vec<u8>,
+    seq: u64,
+) {
+    tokio::time::sleep(tokio::time::Duration::from_secs(480)).await;
+    match handle.mutable_put(&feed_keypair, &record_data, seq).await {
+        Ok(_) => {
+            debug::log_event(
+                "Rotation overlap refresh",
+                "mutable_put",
+                &format!(
+                    "feed_pubkey={}, seq={seq}",
+                    debug::short_key(&feed_keypair.public_key),
+                ),
+            );
+        }
+        Err(e) => {
+            tracing::warn!("rotation overlap refresh failed: {e}");
+        }
     }
 }
 
