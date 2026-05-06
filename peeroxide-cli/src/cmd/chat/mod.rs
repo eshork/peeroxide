@@ -342,13 +342,13 @@ pub fn resolve_recipient(profile_name: &str, input: &str) -> Result<[u8; 32], St
             _ => Err(format!("invalid 64-char hex pubkey: '{input}'")),
         }
     } else if let Some(shortkey) = input.strip_prefix('@') {
-        resolve_shortkey_input(profile_name, shortkey)
+        resolve_shortkey_input(shortkey)
     } else if let Some(pos) = input.rfind('@') {
         let name_part = &input[..pos];
         let shortkey_part = &input[pos + 1..];
-        let pk = resolve_shortkey_input(profile_name, shortkey_part)?;
+        let pk = resolve_shortkey_input(shortkey_part)?;
 
-        let users = profile::load_known_users(profile_name)
+        let users = known_users::load_shared_users()
             .map_err(|e| format!("failed to load known users: {e}"))?;
         if let Some(user) = users.iter().find(|u| u.pubkey == pk) {
             if user.screen_name == name_part {
@@ -360,7 +360,7 @@ pub fn resolve_recipient(profile_name: &str, input: &str) -> Result<[u8; 32], St
             Ok(pk)
         }
     } else if input.len() == 8 && input.chars().all(|c| c.is_ascii_hexdigit()) {
-        resolve_shortkey_input(profile_name, input)
+        resolve_shortkey_input(input)
     } else {
         let friends = profile::load_friends(profile_name).unwrap_or_default();
         let mut matched_pubkeys: Vec<[u8; 32]> = Vec::new();
@@ -371,7 +371,7 @@ pub fn resolve_recipient(profile_name: &str, input: &str) -> Result<[u8; 32], St
         }
 
         if matched_pubkeys.is_empty() {
-            let users = profile::load_known_users(profile_name).unwrap_or_default();
+            let users = known_users::load_shared_users().unwrap_or_default();
             for u in &users {
                 if u.screen_name == input {
                     matched_pubkeys.push(u.pubkey);
@@ -398,8 +398,9 @@ pub fn resolve_recipient(profile_name: &str, input: &str) -> Result<[u8; 32], St
     Ok(resolved)
 }
 
-fn resolve_shortkey_input(profile_name: &str, shortkey: &str) -> Result<[u8; 32], String> {
-    match profile::resolve_shortkey(profile_name, shortkey) {
+fn resolve_shortkey_input(shortkey: &str) -> Result<[u8; 32], String> {
+    let mut cache = known_users::SharedKnownUsers::load_from_shared();
+    match cache.resolve_shortkey(shortkey) {
         Ok(Some(pk)) => Ok(pk),
         Ok(None) => Err(format!("shortkey '{shortkey}' not found in known users")),
         Err(e) => Err(format!("failed to search known users: {e}")),
@@ -429,8 +430,8 @@ mod tests {
         fs::write(dir.join("seed"), seed)
     }
 
-    fn write_known_users(home: &Path, profile_name: &str, rows: &[([u8; 32], &str)]) -> io::Result<()> {
-        let dir = profile_root(home).join(profile_name);
+    fn write_known_users(home: &Path, rows: &[([u8; 32], &str)]) -> io::Result<()> {
+        let dir = home.join(".config").join("peeroxide").join("chat");
         fs::create_dir_all(&dir)?;
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -493,7 +494,7 @@ mod tests {
     #[test]
     fn test_resolve_at_shortkey() {
         let tmp = TempDir::new().unwrap();
-        write_known_users(tmp.path(), "default", &[(pk(1), "Alice")]).unwrap();
+        write_known_users(tmp.path(), &[(pk(1), "Alice")]).unwrap();
         let shortkey = &hex::encode(pk(1))[..8];
         run_child_case(tmp.path(), "at_shortkey", "default", &format!("@{shortkey}"));
     }
@@ -501,7 +502,7 @@ mod tests {
     #[test]
     fn test_resolve_name_at_shortkey() {
         let tmp = TempDir::new().unwrap();
-        write_known_users(tmp.path(), "default", &[(pk(2), "alice")]).unwrap();
+        write_known_users(tmp.path(), &[(pk(2), "alice")]).unwrap();
         let shortkey = &hex::encode(pk(2))[..8];
         run_child_case(tmp.path(), "name_at_shortkey", "default", &format!("alice@{shortkey}"));
     }
@@ -509,7 +510,7 @@ mod tests {
     #[test]
     fn test_resolve_bare_shortkey() {
         let tmp = TempDir::new().unwrap();
-        write_known_users(tmp.path(), "default", &[(pk(3), "Bob")]).unwrap();
+        write_known_users(tmp.path(), &[(pk(3), "Bob")]).unwrap();
         let shortkey = &hex::encode(pk(3))[..8];
         run_child_case(tmp.path(), "bare_shortkey", "default", shortkey);
     }
@@ -524,7 +525,7 @@ mod tests {
     #[test]
     fn test_resolve_known_user_screen_name() {
         let tmp = TempDir::new().unwrap();
-        write_known_users(tmp.path(), "default", &[(pk(5), "dave")]).unwrap();
+        write_known_users(tmp.path(), &[(pk(5), "dave")]).unwrap();
         run_child_case(tmp.path(), "known_user", "default", "dave");
     }
 
@@ -532,14 +533,14 @@ mod tests {
     fn test_resolve_friend_alias_priority() {
         let tmp = TempDir::new().unwrap();
         write_friends(tmp.path(), "default", &[(pk(6), Some("erin"))]).unwrap();
-        write_known_users(tmp.path(), "default", &[(pk(7), "erin")]).unwrap();
+        write_known_users(tmp.path(), &[(pk(7), "erin")]).unwrap();
         run_child_case(tmp.path(), "friend_priority", "default", "erin");
     }
 
     #[test]
     fn test_resolve_ambiguous() {
         let tmp = TempDir::new().unwrap();
-        write_known_users(tmp.path(), "default", &[(pk(8), "frank"), (pk(9), "frank")]).unwrap();
+        write_known_users(tmp.path(), &[(pk(8), "frank"), (pk(9), "frank")]).unwrap();
         run_child_case(tmp.path(), "ambiguous", "default", "frank");
     }
 
@@ -552,7 +553,7 @@ mod tests {
     #[test]
     fn test_resolve_name_mismatch() {
         let tmp = TempDir::new().unwrap();
-        write_known_users(tmp.path(), "default", &[(pk(10), "grace")]).unwrap();
+        write_known_users(tmp.path(), &[(pk(10), "grace")]).unwrap();
         let shortkey = &hex::encode(pk(10))[..8];
         run_child_case(tmp.path(), "name_mismatch", "default", &format!("wrong@{shortkey}"));
     }

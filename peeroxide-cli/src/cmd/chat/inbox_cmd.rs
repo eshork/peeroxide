@@ -3,6 +3,7 @@ use clap::Parser;
 use crate::cmd::chat::crypto;
 use crate::cmd::chat::debug;
 use crate::cmd::chat::inbox;
+use crate::cmd::chat::known_users;
 use crate::cmd::chat::profile;
 use crate::cmd::{build_dht_config, sigterm_recv};
 use crate::config::ResolvedConfig;
@@ -71,7 +72,14 @@ pub async fn run(args: InboxArgs, cfg: &ResolvedConfig) -> i32 {
         std::collections::HashMap::new();
     let mut invite_count = 0u32;
 
-    let known_users = profile::load_known_users(&args.profile).unwrap_or_default();
+    let cached_users: Vec<profile::KnownUser> = known_users::load_shared_users()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|u| profile::KnownUser {
+            pubkey: u.pubkey,
+            screen_name: u.screen_name,
+        })
+        .collect();
 
     let mut interval = tokio::time::interval(poll_interval);
 
@@ -126,7 +134,7 @@ pub async fn run(args: InboxArgs, cfg: &ResolvedConfig) -> i32 {
                                                 &invite,
                                                 &id_keypair.public_key,
                                                 &args.profile,
-                                                &known_users,
+                                                &cached_users,
                                             );
                                         }
                                     }
