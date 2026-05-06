@@ -16,6 +16,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+use super::names;
+
 /// A local chat identity stored on disk.
 #[derive(Debug, Clone)]
 pub struct Profile {
@@ -88,14 +90,16 @@ pub fn create_profile(name: &str, screen_name: Option<&str>) -> io::Result<Profi
 
     fs::write(dir.join("seed"), seed)?;
 
-    if let Some(sn) = screen_name {
-        fs::write(dir.join("name"), sn)?;
-    }
+    let effective_screen_name = match screen_name {
+        Some(sn) => sn.to_owned(),
+        None => names::generate_name_from_seed(&seed),
+    };
+    fs::write(dir.join("name"), &effective_screen_name)?;
 
     Ok(Profile {
         name: name.to_owned(),
         seed,
-        screen_name: screen_name.map(str::to_owned),
+        screen_name: Some(effective_screen_name),
         bio: None,
     })
 }
@@ -118,7 +122,10 @@ pub fn load_profile(name: &str) -> io::Result<Profile> {
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&seed_bytes);
 
-    let screen_name = read_optional_text(&dir.join("name"))?;
+    let screen_name = match read_optional_text(&dir.join("name"))? {
+        Some(name) => Some(name),
+        None => Some(names::generate_name_from_seed(&seed)),
+    };
     let bio = read_optional_text(&dir.join("bio"))?;
 
     Ok(Profile {
@@ -735,5 +742,35 @@ mod tests {
         let full_hex = hex::encode(key);
         let result = resolve_shortkey_in_dir(tmp.path(), &full_hex).unwrap();
         assert_eq!(result, Some(key));
+    }
+
+    #[test]
+    fn create_profile_without_name_gets_generated_name() {
+        let seed = [99u8; 32];
+        let name = crate::cmd::chat::names::generate_name_from_seed(&seed);
+        assert!(name.contains('_'), "generated name must contain underscore: {name}");
+        let parts: Vec<&str> = name.splitn(3, '_').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(parts[2].chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn create_profile_user_name_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let created = do_create_profile(tmp.path(), "named", Some("MyCustomName")).unwrap();
+        assert_eq!(created.screen_name.as_deref(), Some("MyCustomName"));
+        let loaded = do_load_profile(tmp.path(), "named").unwrap();
+        assert_eq!(loaded.screen_name.as_deref(), Some("MyCustomName"));
+    }
+
+    #[test]
+    fn load_profile_derives_name_when_file_missing() {
+        let seed = [77u8; 32];
+        let derived = crate::cmd::chat::names::generate_name_from_seed(&seed);
+        let derived2 = crate::cmd::chat::names::generate_name_from_seed(&seed);
+        assert_eq!(derived, derived2, "same seed must produce same name");
+
+        let parts: Vec<&str> = derived.splitn(3, '_').collect();
+        assert_eq!(parts.len(), 3, "expected adjective_surname_NNNN: {derived}");
     }
 }
