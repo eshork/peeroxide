@@ -5,6 +5,7 @@ use tokio::task::JoinHandle;
 use crate::cmd::chat::crypto;
 use crate::cmd::chat::debug;
 use crate::cmd::chat::display;
+use crate::cmd::chat::known_users::SharedKnownUsers;
 use crate::cmd::chat::feed;
 use crate::cmd::chat::post;
 use crate::cmd::chat::profile;
@@ -134,7 +135,7 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<display::DisplayMessage>();
 
     let friends = profile::load_friends(&args.profile).unwrap_or_default();
-    let mut display_state = display::DisplayState::new(friends);
+    let mut display_state = display::DisplayState::new(friends, SharedKnownUsers::load_from_shared());
 
     eprintln!("*** joining channel '{}'", args.channel);
 

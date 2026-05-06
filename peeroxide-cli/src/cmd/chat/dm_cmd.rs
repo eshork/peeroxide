@@ -3,6 +3,7 @@ use clap::Parser;
 use crate::cmd::chat::crypto;
 use crate::cmd::chat::debug;
 use crate::cmd::chat::display;
+use crate::cmd::chat::known_users::SharedKnownUsers;
 use crate::cmd::chat::feed;
 use crate::cmd::chat::inbox;
 use crate::cmd::chat::post;
@@ -174,7 +175,7 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<display::DisplayMessage>();
 
     let friends = profile::load_friends(&args.profile).unwrap_or_default();
-    let mut display_state = display::DisplayState::new(friends);
+    let mut display_state = display::DisplayState::new(friends, SharedKnownUsers::load_from_shared());
 
     let short_recipient = &hex::encode(recipient_bytes)[..8];
     eprintln!("*** DM with {short_recipient}");

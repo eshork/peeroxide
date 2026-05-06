@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::cmd::chat::known_users::SharedKnownUsers;
 use crate::cmd::chat::profile::Friend;
 
 pub struct DisplayMessage {
@@ -16,10 +17,11 @@ pub struct DisplayState {
     last_identity_shown: HashMap<[u8; 32], u64>,
     known_names: HashMap<[u8; 32], String>,
     name_change_at: HashMap<[u8; 32], u64>,
+    known_users: SharedKnownUsers,
 }
 
 impl DisplayState {
-    pub fn new(friends: Vec<Friend>) -> Self {
+    pub fn new(friends: Vec<Friend>, known_users: SharedKnownUsers) -> Self {
         let friends_map: HashMap<[u8; 32], Friend> =
             friends.into_iter().map(|f| (f.pubkey, f)).collect();
         Self {
@@ -27,6 +29,7 @@ impl DisplayState {
             last_identity_shown: HashMap::new(),
             known_names: HashMap::new(),
             name_change_at: HashMap::new(),
+            known_users,
         }
     }
 
@@ -71,7 +74,7 @@ impl DisplayState {
         }
     }
 
-    fn format_display_name(&self, msg: &DisplayMessage, now_secs: u64) -> String {
+    fn format_display_name(&mut self, msg: &DisplayMessage, now_secs: u64) -> String {
         let shortkey = &hex::encode(msg.id_pubkey)[..8];
 
         let name_cooldown_active = self
@@ -95,12 +98,14 @@ impl DisplayState {
             }
         } else if !msg.screen_name.is_empty() {
             format!("<{}@{}>{bang}", msg.screen_name, shortkey)
+        } else if let Some(cached_name) = self.known_users.get(&msg.id_pubkey) {
+            format!("<{}@{}>{bang}", cached_name, shortkey)
         } else {
             format!("<@{shortkey}>{bang}")
         }
     }
 
-    fn should_show_identity(&self, msg: &DisplayMessage, now_secs: u64) -> bool {
+    fn should_show_identity(&mut self, msg: &DisplayMessage, now_secs: u64) -> bool {
         if msg.is_self {
             return false;
         }
@@ -108,6 +113,9 @@ impl DisplayState {
             if friend.alias.is_some() {
                 return false;
             }
+        }
+        if self.known_users.get(&msg.id_pubkey).is_some() {
+            return false;
         }
         match self.last_identity_shown.get(&msg.id_pubkey) {
             Some(&last) => now_secs.saturating_sub(last) > 600,
@@ -143,6 +151,7 @@ fn format_timestamp(unix_secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn format_display_name_friend_with_alias() {
@@ -152,7 +161,9 @@ mod tests {
             cached_name: None,
             cached_bio_line: None,
         };
-        let state = DisplayState::new(vec![friend]);
+        let dir = TempDir::new().unwrap();
+        let ku = SharedKnownUsers::new(dir.path().join("known_users"));
+        let mut state = DisplayState::new(vec![friend], ku);
         let msg = DisplayMessage {
             id_pubkey: [1u8; 32],
             screen_name: "alice".to_string(),
@@ -166,7 +177,9 @@ mod tests {
 
     #[test]
     fn format_display_name_non_friend() {
-        let state = DisplayState::new(vec![]);
+        let dir = TempDir::new().unwrap();
+        let ku = SharedKnownUsers::new(dir.path().join("known_users"));
+        let mut state = DisplayState::new(vec![], ku);
         let msg = DisplayMessage {
             id_pubkey: [0xab; 32],
             screen_name: "bob".to_string(),
@@ -181,7 +194,9 @@ mod tests {
 
     #[test]
     fn format_display_name_with_name_change_cooldown() {
-        let mut state = DisplayState::new(vec![]);
+        let dir = TempDir::new().unwrap();
+        let ku = SharedKnownUsers::new(dir.path().join("known_users"));
+        let mut state = DisplayState::new(vec![], ku);
         state.known_names.insert([0xab; 32], "old_name".to_string());
         state.name_change_at.insert([0xab; 32], 1000);
 
@@ -197,5 +212,67 @@ mod tests {
 
         let name_after_cooldown = state.format_display_name(&msg, 1400);
         assert!(!name_after_cooldown.ends_with('!'), "should NOT show ! after 300s");
+    }
+
+    #[test]
+    fn format_display_name_known_users_fallback() {
+        let dir = TempDir::new().unwrap();
+        let mut ku = SharedKnownUsers::new(dir.path().join("known_users"));
+        ku.update(&[0xabu8; 32], "bob").unwrap();
+
+        let mut state = DisplayState::new(vec![], ku);
+        let msg = DisplayMessage {
+            id_pubkey: [0xabu8; 32],
+            screen_name: "".to_string(),
+            content: "hi".to_string(),
+            timestamp: 0,
+            is_self: false,
+        };
+        let name = state.format_display_name(&msg, 0);
+        let shortkey = &hex::encode([0xabu8; 32])[..8];
+        assert_eq!(name, format!("<bob@{shortkey}>"));
+    }
+
+    #[test]
+    fn format_display_name_wire_precedence() {
+        let dir = TempDir::new().unwrap();
+        let mut ku = SharedKnownUsers::new(dir.path().join("known_users"));
+        ku.update(&[0xabu8; 32], "old_bob").unwrap();
+
+        let mut state = DisplayState::new(vec![], ku);
+        let msg = DisplayMessage {
+            id_pubkey: [0xabu8; 32],
+            screen_name: "new_bob".to_string(),
+            content: "hi".to_string(),
+            timestamp: 0,
+            is_self: false,
+        };
+        let name = state.format_display_name(&msg, 0);
+        let shortkey = &hex::encode([0xabu8; 32])[..8];
+        assert_eq!(name, format!("<new_bob@{shortkey}>"));
+    }
+
+    #[test]
+    fn format_display_name_friend_priority_over_known_users() {
+        let dir = TempDir::new().unwrap();
+        let mut ku = SharedKnownUsers::new(dir.path().join("known_users"));
+        ku.update(&[1u8; 32], "bob_cache").unwrap();
+
+        let friend = Friend {
+            pubkey: [1u8; 32],
+            alias: Some("bestie".to_string()),
+            cached_name: None,
+            cached_bio_line: None,
+        };
+        let mut state = DisplayState::new(vec![friend], ku);
+        let msg = DisplayMessage {
+            id_pubkey: [1u8; 32],
+            screen_name: "bob_wire".to_string(),
+            content: "hi".to_string(),
+            timestamp: 0,
+            is_self: false,
+        };
+        let name = state.format_display_name(&msg, 0);
+        assert!(name.starts_with("(bestie)"), "friend alias should take priority: {}", name);
     }
 }
