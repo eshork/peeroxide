@@ -16,6 +16,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+use peeroxide_dht::hyperdht::KeyPair;
+
 use super::names;
 
 /// A local chat identity stored on disk.
@@ -84,7 +86,7 @@ pub fn create_profile(name: &str, screen_name: Option<&str>) -> io::Result<Profi
 
     let effective_screen_name = match screen_name {
         Some(sn) => sn.to_owned(),
-        None => names::generate_name_from_seed(&seed),
+        None => names::generate_name_from_seed(&KeyPair::from_seed(seed).public_key),
     };
     fs::write(dir.join("name"), &effective_screen_name)?;
 
@@ -116,7 +118,7 @@ pub fn load_profile(name: &str) -> io::Result<Profile> {
 
     let screen_name = match read_optional_text(&dir.join("name"))? {
         Some(name) => Some(name),
-        None => Some(names::generate_name_from_seed(&seed)),
+        None => Some(names::generate_name_from_seed(&KeyPair::from_seed(seed).public_key)),
     };
     let bio = read_optional_text(&dir.join("bio"))?;
 
@@ -322,13 +324,15 @@ mod tests {
             rand::rng().fill_bytes(&mut seed);
         }
         fs::write(dir.join("seed"), seed)?;
-        if let Some(sn) = screen_name {
-            fs::write(dir.join("name"), sn)?;
-        }
+        let effective_screen_name = match screen_name {
+            Some(sn) => sn.to_owned(),
+            None => crate::cmd::chat::names::generate_name_from_seed(&KeyPair::from_seed(seed).public_key),
+        };
+        fs::write(dir.join("name"), &effective_screen_name)?;
         Ok(Profile {
             name: name.to_owned(),
             seed,
-            screen_name: screen_name.map(str::to_owned),
+            screen_name: Some(effective_screen_name),
             bio: None,
         })
     }
@@ -344,7 +348,10 @@ mod tests {
         }
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&seed_bytes);
-        let screen_name = read_optional_text(&dir.join("name"))?;
+        let screen_name = match read_optional_text(&dir.join("name"))? {
+            Some(name) => Some(name),
+            None => Some(crate::cmd::chat::names::generate_name_from_seed(&KeyPair::from_seed(seed).public_key)),
+        };
         let bio = read_optional_text(&dir.join("bio"))?;
         Ok(Profile {
             name: name.to_owned(),
@@ -374,9 +381,10 @@ mod tests {
     fn profile_create_no_screen_name() {
         let tmp = TempDir::new().unwrap();
         let created = do_create_profile(tmp.path(), "bob", None).unwrap();
-        assert!(created.screen_name.is_none());
+        let expected = crate::cmd::chat::names::generate_name_from_seed(&KeyPair::from_seed(created.seed).public_key);
+        assert_eq!(created.screen_name.as_deref(), Some(expected.as_str()));
         let loaded = do_load_profile(tmp.path(), "bob").unwrap();
-        assert!(loaded.screen_name.is_none());
+        assert_eq!(loaded.screen_name.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
@@ -513,12 +521,31 @@ mod tests {
 
     #[test]
     fn load_profile_derives_name_when_file_missing() {
-        let seed = [77u8; 32];
-        let derived = crate::cmd::chat::names::generate_name_from_seed(&seed);
-        let derived2 = crate::cmd::chat::names::generate_name_from_seed(&seed);
-        assert_eq!(derived, derived2, "same seed must produce same name");
+        let tmp = TempDir::new().unwrap();
+        let created = do_create_profile(tmp.path(), "missing-name", Some("Custom")).unwrap();
+        fs::remove_file(tmp.path().join("missing-name").join("name")).unwrap();
 
-        let parts: Vec<&str> = derived.splitn(3, '_').collect();
-        assert_eq!(parts.len(), 3, "expected adjective_surname_NNNN: {derived}");
+        let loaded = do_load_profile(tmp.path(), "missing-name").unwrap();
+        let expected = crate::cmd::chat::names::generate_name_from_seed(&KeyPair::from_seed(created.seed).public_key);
+        assert_eq!(loaded.screen_name.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn profile_create_no_screen_name_uses_pubkey() {
+        let tmp = TempDir::new().unwrap();
+        let created = do_create_profile(tmp.path(), "pubkey-create", None).unwrap();
+        let expected = crate::cmd::chat::names::generate_name_from_seed(&KeyPair::from_seed(created.seed).public_key);
+        assert_eq!(created.screen_name.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn profile_load_missing_name_uses_pubkey() {
+        let tmp = TempDir::new().unwrap();
+        let created = do_create_profile(tmp.path(), "pubkey-load", Some("Shown")).unwrap();
+        fs::remove_file(tmp.path().join("pubkey-load").join("name")).unwrap();
+
+        let loaded = do_load_profile(tmp.path(), "pubkey-load").unwrap();
+        let expected = crate::cmd::chat::names::generate_name_from_seed(&KeyPair::from_seed(created.seed).public_key);
+        assert_eq!(loaded.screen_name.as_deref(), Some(expected.as_str()));
     }
 }
