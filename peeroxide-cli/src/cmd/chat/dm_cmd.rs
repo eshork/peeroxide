@@ -19,8 +19,8 @@ use tokio::task::JoinHandle;
 
 #[derive(Parser)]
 pub struct DmArgs {
-    /// Recipient's identity public key (64-char hex)
-    pub pubkey_hex: String,
+    /// Recipient: alias, pubkey hex (64 chars), @shortkey, name@shortkey, or screen name
+    pub recipient: String,
 
     /// Identity profile to use
     #[arg(long, default_value = "default")]
@@ -56,14 +56,10 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
     let no_nexus = args.no_nexus || args.stealth;
     let no_friends = args.no_friends || args.stealth;
 
-    let recipient_bytes = match hex::decode(&args.pubkey_hex) {
-        Ok(b) if b.len() == 32 => {
-            let mut pk = [0u8; 32];
-            pk.copy_from_slice(&b);
-            pk
-        }
-        _ => {
-            eprintln!("error: invalid pubkey (expected 64-char hex)");
+    let recipient_bytes = match super::resolve_recipient(&args.profile, &args.recipient) {
+        Ok(pk) => pk,
+        Err(e) => {
+            eprintln!("error: {e}");
             return 1;
         }
     };
@@ -180,7 +176,7 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
     let friends = profile::load_friends(&args.profile).unwrap_or_default();
     let mut display_state = display::DisplayState::new(friends);
 
-    let short_recipient = &args.pubkey_hex[..8.min(args.pubkey_hex.len())];
+    let short_recipient = &hex::encode(recipient_bytes)[..8];
     eprintln!("*** DM with {short_recipient}");
 
     let reader_handle = {
