@@ -3,7 +3,7 @@ use rand::Rng;
 
 use crate::cmd::chat::crypto;
 use crate::cmd::chat::debug;
-use crate::cmd::chat::profile::KnownUser;
+use crate::cmd::chat::known_users::KnownUser;
 use crate::cmd::chat::wire::{self, InviteRecord, INVITE_TYPE_DM};
 
 pub async fn send_dm_invite(

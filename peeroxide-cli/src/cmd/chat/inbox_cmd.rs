@@ -72,14 +72,7 @@ pub async fn run(args: InboxArgs, cfg: &ResolvedConfig) -> i32 {
         std::collections::HashMap::new();
     let mut invite_count = 0u32;
 
-    let cached_users: Vec<profile::KnownUser> = known_users::load_shared_users()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|u| profile::KnownUser {
-            pubkey: u.pubkey,
-            screen_name: u.screen_name,
-        })
-        .collect();
+    let cached_users: Vec<known_users::KnownUser> = known_users::load_shared_users().unwrap_or_default();
 
     let mut interval = tokio::time::interval(poll_interval);
 
