@@ -204,6 +204,8 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
 
     let rotation_interval = tokio::time::Duration::from_secs(30);
     let mut rotation_check = tokio::time::interval(rotation_interval);
+    let friends_reload_interval = tokio::time::Duration::from_secs(30);
+    let mut friends_reload_tick = tokio::time::interval(friends_reload_interval);
 
     loop {
         tokio::select! {
@@ -320,6 +322,11 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                             }
                         }
                     }
+                }
+            }
+            _ = friends_reload_tick.tick() => {
+                if let Ok(updated_friends) = profile::load_friends(&args.profile) {
+                    display_state.reload_friends(updated_friends);
                 }
             }
             _ = tokio::signal::ctrl_c() => {

@@ -9,6 +9,7 @@ pub mod feed;
 pub mod inbox;
 pub mod inbox_cmd;
 pub mod join;
+pub mod known_users;
 pub mod names;
 pub mod nexus;
 pub mod post;

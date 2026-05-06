@@ -30,6 +30,12 @@ impl DisplayState {
         }
     }
 
+    /// Reload the friends map from the given list.
+    /// Called periodically to pick up alias edits and nexus name refreshes.
+    pub fn reload_friends(&mut self, friends: Vec<Friend>) {
+        self.friends = friends.into_iter().map(|f| (f.pubkey, f)).collect();
+    }
+
     pub fn render(&mut self, msg: &DisplayMessage) {
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
