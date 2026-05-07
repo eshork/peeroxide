@@ -1,5 +1,6 @@
 #![allow(dead_code, private_interfaces)]
 use super::*;
+use crate::cmd::sigterm_recv;
 
 pub const VERSION: u8 = 0x02;
 const DATA_PAYLOAD_MAX: usize = 999; // MAX_PAYLOAD(1000) - 1 byte version header
@@ -222,18 +223,615 @@ pub fn decode_need_list(data: &[u8]) -> Result<Vec<NeedEntry>, String> {
 }
 
 pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
-    super::v1::run_put(args, cfg).await
+    if args.refresh_interval == 0 {
+        eprintln!("error: --refresh-interval must be greater than 0");
+        return 1;
+    }
+    if args.ttl == Some(0) {
+        eprintln!("error: --ttl must be greater than 0");
+        return 1;
+    }
+    if args.max_pickups == Some(0) {
+        eprintln!("error: --max-pickups must be greater than 0");
+        return 1;
+    }
+
+    let data = if args.file == "-" {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
+            eprintln!("error: failed to read stdin: {e}");
+            return 1;
+        }
+        buf
+    } else {
+        match std::fs::read(&args.file) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("error: failed to read file: {e}");
+                return 1;
+            }
+        }
+    };
+
+    if data.len() as u64 > MAX_FILE_SIZE {
+        eprintln!("error: file too large ({} bytes, max {})", data.len(), MAX_FILE_SIZE);
+        return 1;
+    }
+
+    let root_seed: [u8; 32] = if let Some(ref phrase) = args.passphrase {
+        if phrase.is_empty() {
+            eprintln!("error: passphrase cannot be empty");
+            return 1;
+        }
+        peeroxide::discovery_key(phrase.as_bytes())
+    } else if args.interactive_passphrase {
+        eprintln!("Enter passphrase: ");
+        let passphrase = rpassword_read();
+        if passphrase.is_empty() {
+            eprintln!("error: passphrase cannot be empty");
+            return 1;
+        }
+        peeroxide::discovery_key(passphrase.as_bytes())
+    } else {
+        let mut seed = [0u8; 32];
+        use rand::RngCore;
+        rand::rng().fill_bytes(&mut seed);
+        seed
+    };
+
+    let root_kp = KeyPair::from_seed(root_seed);
+
+    let built = match build_v2_chunks(&data, &root_seed) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+
+    let dht_config = build_dht_config(cfg);
+    let runtime = match UdxRuntime::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: failed to create UDP runtime: {e}");
+            return 1;
+        }
+    };
+
+    let (task, handle, _rx) = match hyperdht::spawn(&runtime, dht_config).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: failed to start DHT: {e}");
+            return 1;
+        }
+    };
+
+    if let Err(e) = handle.bootstrapped().await {
+        eprintln!("error: bootstrap failed: {e}");
+        return 1;
+    }
+
+    let (max_concurrency, dispatch_delay): (Option<usize>, Option<Duration>) =
+        if let Some(ref speed_str) = args.max_speed {
+            match parse_max_speed(speed_str) {
+                Ok(speed) => {
+                    let cap = ((speed / 22000) as usize).max(1);
+                    let delay = Duration::from_secs_f64(22000.0 / speed as f64);
+                    (Some(cap), Some(delay))
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            }
+        } else {
+            (None, None)
+        };
+
+    eprintln!(
+        "DD PUT v2: {} index chunks, {} data chunks ({} bytes)",
+        built.index_chunks.len(),
+        built.data_chunks.len(),
+        data.len()
+    );
+
+    if let Err(e) =
+        publish_chunks(&handle, &built.index_chunks, max_concurrency, dispatch_delay, true).await
+    {
+        eprintln!("error: index publish failed: {e}");
+        let _ = handle.destroy().await;
+        let _ = task.await;
+        return 1;
+    }
+
+    let data_cap = max_concurrency.unwrap_or(16);
+    let sem = Arc::new(Semaphore::new(data_cap));
+    let mut data_handles: Vec<tokio::task::JoinHandle<Result<(), String>>> = Vec::new();
+    for (i, chunk) in built.data_chunks.iter().enumerate() {
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let h = handle.clone();
+        let chunk_bytes = chunk.clone();
+        let total = built.data_chunks.len();
+        data_handles.push(tokio::spawn(async move {
+            let result = h.immutable_put(&chunk_bytes).await;
+            drop(permit);
+            match result {
+                Ok(_) => {
+                    eprintln!("  published data chunk {}/{total}", i + 1);
+                    Ok(())
+                }
+                Err(e) => Err(format!("immutable_put failed: {e}")),
+            }
+        }));
+    }
+    for jh in data_handles {
+        match jh.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("  warning: data chunk publish: {e}"),
+            Err(e) => eprintln!("  warning: data chunk task panicked: {e}"),
+        }
+    }
+
+    let pickup_key = to_hex(&root_kp.public_key);
+    println!("{pickup_key}");
+
+    let need_topic_key = need_topic(&root_kp.public_key);
+    eprintln!("  published to DHT (best-effort)");
+    eprintln!("  pickup key printed to stdout");
+    eprintln!("  refreshing every {}s, monitoring for acks...", args.refresh_interval);
+
+    let ack_topic = peeroxide::discovery_key(&[root_kp.public_key.as_slice(), b"ack"].concat());
+    let mut seen_acks: HashSet<[u8; 32]> = HashSet::new();
+    let mut pickup_count: u64 = 0;
+
+    let ttl_deadline =
+        args.ttl.map(|t| tokio::time::Instant::now() + Duration::from_secs(t));
+    let mut refresh_interval =
+        tokio::time::interval(Duration::from_secs(args.refresh_interval));
+    refresh_interval.tick().await;
+    let mut ack_interval = tokio::time::interval(Duration::from_secs(30));
+    ack_interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = signal::ctrl_c() => break,
+            _ = sigterm_recv() => break,
+            _ = async {
+                if let Some(deadline) = ttl_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => break,
+            _ = refresh_interval.tick() => {
+                eprintln!("  refreshing {} index + {} data chunks...",
+                    built.index_chunks.len(), built.data_chunks.len());
+                if let Err(e) = publish_chunks(
+                    &handle, &built.index_chunks, max_concurrency, dispatch_delay, false
+                ).await {
+                    eprintln!("  warning: index refresh failed: {e}");
+                }
+                let sem2 = Arc::new(Semaphore::new(max_concurrency.unwrap_or(16)));
+                let mut refresh_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+                for chunk in &built.data_chunks {
+                    let permit = sem2.clone().acquire_owned().await.unwrap();
+                    let h = handle.clone();
+                    let chunk_bytes = chunk.clone();
+                    refresh_handles.push(tokio::spawn(async move {
+                        let _ = h.immutable_put(&chunk_bytes).await;
+                        drop(permit);
+                    }));
+                }
+                for jh in refresh_handles {
+                    let _ = jh.await;
+                }
+            }
+            _ = ack_interval.tick() => {
+                if let Ok(results) = handle.lookup(ack_topic).await {
+                    for result in &results {
+                        for peer in &result.peers {
+                            if seen_acks.insert(peer.public_key) {
+                                pickup_count += 1;
+                                eprintln!("  [ack] pickup #{pickup_count} detected");
+                                if let Some(max) = args.max_pickups {
+                                    if pickup_count >= max {
+                                        eprintln!("  max pickups reached, stopping");
+                                        let _ = handle.destroy().await;
+                                        let _ = task.await;
+                                        return 0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Ok(need_results) = handle.lookup(need_topic_key).await {
+                    for result in &need_results {
+                        for peer in &result.peers {
+                            if let Ok(Some(mget)) =
+                                handle.mutable_get(&peer.public_key, 0).await
+                            {
+                                if let Ok(needs) = decode_need_list(&mget.value) {
+                                    for need in needs {
+                                        match need {
+                                            NeedEntry::Index { start, end } => {
+                                                let s = start as usize;
+                                                let e = (end as usize + 1)
+                                                    .min(built.index_chunks.len());
+                                                if s < e {
+                                                    let slice = &built.index_chunks[s..e];
+                                                    let _ = publish_chunks(
+                                                        &handle, slice,
+                                                        max_concurrency, dispatch_delay, false
+                                                    ).await;
+                                                    for j in s..e {
+                                                        let data_start = if j == 0 {
+                                                            0
+                                                        } else {
+                                                            PTRS_PER_ROOT
+                                                                + (j - 1) * PTRS_PER_NON_ROOT
+                                                        };
+                                                        let data_end = if j == 0 {
+                                                            PTRS_PER_ROOT
+                                                        } else {
+                                                            data_start + PTRS_PER_NON_ROOT
+                                                        }.min(built.data_chunks.len());
+                                                        for chunk in
+                                                            &built.data_chunks[data_start..data_end]
+                                                        {
+                                                            let _ =
+                                                                handle.immutable_put(chunk).await;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            NeedEntry::Data { start, end } => {
+                                                let s = start as usize;
+                                                let e = (end as usize + 1)
+                                                    .min(built.data_chunks.len());
+                                                for chunk in &built.data_chunks[s..e] {
+                                                    let _ = handle.immutable_put(chunk).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!("  stopped refreshing; records expire in ~20m");
+    let _ = handle.destroy().await;
+    let _ = task.await;
+    0
+}
+
+async fn fetch_index_with_retry(
+    handle: &HyperDhtHandle,
+    pk: &[u8; 32],
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(30);
+    loop {
+        if let Ok(Some(result)) = handle.mutable_get(pk, 0).await {
+            return Some(result.value);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        let remaining = deadline - tokio::time::Instant::now();
+        tokio::time::sleep(backoff.min(remaining)).await;
+        backoff = (backoff * 2).min(max_backoff);
+    }
+}
+
+fn contiguous_ranges(positions: &[u32]) -> Vec<(u32, u32)> {
+    if positions.is_empty() {
+        return vec![];
+    }
+    let mut ranges = Vec::new();
+    let mut start = positions[0];
+    let mut end = positions[0];
+    for &p in &positions[1..] {
+        if p == end + 1 {
+            end = p;
+        } else {
+            ranges.push((start, end));
+            start = p;
+            end = p;
+        }
+    }
+    ranges.push((start, end));
+    ranges
 }
 
 pub async fn get_from_root(
-    _root_data: Vec<u8>,
-    _root_pk: [u8; 32],
-    _handle: HyperDhtHandle,
-    _task_handle: tokio::task::JoinHandle<Result<(), peeroxide_dht::hyperdht::HyperDhtError>>,
-    _args: &GetArgs,
+    root_data: Vec<u8>,
+    root_pk: [u8; 32],
+    handle: HyperDhtHandle,
+    task_handle: tokio::task::JoinHandle<Result<(), peeroxide_dht::hyperdht::HyperDhtError>>,
+    args: &GetArgs,
 ) -> i32 {
-    eprintln!("error: v2 dead drop format not yet implemented");
-    1
+    let chunk_timeout = Duration::from_secs(args.timeout);
+
+    if root_data.len() < ROOT_INDEX_HEADER {
+        let _ = handle.destroy().await;
+        let _ = task_handle.await;
+        return 1;
+    }
+    if root_data[0] != VERSION {
+        eprintln!("error: unexpected version byte 0x{:02x}", root_data[0]);
+        let _ = handle.destroy().await;
+        let _ = task_handle.await;
+        return 1;
+    }
+
+    let file_size = u32::from_le_bytes(root_data[1..5].try_into().unwrap());
+    let stored_crc = u32::from_le_bytes(root_data[5..9].try_into().unwrap());
+    let mut first_next_pk = [0u8; 32];
+    first_next_pk.copy_from_slice(&root_data[9..41]);
+
+    let mut root_data_hashes: Vec<[u8; 32]> = Vec::new();
+    let mut offset = ROOT_INDEX_HEADER;
+    while offset + 32 <= root_data.len() {
+        let mut h = [0u8; 32];
+        h.copy_from_slice(&root_data[offset..offset + 32]);
+        root_data_hashes.push(h);
+        offset += 32;
+    }
+
+    let expected_data_count = compute_data_chunk_count(file_size as usize);
+    eprintln!(
+        "DD GET v2: file_size={}, expected {} data chunks",
+        file_size, expected_data_count
+    );
+
+    let need_kp = KeyPair::generate();
+    let nt = need_topic(&root_pk);
+    let _ = handle.announce(nt, &need_kp, &[]).await;
+    let mut need_seq: u64 = 0;
+
+    let mut all_data_hashes: Vec<[u8; 32]> = root_data_hashes;
+    let mut next_pk = first_next_pk;
+
+    while next_pk != [0u8; 32] {
+        let idx_data =
+            match fetch_index_with_retry(&handle, &next_pk, chunk_timeout).await {
+                Some(d) => d,
+                None => {
+                    eprintln!("error: index chunk not found (timeout)");
+                    let _ = handle.destroy().await;
+                    let _ = task_handle.await;
+                    return 1;
+                }
+            };
+
+        if idx_data.len() < NON_ROOT_INDEX_HEADER || idx_data[0] != VERSION {
+            eprintln!("error: invalid non-root index chunk");
+            let _ = handle.destroy().await;
+            let _ = task_handle.await;
+            return 1;
+        }
+
+        let mut new_next = [0u8; 32];
+        new_next.copy_from_slice(&idx_data[1..33]);
+        next_pk = new_next;
+
+        let mut idx_offset = NON_ROOT_INDEX_HEADER;
+        while idx_offset + 32 <= idx_data.len() {
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&idx_data[idx_offset..idx_offset + 32]);
+            all_data_hashes.push(h);
+            idx_offset += 32;
+        }
+    }
+
+    if all_data_hashes.len() != expected_data_count {
+        eprintln!(
+            "error: hash count mismatch: got {} hashes, expected {}",
+            all_data_hashes.len(),
+            expected_data_count
+        );
+        let _ = handle.destroy().await;
+        let _ = task_handle.await;
+        return 1;
+    }
+
+    let sem = Arc::new(Semaphore::new(PARALLEL_FETCH_CAP));
+    let mut results: std::collections::HashMap<u32, Vec<u8>> =
+        std::collections::HashMap::new();
+
+    let mut fetch_handles: Vec<tokio::task::JoinHandle<(u32, Option<Vec<u8>>)>> =
+        Vec::with_capacity(expected_data_count);
+    for (pos, &hash) in all_data_hashes.iter().enumerate() {
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let h = handle.clone();
+        fetch_handles.push(tokio::spawn(async move {
+            let r = h.immutable_get(hash).await.ok().flatten();
+            drop(permit);
+            (pos as u32, r)
+        }));
+    }
+    for jh in fetch_handles {
+        if let Ok((pos, Some(data))) = jh.await {
+            results.insert(pos, data);
+        }
+    }
+
+    eprintln!(
+        "  fetched {}/{} data chunks",
+        results.len(),
+        expected_data_count
+    );
+
+    let retry_deadline = tokio::time::Instant::now() + chunk_timeout;
+    loop {
+        let missing: Vec<u32> = (0..expected_data_count as u32)
+            .filter(|p| !results.contains_key(p))
+            .collect();
+        if missing.is_empty() {
+            break;
+        }
+        if tokio::time::Instant::now() >= retry_deadline {
+            eprintln!("error: timed out waiting for {} missing chunks", missing.len());
+            need_seq += 1;
+            let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
+            let _ = handle.destroy().await;
+            let _ = task_handle.await;
+            return 1;
+        }
+
+        let ranges = contiguous_ranges(&missing);
+        let mut retry_positions: Vec<u32> = ranges.iter().map(|(s, _)| *s).collect();
+        for (s, e) in &ranges {
+            for p in (s + 1)..=*e {
+                retry_positions.push(p);
+            }
+        }
+
+        let mut new_data = 0usize;
+        let mut retry_handles: Vec<tokio::task::JoinHandle<(u32, Option<Vec<u8>>)>> =
+            Vec::new();
+        for pos in &retry_positions {
+            let hash = all_data_hashes[*pos as usize];
+            let permit = sem.clone().acquire_owned().await.unwrap();
+            let h = handle.clone();
+            let p = *pos;
+            retry_handles.push(tokio::spawn(async move {
+                let r = h.immutable_get(hash).await.ok().flatten();
+                drop(permit);
+                (p, r)
+            }));
+        }
+        for jh in retry_handles {
+            if let Ok((pos, Some(data))) = jh.await {
+                results.insert(pos, data);
+                new_data += 1;
+            }
+        }
+
+        if new_data == 0 {
+            let missing_now: Vec<u32> = (0..expected_data_count as u32)
+                .filter(|p| !results.contains_key(p))
+                .collect();
+            if !missing_now.is_empty() {
+                let need_entries: Vec<NeedEntry> = contiguous_ranges(&missing_now)
+                    .iter()
+                    .map(|(s, e)| NeedEntry::Data { start: *s, end: *e })
+                    .collect();
+                let encoded = encode_need_list(&need_entries);
+                need_seq += 1;
+                let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
+                eprintln!(
+                    "  waiting for {} missing chunks, published need list",
+                    missing_now.len()
+                );
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+    }
+
+    need_seq += 1;
+    let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
+
+    let mut payload_data: Vec<u8> = Vec::with_capacity(file_size as usize);
+    for pos in 0..expected_data_count as u32 {
+        match results.get(&pos) {
+            Some(chunk) => {
+                if chunk.is_empty() || chunk[0] != VERSION {
+                    eprintln!("error: invalid data chunk at position {pos}");
+                    let _ = handle.destroy().await;
+                    let _ = task_handle.await;
+                    return 1;
+                }
+                payload_data.extend_from_slice(&chunk[1..]);
+            }
+            None => {
+                eprintln!("error: missing data chunk at position {pos}");
+                let _ = handle.destroy().await;
+                let _ = task_handle.await;
+                return 1;
+            }
+        }
+    }
+
+    if expected_data_count != 0 && payload_data.len() != file_size as usize {
+        eprintln!(
+            "error: size mismatch: got {} bytes, expected {}",
+            payload_data.len(),
+            file_size
+        );
+        let _ = handle.destroy().await;
+        let _ = task_handle.await;
+        return 1;
+    }
+
+    let computed_crc = crc32c::crc32c(&payload_data);
+    if computed_crc != stored_crc {
+        eprintln!(
+            "error: CRC mismatch (expected {stored_crc:08x}, got {computed_crc:08x})"
+        );
+        let _ = handle.destroy().await;
+        let _ = task_handle.await;
+        return 1;
+    }
+
+    eprintln!("  reassembled {} bytes", payload_data.len());
+
+    if let Some(ref output_path) = args.output {
+        let dir = std::path::Path::new(output_path)
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+        let temp_path = dir.join(format!(".peeroxide-pickup-{}", std::process::id()));
+
+        if let Err(e) = tokio::fs::write(&temp_path, &payload_data).await {
+            eprintln!("error: failed to write temp file: {e}");
+            let _ = handle.destroy().await;
+            let _ = task_handle.await;
+            return 1;
+        }
+
+        if let Err(e) = tokio::fs::rename(&temp_path, output_path).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            eprintln!("error: failed to rename: {e}");
+            let _ = handle.destroy().await;
+            let _ = task_handle.await;
+            return 1;
+        }
+
+        eprintln!("  written to {output_path}");
+    } else {
+        use std::io::Write;
+        if let Err(e) = std::io::stdout().write_all(&payload_data) {
+            eprintln!("error: failed to write to stdout: {e}");
+            let _ = handle.destroy().await;
+            let _ = task_handle.await;
+            return 1;
+        }
+    }
+
+    if !args.no_ack {
+        let ack_topic =
+            peeroxide::discovery_key(&[root_pk.as_slice(), b"ack"].concat());
+        let ack_kp = KeyPair::generate();
+        let _ = handle.announce(ack_topic, &ack_kp, &[]).await;
+        eprintln!("  ack sent (ephemeral identity)");
+    } else {
+        eprintln!("  done (no ack sent)");
+    }
+
+    eprintln!("  done");
+    let _ = handle.destroy().await;
+    let _ = task_handle.await;
+    0
 }
 
 #[cfg(test)]

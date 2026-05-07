@@ -1847,3 +1847,321 @@ async fn test_dd_wrong_passphrase_fails() {
 
     assert!(result.is_ok(), "test_dd_wrong_passphrase_fails timed out");
 }
+
+#[tokio::test]
+async fn test_dd_v2_multi_index() {
+    let result = tokio::time::timeout(Duration::from_secs(90), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("large.bin");
+        let output_path = dir.path().join("out.bin");
+
+        let msg: Vec<u8> = (0..30_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&input_path, &msg).unwrap();
+
+        let input_str = input_path.to_str().unwrap().to_string();
+        let bs_clone = bs_addr.clone();
+        let mut leave = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--no-public",
+                "dd", "put", &input_str,
+                "--bootstrap", &bs_clone,
+                "--ttl", "60",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn dd put");
+
+        let stdout = leave.stdout.take().unwrap();
+        let pickup_key = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let t = line.trim().to_string();
+                if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(t);
+                }
+            }
+            None
+        })
+        .await
+        .unwrap()
+        .expect("no pickup key from dd put");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let out_str = output_path.to_str().unwrap().to_string();
+        let bs_clone2 = bs_addr.clone();
+        let get_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--no-public",
+                    "dd", "get", &pickup_key,
+                    "--bootstrap", &bs_clone2,
+                    "--output", &out_str,
+                    "--timeout", "40",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run dd get")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        let stderr = String::from_utf8_lossy(&get_output.stderr);
+        assert!(
+            get_output.status.success(),
+            "dd get (multi-index) failed: {stderr}"
+        );
+
+        let received = std::fs::read(&output_path).expect("output file not found");
+        assert_eq!(received, msg, "payload mismatch. stderr: {stderr}");
+    })
+    .await;
+    assert!(result.is_ok(), "test_dd_v2_multi_index timed out");
+}
+
+#[tokio::test]
+async fn test_dd_v2_empty_file() {
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("empty.bin");
+        let output_path = dir.path().join("out.bin");
+
+        std::fs::write(&input_path, b"").unwrap();
+
+        let input_str = input_path.to_str().unwrap().to_string();
+        let bs_clone = bs_addr.clone();
+        let mut leave = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--no-public",
+                "dd", "put", &input_str,
+                "--bootstrap", &bs_clone,
+                "--ttl", "40",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn dd put (empty)");
+
+        let stdout = leave.stdout.take().unwrap();
+        let pickup_key = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let t = line.trim().to_string();
+                if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(t);
+                }
+            }
+            None
+        })
+        .await
+        .unwrap()
+        .expect("no pickup key from dd put (empty)");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let out_str = output_path.to_str().unwrap().to_string();
+        let bs_clone2 = bs_addr.clone();
+        let get_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--no-public",
+                    "dd", "get", &pickup_key,
+                    "--bootstrap", &bs_clone2,
+                    "--output", &out_str,
+                    "--timeout", "20",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run dd get (empty)")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        let stderr = String::from_utf8_lossy(&get_output.stderr);
+        assert!(
+            get_output.status.success(),
+            "dd get (empty) failed: {stderr}"
+        );
+
+        let received = std::fs::read(&output_path).expect("output file not found");
+        assert!(received.is_empty(), "expected empty output, got {} bytes. stderr: {stderr}", received.len());
+    })
+    .await;
+    assert!(result.is_ok(), "test_dd_v2_empty_file timed out");
+}
+
+#[tokio::test]
+async fn test_dd_v1_flag_roundtrip() {
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("v1input.txt");
+        let output_path = dir.path().join("v1out.txt");
+
+        let msg = b"v1 flag roundtrip test payload";
+        std::fs::write(&input_path, msg).unwrap();
+
+        let input_str = input_path.to_str().unwrap().to_string();
+        let bs_clone = bs_addr.clone();
+        let mut leave = Command::new(bin_path())
+            .args([
+                "--no-default-config", "--no-public",
+                "dd", "put", &input_str,
+                "--v1",
+                "--bootstrap", &bs_clone,
+                "--ttl", "40",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn dd put --v1");
+
+        let stdout = leave.stdout.take().unwrap();
+        let pickup_key = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let t = line.trim().to_string();
+                if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(t);
+                }
+            }
+            None
+        })
+        .await
+        .unwrap()
+        .expect("no pickup key from dd put --v1");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let out_str = output_path.to_str().unwrap().to_string();
+        let bs_clone2 = bs_addr.clone();
+        let get_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--no-public",
+                    "dd", "get", &pickup_key,
+                    "--bootstrap", &bs_clone2,
+                    "--output", &out_str,
+                    "--timeout", "20",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run dd get after --v1 put")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        let stderr = String::from_utf8_lossy(&get_output.stderr);
+        assert!(
+            get_output.status.success(),
+            "dd get after --v1 put failed: {stderr}"
+        );
+
+        let received = std::fs::read(&output_path).expect("output file not found");
+        assert_eq!(received, msg, "v1 flag roundtrip payload mismatch. stderr: {stderr}");
+    })
+    .await;
+    assert!(result.is_ok(), "test_dd_v1_flag_roundtrip timed out");
+}
+
+#[tokio::test]
+async fn test_dd_v2_passphrase_roundtrip() {
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("input.txt");
+        let output_path = dir.path().join("output.txt");
+
+        let msg = b"v2 passphrase roundtrip payload";
+        std::fs::write(&input_path, msg).unwrap();
+
+        let input_str = input_path.to_str().unwrap().to_string();
+        let bs_clone = bs_addr.clone();
+
+        let mut leave_cmd = Command::new(bin_path());
+        leave_cmd
+            .args([
+                "--no-default-config", "--no-public",
+                "dd", "put", &input_str,
+                "--bootstrap", &bs_clone,
+                "--ttl", "40",
+                "--passphrase", "v2-test-passphrase-xyz",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            unsafe extern "C" { fn setsid() -> i32; }
+            unsafe { leave_cmd.pre_exec(|| { setsid(); Ok(()) }); }
+        }
+
+        let mut leave = leave_cmd.spawn().expect("failed to spawn dd put v2 passphrase");
+
+        let stdout = leave.stdout.take().unwrap();
+        let pickup_key = tokio::task::spawn_blocking(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.unwrap_or_default();
+                let t = line.trim().to_string();
+                if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(t);
+                }
+            }
+            None
+        })
+        .await
+        .unwrap()
+        .expect("no pickup key from dd put v2 passphrase");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let out_str = output_path.to_str().unwrap().to_string();
+        let bs_clone2 = bs_addr.clone();
+        let get_output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args([
+                    "--no-default-config", "--no-public",
+                    "dd", "get", &pickup_key,
+                    "--bootstrap", &bs_clone2,
+                    "--output", &out_str,
+                    "--timeout", "20",
+                    "--no-ack",
+                ])
+                .output()
+                .expect("failed to run dd get (v2 passphrase)")
+        })
+        .await
+        .unwrap();
+
+        kill_child(&mut leave);
+
+        let stderr = String::from_utf8_lossy(&get_output.stderr);
+        assert!(
+            get_output.status.success(),
+            "dd get (v2 passphrase) failed: {stderr}"
+        );
+
+        let received = std::fs::read(&output_path).expect("output file not found");
+        assert_eq!(received, msg, "v2 passphrase payload mismatch. stderr: {stderr}");
+    })
+    .await;
+    assert!(result.is_ok(), "test_dd_v2_passphrase_roundtrip timed out");
+}
