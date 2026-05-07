@@ -535,6 +535,21 @@ mod tests {
         );
     }
 
+    fn run_friends_child_case(home: &Path, case: &str) {
+        let output = Command::new(current_test_binary())
+            .args(["--exact", "friends_sandbox", "--nocapture"])
+            .env("HOME", home)
+            .env("FRIENDS_CASE", case)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn test_resolve_64char_valid_hex() {
         let tmp = TempDir::new().unwrap();
@@ -618,58 +633,23 @@ mod tests {
 
     #[test]
     fn test_friends_add_auto_alias_vendor() {
+        let _guard = profile::test_home_lock().lock().unwrap();
         let tmp = TempDir::new().unwrap();
-        let _home = HomeGuard::set(tmp.path());
-        prepare_profile(tmp.path(), "default").unwrap();
-        let pubkey = pk(11);
-        let expected = names::generate_name_from_seed(&pubkey);
-        let friend = profile::Friend {
-            pubkey,
-            alias: Some(expected.clone()),
-            cached_name: None,
-            cached_bio_line: None,
-        };
-        profile::save_friend("default", &friend).unwrap();
-        let loaded = profile::load_friends("default").unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].alias.as_deref(), Some(expected.as_str()));
+        run_friends_child_case(tmp.path(), "vendor");
     }
 
     #[test]
     fn test_friends_add_auto_alias_explicit_preserved() {
+        let _guard = profile::test_home_lock().lock().unwrap();
         let tmp = TempDir::new().unwrap();
-        let _home = HomeGuard::set(tmp.path());
-        prepare_profile(tmp.path(), "default").unwrap();
-        let friend = profile::Friend {
-            pubkey: pk(12),
-            alias: Some("buddy".to_string()),
-            cached_name: None,
-            cached_bio_line: None,
-        };
-        profile::save_friend("default", &friend).unwrap();
-        let loaded = profile::load_friends("default").unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].alias.as_deref(), Some("buddy"));
+        run_friends_child_case(tmp.path(), "explicit");
     }
 
     #[test]
     fn test_friends_list_vendor_fallback() {
+        let _guard = profile::test_home_lock().lock().unwrap();
         let tmp = TempDir::new().unwrap();
-        let _home = HomeGuard::set(tmp.path());
-        prepare_profile(tmp.path(), "default").unwrap();
-        let pubkey = pk(13);
-        let friend = profile::Friend {
-            pubkey,
-            alias: None,
-            cached_name: None,
-            cached_bio_line: None,
-        };
-        profile::save_friend("default", &friend).unwrap();
-        let loaded = profile::load_friends("default").unwrap();
-        let line = friend_output(&loaded[0]);
-        let expected = names::generate_name_from_seed(&pubkey);
-        assert!(line.contains(&expected));
-        assert!(!line.contains("(unknown)"));
+        run_friends_child_case(tmp.path(), "vendor_fallback");
     }
 
     #[test]
@@ -747,6 +727,65 @@ mod tests {
             "self_guard" => {
                 let err = resolve_recipient(&profile_name, &input).unwrap_err();
                 assert_eq!(err, "cannot send a DM to yourself");
+            }
+            other => panic!("unknown case: {other}"),
+        }
+    }
+
+    #[test]
+    fn friends_sandbox() {
+        let case = match std::env::var("FRIENDS_CASE") {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        match case.as_str() {
+            "vendor" => {
+                let _home = HomeGuard::set(&home);
+                prepare_profile(&home, "default").unwrap();
+                let pubkey = pk(11);
+                let expected = names::generate_name_from_seed(&pubkey);
+                let friend = profile::Friend {
+                    pubkey,
+                    alias: Some(expected.clone()),
+                    cached_name: None,
+                    cached_bio_line: None,
+                };
+                profile::save_friend("default", &friend).unwrap();
+                let loaded = profile::load_friends("default").unwrap();
+                assert_eq!(loaded.len(), 1);
+                assert_eq!(loaded[0].alias.as_deref(), Some(expected.as_str()));
+            }
+            "explicit" => {
+                let _home = HomeGuard::set(&home);
+                prepare_profile(&home, "default").unwrap();
+                let friend = profile::Friend {
+                    pubkey: pk(12),
+                    alias: Some("buddy".to_string()),
+                    cached_name: None,
+                    cached_bio_line: None,
+                };
+                profile::save_friend("default", &friend).unwrap();
+                let loaded = profile::load_friends("default").unwrap();
+                assert_eq!(loaded.len(), 1);
+                assert_eq!(loaded[0].alias.as_deref(), Some("buddy"));
+            }
+            "vendor_fallback" => {
+                let _home = HomeGuard::set(&home);
+                prepare_profile(&home, "default").unwrap();
+                let pubkey = pk(13);
+                let friend = profile::Friend {
+                    pubkey,
+                    alias: None,
+                    cached_name: None,
+                    cached_bio_line: None,
+                };
+                profile::save_friend("default", &friend).unwrap();
+                let loaded = profile::load_friends("default").unwrap();
+                let line = friend_output(&loaded[0]);
+                let expected = names::generate_name_from_seed(&pubkey);
+                assert!(line.contains(&expected));
+                assert!(!line.contains("(unknown)"));
             }
             other => panic!("unknown case: {other}"),
         }

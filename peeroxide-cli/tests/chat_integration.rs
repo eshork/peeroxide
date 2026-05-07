@@ -84,10 +84,6 @@ fn kill_child(child: &mut Child) {
 
 fn setup_profile_home(screen_name: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-
-    #[cfg(target_os = "macos")]
-    let profiles_dir = dir.path().join("Library/Application Support/peeroxide/chat/profiles/default");
-    #[cfg(not(target_os = "macos"))]
     let profiles_dir = dir.path().join(".config/peeroxide/chat/profiles/default");
 
     std::fs::create_dir_all(&profiles_dir).unwrap();
