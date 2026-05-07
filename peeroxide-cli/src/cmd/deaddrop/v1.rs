@@ -375,90 +375,19 @@ fn resolve_shortkey_input(shortkey: &str) -> Result<[u8; 32], String> {
     }
 }
 
-pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
-    if args.timeout == 0 {
-        eprintln!("error: --timeout must be greater than 0");
-        return 1;
-    }
-
-    let root_public_key = if let Some(ref phrase) = args.passphrase {
-        if phrase.is_empty() {
-            eprintln!("error: passphrase cannot be empty");
-            return 1;
-        }
-        derive_pk_from_passphrase(phrase)
-    } else if args.interactive_passphrase {
-        eprintln!("Enter passphrase: ");
-        let passphrase = rpassword_read();
-        if passphrase.is_empty() {
-            eprintln!("error: passphrase cannot be empty");
-            return 1;
-        }
-        derive_pk_from_passphrase(&passphrase)
-    } else {
-        let key = args.key.as_ref().unwrap();
-        if key.len() == 64 {
-            match hex::decode(key) {
-                Ok(bytes) if bytes.len() == 32 => {
-                    let mut pk = [0u8; 32];
-                    pk.copy_from_slice(&bytes);
-                    pk
-                }
-                _ => derive_pk_from_passphrase(key),
-            }
-        } else {
-            derive_pk_from_passphrase(key)
-        }
-    };
-
-    let pk_hex = to_hex(&root_public_key);
-    eprintln!("DD GET @{}...", &pk_hex[..8]);
-
-    let dht_config = build_dht_config(cfg);
-    let runtime = match UdxRuntime::new() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: failed to create UDP runtime: {e}");
-            return 1;
-        }
-    };
-
-    let (task, handle, _rx) = match hyperdht::spawn(&runtime, dht_config).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: failed to start DHT: {e}");
-            return 1;
-        }
-    };
-
-    if let Err(e) = handle.bootstrapped().await {
-        eprintln!("error: bootstrap failed: {e}");
-        return 1;
-    }
-
+pub async fn get_from_root(
+    root_data: Vec<u8>,
+    root_pk: [u8; 32],
+    handle: HyperDhtHandle,
+    task_handle: tokio::task::JoinHandle<Result<(), peeroxide_dht::hyperdht::HyperDhtError>>,
+    args: &GetArgs,
+) -> i32 {
     let chunk_timeout = Duration::from_secs(args.timeout);
-
-    let root_data = match fetch_with_retry(&handle, &root_public_key, chunk_timeout).await {
-        Some(d) => d,
-        None => {
-            eprintln!("error: root chunk not found (timeout after {}s)", args.timeout);
-            let _ = handle.destroy().await;
-            let _ = task.await;
-            return 1;
-        }
-    };
-
-    if root_data.is_empty() || root_data[0] != VERSION {
-        eprintln!("error: invalid root chunk (bad version)");
-        let _ = handle.destroy().await;
-        let _ = task.await;
-        return 1;
-    }
 
     if root_data.len() < ROOT_HEADER_SIZE {
         eprintln!("error: root chunk too small");
         let _ = handle.destroy().await;
-        let _ = task.await;
+        let _ = task_handle.await;
         return 1;
     }
 
@@ -471,7 +400,7 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
     if total_chunks == 0 || total_chunks > MAX_CHUNKS {
         eprintln!("error: invalid chunk count: {total_chunks}");
         let _ = handle.destroy().await;
-        let _ = task.await;
+        let _ = task_handle.await;
         return 1;
     }
 
@@ -481,7 +410,7 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
     payload_data.extend_from_slice(root_payload);
 
     let mut seen_keys: HashSet<[u8; 32]> = HashSet::new();
-    seen_keys.insert(root_public_key);
+    seen_keys.insert(root_pk);
 
     for i in 1..total_chunks {
         eprintln!("  fetching chunk {}/{}...", i + 1, total_chunks);
@@ -492,14 +421,14 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
             }
             eprintln!("error: chain ended prematurely at chunk {i}");
             let _ = handle.destroy().await;
-            let _ = task.await;
+            let _ = task_handle.await;
             return 1;
         }
 
         if !seen_keys.insert(next_pk) {
             eprintln!("error: loop detected in chunk chain");
             let _ = handle.destroy().await;
-            let _ = task.await;
+            let _ = task_handle.await;
             return 1;
         }
 
@@ -508,7 +437,7 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
             None => {
                 eprintln!("error: chunk {} not found (timeout)", i + 1);
                 let _ = handle.destroy().await;
-                let _ = task.await;
+                let _ = task_handle.await;
                 return 1;
             }
         };
@@ -516,14 +445,14 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
         if chunk_data.is_empty() || chunk_data[0] != VERSION {
             eprintln!("error: invalid chunk {} (bad version)", i + 1);
             let _ = handle.destroy().await;
-            let _ = task.await;
+            let _ = task_handle.await;
             return 1;
         }
 
         if chunk_data.len() < NON_ROOT_HEADER_SIZE {
             eprintln!("error: chunk {} too small", i + 1);
             let _ = handle.destroy().await;
-            let _ = task.await;
+            let _ = task_handle.await;
             return 1;
         }
 
@@ -535,7 +464,7 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
     if total_chunks > 1 && next_pk != [0u8; 32] {
         eprintln!("error: final chunk does not terminate chain (next != zeros)");
         let _ = handle.destroy().await;
-        let _ = task.await;
+        let _ = task_handle.await;
         return 1;
     }
 
@@ -543,7 +472,7 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
     if computed_crc != stored_crc {
         eprintln!("error: CRC mismatch (expected {stored_crc:08x}, got {computed_crc:08x})");
         let _ = handle.destroy().await;
-        let _ = task.await;
+        let _ = task_handle.await;
         return 1;
     }
 
@@ -558,7 +487,7 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
         if let Err(e) = tokio::fs::write(&temp_path, &payload_data).await {
             eprintln!("error: failed to write temp file: {e}");
             let _ = handle.destroy().await;
-            let _ = task.await;
+            let _ = task_handle.await;
             return 1;
         }
 
@@ -566,7 +495,7 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
             let _ = tokio::fs::remove_file(&temp_path).await;
             eprintln!("error: failed to rename: {e}");
             let _ = handle.destroy().await;
-            let _ = task.await;
+            let _ = task_handle.await;
             return 1;
         }
 
@@ -576,14 +505,14 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
         if let Err(e) = std::io::stdout().write_all(&payload_data) {
             eprintln!("error: failed to write to stdout: {e}");
             let _ = handle.destroy().await;
-            let _ = task.await;
+            let _ = task_handle.await;
             return 1;
         }
     }
 
     if !args.no_ack {
         let ack_topic =
-            peeroxide::discovery_key(&[root_public_key.as_slice(), b"ack"].concat());
+            peeroxide::discovery_key(&[root_pk.as_slice(), b"ack"].concat());
         let ack_kp = KeyPair::generate();
         let _ = handle.announce(ack_topic, &ack_kp, &[]).await;
         eprintln!("  ack sent (ephemeral identity)");
@@ -593,7 +522,7 @@ pub async fn run_get(args: &GetArgs, cfg: &ResolvedConfig) -> i32 {
 
     eprintln!("  done");
     let _ = handle.destroy().await;
-    let _ = task.await;
+    let _ = task_handle.await;
     0
 }
 

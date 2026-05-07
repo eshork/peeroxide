@@ -1,4 +1,5 @@
 pub mod v1;
+pub mod v2;
 
 use clap::{Args, Subcommand};
 use libudx::UdxRuntime;
@@ -52,6 +53,10 @@ pub struct PutArgs {
     /// Derive keypair from passphrase (prompted interactively, hidden input)
     #[arg(long, conflicts_with = "passphrase")]
     interactive_passphrase: bool,
+
+    /// Use legacy v1 protocol (default: v2)
+    #[arg(long)]
+    pub v1: bool,
 }
 
 #[derive(Args)]
@@ -83,8 +88,106 @@ pub struct GetArgs {
 
 pub async fn run(cmd: DdCommands, cfg: &ResolvedConfig) -> i32 {
     match cmd {
-        DdCommands::Put(args) => v1::run_put(&args, cfg).await,
-        DdCommands::Get(args) => v1::run_get(&args, cfg).await,
+        DdCommands::Put(args) => {
+            if args.v1 {
+                v1::run_put(&args, cfg).await
+            } else {
+                v2::run_put(&args, cfg).await
+            }
+        }
+        DdCommands::Get(args) => run_get(args, cfg).await,
+    }
+}
+
+async fn run_get(args: GetArgs, cfg: &ResolvedConfig) -> i32 {
+    if args.timeout == 0 {
+        eprintln!("error: --timeout must be greater than 0");
+        return 1;
+    }
+
+    let root_public_key = if let Some(ref phrase) = args.passphrase {
+        if phrase.is_empty() {
+            eprintln!("error: passphrase cannot be empty");
+            return 1;
+        }
+        derive_pk_from_passphrase(phrase)
+    } else if args.interactive_passphrase {
+        eprintln!("Enter passphrase: ");
+        let passphrase = rpassword_read();
+        if passphrase.is_empty() {
+            eprintln!("error: passphrase cannot be empty");
+            return 1;
+        }
+        derive_pk_from_passphrase(&passphrase)
+    } else {
+        let key = args.key.as_ref().unwrap();
+        if key.len() == 64 {
+            match hex::decode(key) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut pk = [0u8; 32];
+                    pk.copy_from_slice(&bytes);
+                    pk
+                }
+                _ => derive_pk_from_passphrase(key),
+            }
+        } else {
+            derive_pk_from_passphrase(key)
+        }
+    };
+
+    let pk_hex = to_hex(&root_public_key);
+    eprintln!("DD GET @{}...", &pk_hex[..8]);
+
+    let dht_config = build_dht_config(cfg);
+    let runtime = match UdxRuntime::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: failed to create UDP runtime: {e}");
+            return 1;
+        }
+    };
+
+    let (task_handle, handle, _rx) = match hyperdht::spawn(&runtime, dht_config).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: failed to start DHT: {e}");
+            return 1;
+        }
+    };
+
+    if let Err(e) = handle.bootstrapped().await {
+        eprintln!("error: bootstrap failed: {e}");
+        return 1;
+    }
+
+    let chunk_timeout = Duration::from_secs(args.timeout);
+
+    let root_data = match fetch_with_retry(&handle, &root_public_key, chunk_timeout).await {
+        Some(d) => d,
+        None => {
+            eprintln!("error: root chunk not found (timeout after {}s)", args.timeout);
+            let _ = handle.destroy().await;
+            let _ = task_handle.await;
+            return 1;
+        }
+    };
+
+    if root_data.is_empty() {
+        eprintln!("error: root chunk is empty");
+        let _ = handle.destroy().await;
+        let _ = task_handle.await;
+        return 1;
+    }
+
+    match root_data[0] {
+        0x01 => v1::get_from_root(root_data, root_public_key, handle, task_handle, &args).await,
+        0x02 => v2::get_from_root(root_data, root_public_key, handle, task_handle, &args).await,
+        v => {
+            eprintln!("error: unknown dead drop version 0x{v:02x}");
+            let _ = handle.destroy().await;
+            let _ = task_handle.await;
+            1
+        }
     }
 }
 
