@@ -345,6 +345,9 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
         return 1;
     }
 
+    let pickup_key = to_hex(&root_kp.public_key);
+    println!("{pickup_key}");
+
     let data_cap = max_concurrency.unwrap_or(16);
     let sem = Arc::new(Semaphore::new(data_cap));
     let mut data_handles: Vec<tokio::task::JoinHandle<Result<(), String>>> = Vec::new();
@@ -372,9 +375,6 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
             Err(e) => eprintln!("  warning: data chunk task panicked: {e}"),
         }
     }
-
-    let pickup_key = to_hex(&root_kp.public_key);
-    println!("{pickup_key}");
 
     let need_topic_key = need_topic(&root_kp.public_key);
     eprintln!("  published to DHT (best-effort)");
@@ -601,13 +601,31 @@ pub async fn get_from_root(
 
     let mut all_data_hashes: Vec<[u8; 32]> = root_data_hashes;
     let mut next_pk = first_next_pk;
+    let mut seen_index_keys: HashSet<[u8; 32]> = HashSet::new();
+    let mut index_pos: u16 = 1;
 
     while next_pk != [0u8; 32] {
+        if !seen_index_keys.insert(next_pk) {
+            eprintln!("error: loop detected in index chain");
+            need_seq += 1;
+            let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
+            let _ = handle.destroy().await;
+            let _ = task_handle.await;
+            return 1;
+        }
+
         let idx_data =
             match fetch_index_with_retry(&handle, &next_pk, chunk_timeout).await {
                 Some(d) => d,
                 None => {
-                    eprintln!("error: index chunk not found (timeout)");
+                    eprintln!("error: index chunk {} not found (timeout)", index_pos);
+                    let need_entries =
+                        vec![NeedEntry::Index { start: index_pos, end: index_pos }];
+                    let encoded = encode_need_list(&need_entries);
+                    need_seq += 1;
+                    let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
+                    need_seq += 1;
+                    let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
                     let _ = handle.destroy().await;
                     let _ = task_handle.await;
                     return 1;
@@ -632,6 +650,7 @@ pub async fn get_from_root(
             all_data_hashes.push(h);
             idx_offset += 32;
         }
+        index_pos += 1;
     }
 
     if all_data_hashes.len() != expected_data_count {
