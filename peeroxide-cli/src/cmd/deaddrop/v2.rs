@@ -345,11 +345,28 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     for chunk in built.data_chunks.iter().cloned() {
         tasks.push(PublishTask::Data(chunk));
     }
-    if let Err(e) = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, true).await {
-        eprintln!("error: publish failed: {e}");
-        let _ = handle.destroy().await;
-        let _ = task.await;
-        return 1;
+    let publish_fut = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, true);
+    tokio::pin!(publish_fut);
+    tokio::select! {
+        res = &mut publish_fut => {
+            if let Err(e) = res {
+                eprintln!("error: publish failed: {e}");
+                let _ = handle.destroy().await;
+                let _ = task.await;
+                return 1;
+            }
+        }
+        _ = signal::ctrl_c() => {
+            eprintln!("interrupted");
+            let _ = handle.destroy().await;
+            let _ = task.await;
+            return 130;
+        }
+        _ = sigterm_recv() => {
+            let _ = handle.destroy().await;
+            let _ = task.await;
+            return 143;
+        }
     }
 
     let pickup_key = to_hex(&root_kp.public_key);
