@@ -282,6 +282,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
 
     let root_kp = KeyPair::from_seed(root_seed);
 
+    eprintln!("  chunking {} bytes...", data.len());
     let built = match build_v2_chunks(&data, &root_seed) {
         Ok(b) => b,
         Err(e) => {
@@ -345,6 +346,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     for chunk in built.data_chunks.iter().cloned() {
         tasks.push(PublishTask::Data(chunk));
     }
+    eprintln!("  publishing {} chunks to DHT...", tasks.len());
     let publish_fut = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, true);
     tokio::pin!(publish_fut);
     tokio::select! {

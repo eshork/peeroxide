@@ -450,6 +450,8 @@ pub(crate) async fn publish_tasks(
 
     let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<Result<bool, String>>();
     let mut spawned_count = 0usize;
+    let mut first_index_error: Option<String> = None;
+    let mut drained = 0usize;
 
     for task in tasks {
         let permit = loop {
@@ -537,12 +539,36 @@ pub(crate) async fn publish_tasks(
         if let Some(delay) = dispatch_delay {
             tokio::time::sleep(delay).await;
         }
+
+        // Drain any completed tasks for real-time progress output
+        while let Ok(msg) = result_rx.try_recv() {
+            match msg {
+                Ok(true) => {
+                    index_published += 1;
+                    if show_progress {
+                        eprintln!("  published index {index_published}/{index_total}");
+                    }
+                }
+                Ok(false) => {
+                    data_published += 1;
+                    if show_progress {
+                        eprintln!("  published data {data_published}/{data_total}");
+                    }
+                }
+                Err(e) => {
+                    if first_index_error.is_none() {
+                        first_index_error = Some(e);
+                    }
+                }
+            }
+            drained += 1;
+        }
     }
 
     drop(result_tx);
 
-    let mut first_index_error: Option<String> = None;
-    for _ in 0..spawned_count {
+    // Final drain — wait for remaining tasks to complete
+    while drained < spawned_count {
         match result_rx.recv().await {
             Some(Ok(is_index)) => {
                 if is_index {
@@ -564,6 +590,7 @@ pub(crate) async fn publish_tasks(
             }
             None => break,
         }
+        drained += 1;
     }
 
     if let Some(e) = first_index_error {
