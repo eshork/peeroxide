@@ -491,12 +491,16 @@ async fn fetch_index_with_retry(
     handle: &HyperDhtHandle,
     pk: &[u8; 32],
     timeout: Duration,
+    sem: Arc<Semaphore>,
 ) -> Option<Vec<u8>> {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(30);
     loop {
-        if let Ok(Some(result)) = handle.mutable_get(pk, 0).await {
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let result = handle.mutable_get(pk, 0).await;
+        drop(permit);
+        if let Ok(Some(result)) = result {
             return Some(result.value);
         }
         if tokio::time::Instant::now() >= deadline {
@@ -574,10 +578,28 @@ pub async fn get_from_root(
     let _ = handle.announce(nt, &need_kp, &[]).await;
     let mut need_seq: u64 = 0;
 
+    let sem = Arc::new(Semaphore::new(PARALLEL_FETCH_CAP));
+    let (result_tx, mut result_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(u32, Option<Vec<u8>>)>();
+    let mut spawned_count: usize = 0;
+
     let mut all_data_hashes: Vec<[u8; 32]> = root_data_hashes;
     let mut next_pk = first_next_pk;
     let mut seen_index_keys: HashSet<[u8; 32]> = HashSet::new();
     let mut index_pos: u16 = 1;
+
+    for (i, &hash) in all_data_hashes.iter().enumerate() {
+        let hh = handle.clone();
+        let sem2 = sem.clone();
+        let tx = result_tx.clone();
+        tokio::spawn(async move {
+            let permit = sem2.acquire_owned().await.unwrap();
+            let result = hh.immutable_get(hash).await.ok().flatten();
+            drop(permit);
+            let _ = tx.send((i as u32, result));
+        });
+        spawned_count += 1;
+    }
 
     while next_pk != [0u8; 32] {
         if !seen_index_keys.insert(next_pk) {
@@ -590,7 +612,7 @@ pub async fn get_from_root(
         }
 
         let idx_data =
-            match fetch_index_with_retry(&handle, &next_pk, chunk_timeout).await {
+            match fetch_index_with_retry(&handle, &next_pk, chunk_timeout, sem.clone()).await {
                 Some(d) => d,
                 None => {
                     eprintln!("error: index chunk {} not found (timeout)", index_pos);
@@ -622,7 +644,18 @@ pub async fn get_from_root(
         while idx_offset + 32 <= idx_data.len() {
             let mut h = [0u8; 32];
             h.copy_from_slice(&idx_data[idx_offset..idx_offset + 32]);
+            let pos = all_data_hashes.len() as u32;
             all_data_hashes.push(h);
+            let hh = handle.clone();
+            let sem2 = sem.clone();
+            let tx = result_tx.clone();
+            tokio::spawn(async move {
+                let permit = sem2.acquire_owned().await.unwrap();
+                let result = hh.immutable_get(h).await.ok().flatten();
+                drop(permit);
+                let _ = tx.send((pos, result));
+            });
+            spawned_count += 1;
             idx_offset += 32;
         }
         index_pos += 1;
@@ -639,23 +672,11 @@ pub async fn get_from_root(
         return 1;
     }
 
-    let sem = Arc::new(Semaphore::new(PARALLEL_FETCH_CAP));
+    drop(result_tx);
     let mut results: std::collections::HashMap<u32, Vec<u8>> =
         std::collections::HashMap::new();
-
-    let mut fetch_handles: Vec<tokio::task::JoinHandle<(u32, Option<Vec<u8>>)>> =
-        Vec::with_capacity(expected_data_count);
-    for (pos, &hash) in all_data_hashes.iter().enumerate() {
-        let permit = sem.clone().acquire_owned().await.unwrap();
-        let h = handle.clone();
-        fetch_handles.push(tokio::spawn(async move {
-            let r = h.immutable_get(hash).await.ok().flatten();
-            drop(permit);
-            (pos as u32, r)
-        }));
-    }
-    for jh in fetch_handles {
-        if let Ok((pos, Some(data))) = jh.await {
+    for _ in 0..spawned_count {
+        if let Some((pos, Some(data))) = result_rx.recv().await {
             results.insert(pos, data);
         }
     }
