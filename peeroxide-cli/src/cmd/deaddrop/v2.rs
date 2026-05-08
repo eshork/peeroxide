@@ -432,40 +432,43 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
                                                 let s = start as usize;
                                                 let e = (end as usize + 1)
                                                     .min(built.index_chunks.len());
-                                                if s < e {
-                                                    let slice = &built.index_chunks[s..e];
-                                                    let _ = publish_chunks(
-                                                        &handle, slice,
-                                                        max_concurrency, dispatch_delay, false
-                                                    ).await;
-                                                    for j in s..e {
-                                                        let data_start = if j == 0 {
-                                                            0
-                                                        } else {
-                                                            PTRS_PER_ROOT
-                                                                + (j - 1) * PTRS_PER_NON_ROOT
-                                                        };
-                                                        let data_end = if j == 0 {
-                                                            PTRS_PER_ROOT
-                                                        } else {
-                                                            data_start + PTRS_PER_NON_ROOT
-                                                        }.min(built.data_chunks.len());
+                                                if s >= e { continue; }
+                                                let mut tasks: Vec<PublishTask> = Vec::new();
+                                                for chunk in &built.index_chunks[s..e] {
+                                                    tasks.push(PublishTask::Index(chunk.clone()));
+                                                }
+                                                for j in s..e {
+                                                    let data_start = if j == 0 {
+                                                        0
+                                                    } else {
+                                                        PTRS_PER_ROOT
+                                                            + (j - 1) * PTRS_PER_NON_ROOT
+                                                    };
+                                                    let data_end = if j == 0 {
+                                                        PTRS_PER_ROOT
+                                                    } else {
+                                                        data_start + PTRS_PER_NON_ROOT
+                                                    }.min(built.data_chunks.len());
+                                                    if data_start < data_end {
                                                         for chunk in
                                                             &built.data_chunks[data_start..data_end]
                                                         {
-                                                            let _ =
-                                                                handle.immutable_put(chunk).await;
+                                                            tasks.push(PublishTask::Data(chunk.clone()));
                                                         }
                                                     }
                                                 }
+                                                let _ = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, false).await;
                                             }
                                             NeedEntry::Data { start, end } => {
                                                 let s = start as usize;
                                                 let e = (end as usize + 1)
                                                     .min(built.data_chunks.len());
-                                                for chunk in &built.data_chunks[s..e] {
-                                                    let _ = handle.immutable_put(chunk).await;
-                                                }
+                                                if s >= e { continue; }
+                                                let tasks: Vec<PublishTask> = built.data_chunks[s..e]
+                                                    .iter()
+                                                    .map(|c| PublishTask::Data(c.clone()))
+                                                    .collect();
+                                                let _ = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, false).await;
                                             }
                                         }
                                     }
