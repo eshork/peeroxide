@@ -258,6 +258,7 @@ async fn fetch_with_retry(
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ChunkData {
     keypair: KeyPair,
     encoded: Vec<u8>,

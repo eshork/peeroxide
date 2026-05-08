@@ -282,7 +282,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
 
     let root_kp = KeyPair::from_seed(root_seed);
 
-    let mut built = match build_v2_chunks(&data, &root_seed) {
+    let built = match build_v2_chunks(&data, &root_seed) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
@@ -339,10 +339,10 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let mut tasks: Vec<PublishTask> = Vec::with_capacity(
         built.index_chunks.len() + built.data_chunks.len()
     );
-    for chunk in built.index_chunks.drain(..) {
+    for chunk in built.index_chunks.iter().cloned() {
         tasks.push(PublishTask::Index(chunk));
     }
-    for chunk in built.data_chunks.drain(..) {
+    for chunk in built.data_chunks.iter().cloned() {
         tasks.push(PublishTask::Data(chunk));
     }
     if let Err(e) = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, true).await {
@@ -386,24 +386,17 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
             _ = refresh_interval.tick() => {
                 eprintln!("  refreshing {} index + {} data chunks...",
                     built.index_chunks.len(), built.data_chunks.len());
-                if let Err(e) = publish_chunks(
-                    &handle, &built.index_chunks, max_concurrency, dispatch_delay, false
-                ).await {
-                    eprintln!("  warning: index refresh failed: {e}");
+                let mut tasks: Vec<PublishTask> = Vec::with_capacity(
+                    built.index_chunks.len() + built.data_chunks.len()
+                );
+                for chunk in &built.index_chunks {
+                    tasks.push(PublishTask::Index(chunk.clone()));
                 }
-                let sem2 = Arc::new(Semaphore::new(max_concurrency.unwrap_or(16)));
-                let mut refresh_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
                 for chunk in &built.data_chunks {
-                    let permit = sem2.clone().acquire_owned().await.unwrap();
-                    let h = handle.clone();
-                    let chunk_bytes = chunk.clone();
-                    refresh_handles.push(tokio::spawn(async move {
-                        let _ = h.immutable_put(&chunk_bytes).await;
-                        drop(permit);
-                    }));
+                    tasks.push(PublishTask::Data(chunk.clone()));
                 }
-                for jh in refresh_handles {
-                    let _ = jh.await;
+                if let Err(e) = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, false).await {
+                    eprintln!("  warning: refresh failed: {e}");
                 }
             }
             _ = ack_interval.tick() => {
