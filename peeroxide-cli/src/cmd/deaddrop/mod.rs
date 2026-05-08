@@ -264,7 +264,6 @@ pub(crate) struct ChunkData {
     encoded: Vec<u8>,
 }
 
-#[allow(dead_code)]
 pub(crate) enum PublishTask {
     Index(ChunkData),
     Data(Vec<u8>),
@@ -431,7 +430,6 @@ async fn publish_chunks(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) async fn publish_tasks(
     handle: &HyperDhtHandle,
     tasks: Vec<PublishTask>,
