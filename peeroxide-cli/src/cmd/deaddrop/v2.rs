@@ -282,7 +282,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
 
     let root_kp = KeyPair::from_seed(root_seed);
 
-    let built = match build_v2_chunks(&data, &root_seed) {
+    let mut built = match build_v2_chunks(&data, &root_seed) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
@@ -336,10 +336,17 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
         data.len()
     );
 
-    if let Err(e) =
-        publish_chunks(&handle, &built.index_chunks, max_concurrency, dispatch_delay, true).await
-    {
-        eprintln!("error: index publish failed: {e}");
+    let mut tasks: Vec<PublishTask> = Vec::with_capacity(
+        built.index_chunks.len() + built.data_chunks.len()
+    );
+    for chunk in built.index_chunks.drain(..) {
+        tasks.push(PublishTask::Index(chunk));
+    }
+    for chunk in built.data_chunks.drain(..) {
+        tasks.push(PublishTask::Data(chunk));
+    }
+    if let Err(e) = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, true).await {
+        eprintln!("error: publish failed: {e}");
         let _ = handle.destroy().await;
         let _ = task.await;
         return 1;
@@ -347,34 +354,6 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
 
     let pickup_key = to_hex(&root_kp.public_key);
     println!("{pickup_key}");
-
-    let data_cap = max_concurrency.unwrap_or(16);
-    let sem = Arc::new(Semaphore::new(data_cap));
-    let mut data_handles: Vec<tokio::task::JoinHandle<Result<(), String>>> = Vec::new();
-    for (i, chunk) in built.data_chunks.iter().enumerate() {
-        let permit = sem.clone().acquire_owned().await.unwrap();
-        let h = handle.clone();
-        let chunk_bytes = chunk.clone();
-        let total = built.data_chunks.len();
-        data_handles.push(tokio::spawn(async move {
-            let result = h.immutable_put(&chunk_bytes).await;
-            drop(permit);
-            match result {
-                Ok(_) => {
-                    eprintln!("  published data chunk {}/{total}", i + 1);
-                    Ok(())
-                }
-                Err(e) => Err(format!("immutable_put failed: {e}")),
-            }
-        }));
-    }
-    for jh in data_handles {
-        match jh.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("  warning: data chunk publish: {e}"),
-            Err(e) => eprintln!("  warning: data chunk task panicked: {e}"),
-        }
-    }
 
     let need_topic_key = need_topic(&root_kp.public_key);
     eprintln!("  published to DHT (best-effort)");
