@@ -258,9 +258,15 @@ async fn fetch_with_retry(
     }
 }
 
-struct ChunkData {
+pub(crate) struct ChunkData {
     keypair: KeyPair,
     encoded: Vec<u8>,
+}
+
+#[allow(dead_code)]
+pub(crate) enum PublishTask {
+    Index(ChunkData),
+    Data(Vec<u8>),
 }
 
 struct AimdController {
@@ -419,6 +425,150 @@ async fn publish_chunks(
             Ok(Err(e)) => return Err(e),
             Err(e) => return Err(format!("task panicked: {e}")),
         }
+    }
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) async fn publish_tasks(
+    handle: &HyperDhtHandle,
+    tasks: Vec<PublishTask>,
+    max_concurrency: Option<usize>,
+    dispatch_delay: Option<Duration>,
+    show_progress: bool,
+) -> Result<(), String> {
+    let initial_concurrency = 4usize;
+    let sem = Arc::new(Semaphore::new(initial_concurrency));
+    let active_target = Arc::new(AtomicUsize::new(initial_concurrency));
+    let permits_to_forget = Arc::new(AtomicUsize::new(0));
+    let controller = Arc::new(Mutex::new(AimdController::new(initial_concurrency, max_concurrency)));
+
+    let index_total = tasks.iter().filter(|t| matches!(t, PublishTask::Index(_))).count();
+    let data_total = tasks.iter().filter(|t| matches!(t, PublishTask::Data(_))).count();
+    let mut index_published = 0usize;
+    let mut data_published = 0usize;
+
+    let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<Result<bool, String>>();
+    let mut spawned_count = 0usize;
+
+    for task in tasks {
+        let permit = loop {
+            let p = sem.clone().acquire_owned().await.unwrap();
+            let forget_pending = permits_to_forget.load(Ordering::Relaxed);
+            if forget_pending > 0 && permits_to_forget.fetch_sub(1, Ordering::Relaxed) > 0 {
+                p.forget();
+            } else {
+                break p;
+            }
+        };
+
+        let h = handle.clone();
+        let sem_inner = sem.clone();
+        let active_target_inner = active_target.clone();
+        let permits_to_forget_inner = permits_to_forget.clone();
+        let controller_inner = controller.clone();
+        let result_tx_inner = result_tx.clone();
+
+        match task {
+            PublishTask::Index(chunk) => {
+                let kp = chunk.keypair.clone();
+                let data = chunk.encoded.clone();
+                let seq = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                tokio::spawn(async move {
+                    let result = h.mutable_put(&kp, &data, seq).await;
+                    let (degraded, send_result) = match result {
+                        Ok(put_result) => (put_result.commit_timeouts > 0, Ok(true)),
+                        Err(e) => (true, Err(format!("mutable_put failed: {e}"))),
+                    };
+                    let new_target = {
+                        let mut ctrl = controller_inner.lock().await;
+                        ctrl.record(degraded)
+                    };
+                    if let Some(target) = new_target {
+                        let current_target = active_target_inner.load(Ordering::Relaxed);
+                        if target > current_target {
+                            let add = target - current_target;
+                            sem_inner.add_permits(add);
+                            active_target_inner.store(target, Ordering::Relaxed);
+                        } else if target < current_target {
+                            let remove = current_target - target;
+                            permits_to_forget_inner.fetch_add(remove, Ordering::Relaxed);
+                            active_target_inner.store(target, Ordering::Relaxed);
+                        }
+                    }
+                    drop(permit);
+                    let _ = result_tx_inner.send(send_result);
+                });
+            }
+            PublishTask::Data(bytes) => {
+                tokio::spawn(async move {
+                    let result = h.immutable_put(&bytes).await;
+                    let degraded = result.is_err();
+                    if let Err(e) = result {
+                        eprintln!("  warning: data chunk publish: {e}");
+                    }
+                    let new_target = {
+                        let mut ctrl = controller_inner.lock().await;
+                        ctrl.record(degraded)
+                    };
+                    if let Some(target) = new_target {
+                        let current_target = active_target_inner.load(Ordering::Relaxed);
+                        if target > current_target {
+                            let add = target - current_target;
+                            sem_inner.add_permits(add);
+                            active_target_inner.store(target, Ordering::Relaxed);
+                        } else if target < current_target {
+                            let remove = current_target - target;
+                            permits_to_forget_inner.fetch_add(remove, Ordering::Relaxed);
+                            active_target_inner.store(target, Ordering::Relaxed);
+                        }
+                    }
+                    drop(permit);
+                    let _ = result_tx_inner.send(Ok(false));
+                });
+            }
+        }
+
+        spawned_count += 1;
+
+        if let Some(delay) = dispatch_delay {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    drop(result_tx);
+
+    let mut first_index_error: Option<String> = None;
+    for _ in 0..spawned_count {
+        match result_rx.recv().await {
+            Some(Ok(is_index)) => {
+                if is_index {
+                    index_published += 1;
+                    if show_progress {
+                        eprintln!("  published index {index_published}/{index_total}");
+                    }
+                } else {
+                    data_published += 1;
+                    if show_progress {
+                        eprintln!("  published data {data_published}/{data_total}");
+                    }
+                }
+            }
+            Some(Err(e)) => {
+                if first_index_error.is_none() {
+                    first_index_error = Some(e);
+                }
+            }
+            None => break,
+        }
+    }
+
+    if let Some(e) = first_index_error {
+        return Err(e);
     }
 
     Ok(())
