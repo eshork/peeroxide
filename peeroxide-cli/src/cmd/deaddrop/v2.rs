@@ -359,7 +359,11 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let filename: Arc<str> = if args.file == "-" {
         Arc::from("<stdin>")
     } else {
-        Arc::from(args.file.as_str())
+        let base = std::path::Path::new(&args.file)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| args.file.clone());
+        Arc::from(base.as_str())
     };
     let state = ProgressState::new(Phase::Put, 2, filename);
     state.set_length(data.len() as u64, built.index_chunks.len() as u32, built.data_chunks.len() as u32);
