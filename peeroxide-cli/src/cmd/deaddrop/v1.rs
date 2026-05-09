@@ -286,11 +286,14 @@ pub async fn get_from_root(
     handle: HyperDhtHandle,
     task_handle: tokio::task::JoinHandle<Result<(), peeroxide_dht::hyperdht::HyperDhtError>>,
     args: &GetArgs,
+    progress: Arc<ProgressState>,
+    reporter: ProgressReporter,
 ) -> i32 {
     let chunk_timeout = Duration::from_secs(args.timeout);
 
     if root_data.len() < ROOT_HEADER_SIZE {
         eprintln!("error: root chunk too small");
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -304,27 +307,37 @@ pub async fn get_from_root(
 
     if total_chunks == 0 || total_chunks > MAX_CHUNKS {
         eprintln!("error: invalid chunk count: {total_chunks}");
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
     }
 
-    eprintln!("  fetching chunk 1/{total_chunks}...");
-
     let mut payload_data = Vec::new();
     payload_data.extend_from_slice(root_payload);
+
+    // Estimated total file size: cannot be exactly computed before the final chunk
+    // arrives (last chunk may be short), so use the maximum-possible upper bound
+    // (root payload + (total-1) * non-root payload). This drives the bar; the
+    // bytes-done counter is exact via inc_data per chunk.
+    let estimated_total: u64 = if total_chunks == 1 {
+        root_payload.len() as u64
+    } else {
+        ROOT_PAYLOAD_MAX as u64 + ((total_chunks - 1) as u64) * NON_ROOT_PAYLOAD_MAX as u64
+    };
+    progress.set_length(estimated_total, 0, total_chunks as u32);
+    progress.inc_data(root_payload.len() as u64);
 
     let mut seen_keys: HashSet<[u8; 32]> = HashSet::new();
     seen_keys.insert(root_pk);
 
     for i in 1..total_chunks {
-        eprintln!("  fetching chunk {}/{}...", i + 1, total_chunks);
-
         if next_pk == [0u8; 32] {
             if i == total_chunks - 1 {
                 break;
             }
             eprintln!("error: chain ended prematurely at chunk {i}");
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -332,6 +345,7 @@ pub async fn get_from_root(
 
         if !seen_keys.insert(next_pk) {
             eprintln!("error: loop detected in chunk chain");
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -341,6 +355,7 @@ pub async fn get_from_root(
             Some(d) => d,
             None => {
                 eprintln!("error: chunk {} not found (timeout)", i + 1);
+                reporter.finish().await;
                 let _ = handle.destroy().await;
                 let _ = task_handle.await;
                 return 1;
@@ -349,6 +364,7 @@ pub async fn get_from_root(
 
         if chunk_data.is_empty() || chunk_data[0] != VERSION {
             eprintln!("error: invalid chunk {} (bad version)", i + 1);
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -356,6 +372,7 @@ pub async fn get_from_root(
 
         if chunk_data.len() < NON_ROOT_HEADER_SIZE {
             eprintln!("error: chunk {} too small", i + 1);
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -363,11 +380,13 @@ pub async fn get_from_root(
 
         next_pk.copy_from_slice(&chunk_data[1..33]);
         let chunk_payload = &chunk_data[33..];
+        progress.inc_data(chunk_payload.len() as u64);
         payload_data.extend_from_slice(chunk_payload);
     }
 
     if total_chunks > 1 && next_pk != [0u8; 32] {
         eprintln!("error: final chunk does not terminate chain (next != zeros)");
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -376,12 +395,11 @@ pub async fn get_from_root(
     let computed_crc = compute_crc32c(&payload_data);
     if computed_crc != stored_crc {
         eprintln!("error: CRC mismatch (expected {stored_crc:08x}, got {computed_crc:08x})");
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
     }
-
-    eprintln!("  reassembled {} bytes", payload_data.len());
 
     if let Some(ref output_path) = args.output {
         let dir = std::path::Path::new(output_path)
@@ -391,6 +409,7 @@ pub async fn get_from_root(
 
         if let Err(e) = tokio::fs::write(&temp_path, &payload_data).await {
             eprintln!("error: failed to write temp file: {e}");
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -399,6 +418,7 @@ pub async fn get_from_root(
         if let Err(e) = tokio::fs::rename(&temp_path, output_path).await {
             let _ = tokio::fs::remove_file(&temp_path).await;
             eprintln!("error: failed to rename: {e}");
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -409,6 +429,7 @@ pub async fn get_from_root(
         use std::io::Write;
         if let Err(e) = std::io::stdout().write_all(&payload_data) {
             eprintln!("error: failed to write to stdout: {e}");
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -426,6 +447,9 @@ pub async fn get_from_root(
     }
 
     eprintln!("  done");
+    let crc_hex = format!("{computed_crc:08x}");
+    reporter.on_get_result(payload_data.len() as u64, &crc_hex, args.output.as_deref());
+    reporter.finish().await;
     let _ = handle.destroy().await;
     let _ = task_handle.await;
     0

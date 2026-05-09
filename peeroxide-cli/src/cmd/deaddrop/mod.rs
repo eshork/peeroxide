@@ -15,7 +15,8 @@ use tokio::sync::{Mutex, Semaphore};
 
 use crate::config::ResolvedConfig;
 use super::{build_dht_config, to_hex};
-use crate::cmd::deaddrop::progress::state::ProgressState;
+use crate::cmd::deaddrop::progress::reporter::ProgressReporter;
+use crate::cmd::deaddrop::progress::state::{Phase, ProgressState};
 
 const MAX_PAYLOAD: usize = 1000;
 
@@ -198,7 +199,23 @@ async fn run_get(args: GetArgs, cfg: &ResolvedConfig) -> i32 {
     }
 
     match root_data[0] {
-        0x01 => v1::get_from_root(root_data, root_public_key, handle, task_handle, &args).await,
+        0x01 => {
+            let get_filename: Arc<str> = match args.output.as_deref() {
+                None => Arc::from("<stdout>"),
+                Some(p) => {
+                    let base = std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(p);
+                    Arc::from(base)
+                }
+            };
+            let state = ProgressState::new(Phase::Get, 0x01, get_filename);
+            let reporter =
+                ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
+            reporter.on_start();
+            v1::get_from_root(root_data, root_public_key, handle, task_handle, &args, state, reporter).await
+        }
         0x02 => v2::get_from_root(root_data, root_public_key, handle, task_handle, &args).await,
         v => {
             eprintln!("error: unknown dead drop version 0x{v:02x}");
