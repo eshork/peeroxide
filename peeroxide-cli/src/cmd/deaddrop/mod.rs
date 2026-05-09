@@ -1,3 +1,4 @@
+pub mod progress;
 pub mod v1;
 pub mod v2;
 
@@ -5,10 +6,12 @@ use clap::{Args, Subcommand};
 use libudx::UdxRuntime;
 use peeroxide::KeyPair;
 use peeroxide_dht::hyperdht::{self, HyperDhtHandle, MutablePutResult};
+use progress::mode::select;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::io::IsTerminal;
 use tokio::signal;
 use tokio::sync::{Mutex, Semaphore};
 
@@ -54,6 +57,14 @@ pub struct PutArgs {
     #[arg(long, conflicts_with = "passphrase")]
     interactive_passphrase: bool,
 
+    /// Disable progress output
+    #[arg(long)]
+    pub no_progress: bool,
+
+    /// Emit JSON progress/output
+    #[arg(long)]
+    pub json: bool,
+
     /// Use legacy v1 protocol (default: v2)
     #[arg(long)]
     pub v1: bool,
@@ -73,9 +84,17 @@ pub struct GetArgs {
     #[arg(long, conflicts_with = "passphrase")]
     interactive_passphrase: bool,
 
+    /// Disable progress output
+    #[arg(long)]
+    pub no_progress: bool,
+
     /// Write output to file (default: stdout)
     #[arg(long)]
     output: Option<String>,
+
+    /// Emit JSON progress/output
+    #[arg(long, requires = "output")]
+    pub json: bool,
 
     /// Give up on any single chunk after this duration (default: 1200s)
     #[arg(long, default_value_t = 1200)]
@@ -89,6 +108,8 @@ pub struct GetArgs {
 pub async fn run(cmd: DdCommands, cfg: &ResolvedConfig) -> i32 {
     match cmd {
         DdCommands::Put(args) => {
+            let _mode = select(std::io::stderr().is_terminal(), args.no_progress, args.json);
+            eprintln!("DEBUG: progress mode = {:?}", _mode);
             if args.v1 {
                 v1::run_put(&args, cfg).await
             } else {
@@ -104,6 +125,9 @@ async fn run_get(args: GetArgs, cfg: &ResolvedConfig) -> i32 {
         eprintln!("error: --timeout must be greater than 0");
         return 1;
     }
+
+    let _mode = select(std::io::stderr().is_terminal(), args.no_progress, args.json);
+    eprintln!("DEBUG: progress mode = {:?}", _mode);
 
     let root_public_key = if let Some(ref phrase) = args.passphrase {
         if phrase.is_empty() {

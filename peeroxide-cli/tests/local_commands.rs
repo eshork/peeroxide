@@ -334,6 +334,30 @@ async fn test_dd_local_roundtrip() {
     assert!(result.is_ok(), "test_dd_local_roundtrip timed out");
 }
 
+#[tokio::test]
+async fn test_dd_get_json_requires_output() {
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new(bin_path())
+                .args(["dd", "get", "--json", "--passphrase", "x"])
+                .output()
+                .expect("failed to run dd get --json")
+        })
+        .await
+        .unwrap();
+
+        assert!(!output.status.success(), "command unexpectedly succeeded");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--output") || stderr.contains("required"),
+            "expected validation message mentioning --output, got: {stderr}"
+        );
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_dd_get_json_requires_output timed out");
+}
+
 // ── Test: --help works for all subcommands ──────────────────────────────────
 
 #[tokio::test]
