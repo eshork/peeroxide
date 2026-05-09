@@ -12,6 +12,12 @@ const MAX_DATA_CHUNKS: usize = PTRS_PER_ROOT + 65535 * PTRS_PER_NON_ROOT;
 const MAX_FILE_SIZE: u64 = MAX_DATA_CHUNKS as u64 * DATA_PAYLOAD_MAX as u64;
 pub const PARALLEL_FETCH_CAP: usize = 64;
 
+/// How often the GET side re-announces on the need-topic to keep DHT records alive.
+const NEED_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How often the PUT side polls for need-lists in its dedicated watcher task.
+const NEED_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
 pub fn derive_index_keypair(root_seed: &[u8; 32], i: u16) -> KeyPair {
     let mut input = Vec::with_capacity(32 + 3 + 2);
     input.extend_from_slice(root_seed);
@@ -1032,7 +1038,7 @@ mod tests {
         );
         assert_eq!(
             built.index_chunks[1].encoded.len(),
-            NON_ROOT_INDEX_HEADER + 32 * 1
+            NON_ROOT_INDEX_HEADER + 32
         );
         // root's next_pk = non-root's public key
         let root_next: [u8; 32] = built.index_chunks[0].encoded[9..41].try_into().unwrap();
@@ -1072,9 +1078,11 @@ mod tests {
         // We can't actually allocate MAX_FILE_SIZE, so test the boundary check logic
         // by checking a known oversized value
         // Instead, verify MAX_FILE_SIZE constant is set correctly
-        assert!(MAX_FILE_SIZE > 1_000_000_000, "MAX_FILE_SIZE should be > 1GB");
+        let max_file_size = MAX_FILE_SIZE;
+        assert!(max_file_size > 1_000_000_000, "MAX_FILE_SIZE should be > 1GB");
         // Test: MAX_DATA_CHUNKS constant is > 1.9M
-        assert!(MAX_DATA_CHUNKS > 1_900_000);
+        let max_data_chunks = MAX_DATA_CHUNKS;
+        assert!(max_data_chunks > 1_900_000);
     }
 
     #[test]
