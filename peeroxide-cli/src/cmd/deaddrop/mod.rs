@@ -443,6 +443,56 @@ pub(crate) async fn publish_tasks(
     let permits_to_forget = Arc::new(AtomicUsize::new(0));
     let controller = Arc::new(Mutex::new(AimdController::new(initial_concurrency, max_concurrency)));
 
+    // Interleave Index and Data variants so dispatch order alternates between them.
+    // With a bounded initial semaphore, processing the input in order would otherwise
+    // drain all of one variant before starting the other.
+    let tasks: Vec<PublishTask> = {
+        let mut indexes: Vec<PublishTask> = Vec::new();
+        let mut datas: Vec<PublishTask> = Vec::new();
+        for t in tasks {
+            match t {
+                PublishTask::Index(_) => indexes.push(t),
+                PublishTask::Data(_) => datas.push(t),
+            }
+        }
+        let i_total = indexes.len();
+        let d_total = datas.len();
+        let mut merged: Vec<PublishTask> = Vec::with_capacity(i_total + d_total);
+        let mut i_iter = indexes.into_iter();
+        let mut d_iter = datas.into_iter();
+        let mut i_pos: u64 = 0;
+        let mut d_pos: u64 = 0;
+        let i_total_u = i_total as u64;
+        let d_total_u = d_total as u64;
+        loop {
+            let i_done = i_pos >= i_total_u;
+            let d_done = d_pos >= d_total_u;
+            if i_done && d_done {
+                break;
+            }
+            // Cross-multiplication to compare i_pos/i_total vs d_pos/d_total without floats.
+            // Whichever is proportionally further behind goes next.
+            let pick_index = if i_done {
+                false
+            } else if d_done {
+                true
+            } else {
+                // i_pos / i_total <= d_pos / d_total  ⇔  i_pos * d_total <= d_pos * i_total
+                i_pos * d_total_u <= d_pos * i_total_u
+            };
+            if pick_index {
+                if let Some(t) = i_iter.next() {
+                    merged.push(t);
+                    i_pos += 1;
+                }
+            } else if let Some(t) = d_iter.next() {
+                merged.push(t);
+                d_pos += 1;
+            }
+        }
+        merged
+    };
+
     let index_total = tasks.iter().filter(|t| matches!(t, PublishTask::Index(_))).count();
     let data_total = tasks.iter().filter(|t| matches!(t, PublishTask::Data(_))).count();
     let mut index_published = 0usize;
