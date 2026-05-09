@@ -1,6 +1,10 @@
 #![allow(dead_code, private_interfaces)]
 use super::*;
 use crate::cmd::sigterm_recv;
+use crate::cmd::deaddrop::progress::{
+    state::{Phase, ProgressState},
+    reporter::ProgressReporter,
+};
 
 pub const VERSION: u8 = 0x02;
 const DATA_PAYLOAD_MAX: usize = 999; // MAX_PAYLOAD(1000) - 1 byte version header
@@ -352,6 +356,16 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
         data.len()
     );
 
+    let filename: Arc<str> = if args.file == "-" {
+        Arc::from("<stdin>")
+    } else {
+        Arc::from(args.file.as_str())
+    };
+    let state = ProgressState::new(Phase::Put, 2, filename);
+    state.set_length(data.len() as u64, built.index_chunks.len() as u32, built.data_chunks.len() as u32);
+    let mut reporter = ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
+    reporter.on_start();
+
     let mut tasks: Vec<PublishTask> = Vec::with_capacity(
         built.index_chunks.len() + built.data_chunks.len()
     );
@@ -362,12 +376,13 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
         tasks.push(PublishTask::Data(chunk));
     }
     eprintln!("  publishing {} chunks to DHT...", tasks.len());
-    let publish_fut = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, true);
+    let publish_fut = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, Some(state.clone()));
     tokio::pin!(publish_fut);
     tokio::select! {
         res = &mut publish_fut => {
             if let Err(e) = res {
                 eprintln!("error: publish failed: {e}");
+                reporter.finish().await;
                 let _ = handle.destroy().await;
                 let _ = task.await;
                 return 1;
@@ -375,11 +390,13 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
         }
         _ = signal::ctrl_c() => {
             eprintln!("interrupted");
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task.await;
             return 130;
         }
         _ = sigterm_recv() => {
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task.await;
             return 143;
@@ -387,7 +404,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     }
 
     let pickup_key = to_hex(&root_kp.public_key);
-    println!("{pickup_key}");
+    reporter.emit_initial_publish_complete(&pickup_key).await;
 
     let need_topic_key = need_topic(&root_kp.public_key);
     eprintln!("  published to DHT (best-effort)");
@@ -466,21 +483,21 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
                                                                         }
                                                                     }
                                                                 }
-                                                                let n_chunks = tasks.len();
-                                                                let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, false).await;
-                                                                eprintln!("  need-list republish complete: {n_chunks} chunks");
-                                                            }
-                                                            NeedEntry::Data { start, end } => {
-                                                                let s = start as usize;
-                                                                let e = (end as usize + 1)
-                                                                    .min(watcher_built.data_chunks.len());
-                                                                if s >= e { continue; }
-                                                                let tasks: Vec<PublishTask> = watcher_built.data_chunks[s..e]
-                                                                    .iter()
-                                                                    .map(|c| PublishTask::Data(c.clone()))
-                                                                    .collect();
-                                                                let n_chunks = tasks.len();
-                                                                let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, false).await;
+                                                let n_chunks = tasks.len();
+                                                let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, None).await;
+                                                eprintln!("  need-list republish complete: {n_chunks} chunks");
+                                            }
+                                            NeedEntry::Data { start, end } => {
+                                                let s = start as usize;
+                                                let e = (end as usize + 1)
+                                                    .min(watcher_built.data_chunks.len());
+                                                if s >= e { continue; }
+                                                let tasks: Vec<PublishTask> = watcher_built.data_chunks[s..e]
+                                                    .iter()
+                                                    .map(|c| PublishTask::Data(c.clone()))
+                                                    .collect();
+                                                let n_chunks = tasks.len();
+                                                let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, None).await;
                                                                 eprintln!("  need-list republish complete: {n_chunks} chunks");
                                                             }
                                                         }
@@ -534,7 +551,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
                 for chunk in &built.data_chunks {
                     tasks.push(PublishTask::Data(chunk.clone()));
                 }
-                if let Err(e) = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, false).await {
+                if let Err(e) = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, None).await {
                     eprintln!("  warning: refresh failed: {e}");
                 }
             }
@@ -544,10 +561,12 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
                         for peer in &result.peers {
                             if seen_acks.insert(peer.public_key) {
                                 pickup_count += 1;
+                                reporter.on_ack(pickup_count, &to_hex(&peer.public_key));
                                 eprintln!("  [ack] pickup #{pickup_count} detected");
                                 if let Some(max) = args.max_pickups {
                                     if pickup_count >= max {
                                         eprintln!("  max pickups reached, stopping");
+                                        reporter.finish().await;
                                         watcher_notify.notify_one();
                                         let _ = need_watcher.await;
                                         let _ = handle.destroy().await;
@@ -566,6 +585,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     eprintln!("  stopped refreshing; records expire in ~20m");
     watcher_notify.notify_one();
     let _ = need_watcher.await;
+    reporter.finish().await;
     let _ = handle.destroy().await;
     let _ = task.await;
     0

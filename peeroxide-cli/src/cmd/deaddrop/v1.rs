@@ -1,5 +1,9 @@
 use super::*;
 use crate::cmd::sigterm_recv;
+use crate::cmd::deaddrop::progress::{
+    state::{Phase, ProgressState},
+    reporter::ProgressReporter,
+};
 
 const MAX_CHUNKS: usize = 65535;
 const ROOT_HEADER_SIZE: usize = 39;
@@ -138,15 +142,26 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
 
     eprintln!("DD PUT {} chunks ({} bytes)", total_chunks, data.len());
 
-    if let Err(e) = publish_chunks(&handle, &chunks, max_concurrency, dispatch_delay, true).await {
+    let filename: Arc<str> = if args.file == "-" {
+        Arc::from("<stdin>")
+    } else {
+        Arc::from(args.file.as_str())
+    };
+    let state = ProgressState::new(Phase::Put, 1, filename);
+    state.set_length(data.len() as u64, 0, total_chunks as u32);
+    let mut reporter = ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
+    reporter.on_start();
+
+    if let Err(e) = publish_chunks(&handle, &chunks, max_concurrency, dispatch_delay, Some(state.clone())).await {
         eprintln!("error: publish failed: {e}");
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task.await;
         return 1;
     }
 
     let pickup_key = to_hex(&root_kp.public_key);
-    println!("{pickup_key}");
+    reporter.emit_initial_publish_complete(&pickup_key).await;
 
     eprintln!("  published to DHT (best-effort)");
     eprintln!("  pickup key printed to stdout");
@@ -175,7 +190,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
             } => break,
             _ = refresh_interval.tick() => {
                 eprintln!("  refreshing {} chunks...", chunks.len());
-                if let Err(e) = publish_chunks(&handle, &chunks, max_concurrency, dispatch_delay, true).await {
+                if let Err(e) = publish_chunks(&handle, &chunks, max_concurrency, dispatch_delay, None).await {
                     eprintln!("  warning: refresh failed: {e}");
                 }
             }
@@ -185,10 +200,12 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
                         for peer in &result.peers {
                             if seen_acks.insert(peer.public_key) {
                                 pickup_count += 1;
+                                reporter.on_ack(pickup_count, &to_hex(&peer.public_key));
                                 eprintln!("  [ack] pickup #{pickup_count} detected");
                                 if let Some(max) = args.max_pickups {
                                     if pickup_count >= max {
                                         eprintln!("  max pickups reached, stopping");
+                                        reporter.finish().await;
                                         let _ = handle.destroy().await;
                                         let _ = task.await;
                                         return 0;
@@ -203,6 +220,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     }
 
     eprintln!("  stopped refreshing; records expire in ~20m");
+    reporter.finish().await;
     let _ = handle.destroy().await;
     let _ = task.await;
     0

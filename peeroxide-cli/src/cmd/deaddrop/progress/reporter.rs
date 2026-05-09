@@ -46,6 +46,42 @@ impl ProgressReporter {
         }
     }
 
+    /// Convenience constructor: reads stderr TTY status and args flags, selects mode.
+    pub fn from_args(state: Arc<ProgressState>, no_progress: bool, json: bool) -> Self {
+        use std::io::IsTerminal;
+        let mode = crate::cmd::deaddrop::progress::mode::select(
+            std::io::stderr().is_terminal(),
+            no_progress,
+            json,
+        );
+        Self::new(mode, state)
+    }
+
+    /// Called after initial PUT publish completes.
+    /// - Bar/Log: stops the tick, then prints pickup key to stdout.
+    /// - Json: emits a `put_result` event (which includes the pickup key).
+    /// - Off: prints pickup key to stdout.
+    ///
+    /// Does NOT consume self — the reporter stays alive for the refresh/ack loop.
+    pub async fn emit_initial_publish_complete(&mut self, pickup_key: &str) {
+        match self {
+            Self::Bar(r) => {
+                r.finish_initial().await;
+                println!("{pickup_key}");
+            }
+            Self::Log(r) => {
+                r.finish_initial().await;
+                println!("{pickup_key}");
+            }
+            Self::Json { emitter, .. } => {
+                emitter.emit_put_result(pickup_key);
+            }
+            Self::Off => {
+                println!("{pickup_key}");
+            }
+        }
+    }
+
     /// Stop the tick task; leave `self` alive for the PUT refresh-loop
     /// handoff. For Json, emit a `done` event since there is no tick to
     /// stop. Off is a no-op.
@@ -143,6 +179,20 @@ mod tests {
         let s = ProgressState::new(Phase::Put, 1, Arc::<str>::from("test.bin"));
         s.set_length(1000, 0, 2);
         s
+    }
+
+    #[test]
+    fn from_args_off_when_no_progress() {
+        let state = make_state();
+        let r = ProgressReporter::from_args(state, true, false);
+        assert!(matches!(r, ProgressReporter::Off));
+    }
+
+    #[test]
+    fn from_args_json_when_json_flag() {
+        let state = make_state();
+        let r = ProgressReporter::from_args(state, false, true);
+        assert!(matches!(r, ProgressReporter::Json { .. }));
     }
 
     #[test]

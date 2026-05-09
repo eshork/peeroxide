@@ -6,17 +6,16 @@ use clap::{Args, Subcommand};
 use libudx::UdxRuntime;
 use peeroxide::KeyPair;
 use peeroxide_dht::hyperdht::{self, HyperDhtHandle, MutablePutResult};
-use progress::mode::select;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::io::IsTerminal;
 use tokio::signal;
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::config::ResolvedConfig;
 use super::{build_dht_config, to_hex};
+use crate::cmd::deaddrop::progress::state::ProgressState;
 
 const MAX_PAYLOAD: usize = 1000;
 
@@ -108,8 +107,6 @@ pub struct GetArgs {
 pub async fn run(cmd: DdCommands, cfg: &ResolvedConfig) -> i32 {
     match cmd {
         DdCommands::Put(args) => {
-            let _mode = select(std::io::stderr().is_terminal(), args.no_progress, args.json);
-            eprintln!("DEBUG: progress mode = {:?}", _mode);
             if args.v1 {
                 v1::run_put(&args, cfg).await
             } else {
@@ -125,9 +122,6 @@ async fn run_get(args: GetArgs, cfg: &ResolvedConfig) -> i32 {
         eprintln!("error: --timeout must be greater than 0");
         return 1;
     }
-
-    let _mode = select(std::io::stderr().is_terminal(), args.no_progress, args.json);
-    eprintln!("DEBUG: progress mode = {:?}", _mode);
 
     let root_public_key = if let Some(ref phrase) = args.passphrase {
         if phrase.is_empty() {
@@ -344,7 +338,7 @@ async fn publish_chunks(
     chunks: &[ChunkData],
     max_concurrency: Option<usize>,
     dispatch_delay: Option<Duration>,
-    show_progress: bool,
+    progress: Option<Arc<ProgressState>>,
 ) -> Result<(), String> {
     let initial_concurrency = 4usize;
     let sem = Arc::new(Semaphore::new(initial_concurrency));
@@ -352,10 +346,9 @@ async fn publish_chunks(
     let permits_to_forget = Arc::new(AtomicUsize::new(0));
     let controller = Arc::new(Mutex::new(AimdController::new(initial_concurrency, max_concurrency)));
 
-    let total = chunks.len();
-    let mut completed = 0usize;
-
     let mut handles: Vec<tokio::task::JoinHandle<Result<MutablePutResult, String>>> = Vec::new();
+    let mut chunk_byte_sizes: Vec<usize> = Vec::new();
+
     for chunk in chunks {
         let permit = loop {
             let p = sem.clone().acquire_owned().await.unwrap();
@@ -370,6 +363,7 @@ async fn publish_chunks(
         let h = handle.clone();
         let kp = chunk.keypair.clone();
         let data = chunk.encoded.clone();
+        let chunk_size = data.len();
 
         let seq = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -413,6 +407,7 @@ async fn publish_chunks(
             drop(permit);
             Ok(put_result)
         }));
+        chunk_byte_sizes.push(chunk_size);
 
         if let Some(delay) = dispatch_delay {
             tokio::time::sleep(delay).await;
@@ -421,12 +416,12 @@ async fn publish_chunks(
         let mut i = 0;
         while i < handles.len() {
             if handles[i].is_finished() {
+                let chunk_bytes = chunk_byte_sizes.swap_remove(i);
                 let h = handles.swap_remove(i);
                 match h.await {
                     Ok(Ok(_)) => {
-                        completed += 1;
-                        if show_progress {
-                            eprintln!("  published chunk {completed}/{total}");
+                        if let Some(ref state) = progress {
+                            state.inc_data(chunk_bytes as u64);
                         }
                     }
                     Ok(Err(e)) => return Err(e),
@@ -438,12 +433,11 @@ async fn publish_chunks(
         }
     }
 
-    for h in handles {
+    for (h, chunk_bytes) in handles.into_iter().zip(chunk_byte_sizes.into_iter()) {
         match h.await {
             Ok(Ok(_)) => {
-                completed += 1;
-                if show_progress {
-                    eprintln!("  published chunk {completed}/{total}");
+                if let Some(ref state) = progress {
+                    state.inc_data(chunk_bytes as u64);
                 }
             }
             Ok(Err(e)) => return Err(e),
@@ -459,7 +453,7 @@ pub(crate) async fn publish_tasks(
     tasks: Vec<PublishTask>,
     max_concurrency: Option<usize>,
     dispatch_delay: Option<Duration>,
-    show_progress: bool,
+    progress: Option<Arc<ProgressState>>,
 ) -> Result<(), String> {
     let initial_concurrency = 4usize;
     let sem = Arc::new(Semaphore::new(initial_concurrency));
@@ -517,11 +511,6 @@ pub(crate) async fn publish_tasks(
         merged
     };
 
-    let index_total = tasks.iter().filter(|t| matches!(t, PublishTask::Index(_))).count();
-    let data_total = tasks.iter().filter(|t| matches!(t, PublishTask::Data(_))).count();
-    let mut index_published = 0usize;
-    let mut data_published = 0usize;
-
     let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<Result<bool, String>>();
     let mut spawned_count = 0usize;
     let mut first_index_error: Option<String> = None;
@@ -553,10 +542,16 @@ pub(crate) async fn publish_tasks(
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
+                let progress_clone = progress.clone();
                 tokio::spawn(async move {
                     let result = h.mutable_put(&kp, &data, seq).await;
                     let (degraded, send_result) = match result {
-                        Ok(put_result) => (put_result.commit_timeouts > 0, Ok(true)),
+                        Ok(put_result) => {
+                            if let Some(ref state) = progress_clone {
+                                state.inc_index();
+                            }
+                            (put_result.commit_timeouts > 0, Ok(true))
+                        }
                         Err(e) => (true, Err(format!("mutable_put failed: {e}"))),
                     };
                     let new_target = {
@@ -580,11 +575,20 @@ pub(crate) async fn publish_tasks(
                 });
             }
             PublishTask::Data(bytes) => {
+                let data_len = bytes.len();
+                let progress_clone = progress.clone();
                 tokio::spawn(async move {
                     let result = h.immutable_put(&bytes).await;
                     let degraded = result.is_err();
-                    if let Err(e) = result {
-                        eprintln!("  warning: data chunk publish: {e}");
+                    match result {
+                        Ok(_) => {
+                            if let Some(ref state) = progress_clone {
+                                state.inc_data(data_len as u64);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("  warning: data chunk publish: {e}");
+                        }
                     }
                     let new_target = {
                         let mut ctrl = controller_inner.lock().await;
@@ -614,21 +618,9 @@ pub(crate) async fn publish_tasks(
             tokio::time::sleep(delay).await;
         }
 
-        // Drain any completed tasks for real-time progress output
         while let Ok(msg) = result_rx.try_recv() {
             match msg {
-                Ok(true) => {
-                    index_published += 1;
-                    if show_progress {
-                        eprintln!("  published index {index_published}/{index_total}");
-                    }
-                }
-                Ok(false) => {
-                    data_published += 1;
-                    if show_progress {
-                        eprintln!("  published data {data_published}/{data_total}");
-                    }
-                }
+                Ok(_) => {}
                 Err(e) => {
                     if first_index_error.is_none() {
                         first_index_error = Some(e);
@@ -641,22 +633,9 @@ pub(crate) async fn publish_tasks(
 
     drop(result_tx);
 
-    // Final drain — wait for remaining tasks to complete
     while drained < spawned_count {
         match result_rx.recv().await {
-            Some(Ok(is_index)) => {
-                if is_index {
-                    index_published += 1;
-                    if show_progress {
-                        eprintln!("  published index {index_published}/{index_total}");
-                    }
-                } else {
-                    data_published += 1;
-                    if show_progress {
-                        eprintln!("  published data {data_published}/{data_total}");
-                    }
-                }
-            }
+            Some(Ok(_)) => {}
             Some(Err(e)) => {
                 if first_index_error.is_none() {
                     first_index_error = Some(e);
