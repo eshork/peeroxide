@@ -1203,4 +1203,48 @@ mod tests {
         let result = decode_need_list(&data);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_compute_need_entries_empty() {
+        let result = super::compute_need_entries(&[]);
+        assert_eq!(result, vec![]);
+    }
+
+    #[test]
+    fn test_compute_need_entries_single() {
+        let result = super::compute_need_entries(&[42]);
+        assert_eq!(result, vec![NeedEntry::Data { start: 42, end: 42 }]);
+    }
+
+    #[test]
+    fn test_compute_need_entries_contiguous() {
+        let result = super::compute_need_entries(&[1, 2, 3, 4]);
+        assert_eq!(result, vec![NeedEntry::Data { start: 1, end: 4 }]);
+    }
+
+    #[test]
+    fn test_compute_need_entries_disjoint() {
+        let result = super::compute_need_entries(&[1, 3, 5]);
+        assert_eq!(
+            result,
+            vec![
+                NeedEntry::Data { start: 1, end: 1 },
+                NeedEntry::Data { start: 3, end: 3 },
+                NeedEntry::Data { start: 5, end: 5 },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compute_need_entries_mixed() {
+        let result = super::compute_need_entries(&[1, 2, 5, 7, 8, 9]);
+        assert_eq!(
+            result,
+            vec![
+                NeedEntry::Data { start: 1, end: 2 },
+                NeedEntry::Data { start: 5, end: 5 },
+                NeedEntry::Data { start: 7, end: 9 },
+            ]
+        );
+    }
 }
