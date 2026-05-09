@@ -1,3 +1,4 @@
+pub mod bar;
 pub mod format;
 pub mod events;
 pub mod mode;
