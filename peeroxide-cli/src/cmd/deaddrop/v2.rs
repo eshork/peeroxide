@@ -587,10 +587,12 @@ pub async fn get_from_root(
     }
 
     let expected_data_count = compute_data_chunk_count(file_size as usize);
+    let expected_index_count = compute_index_chain_length(expected_data_count);
     eprintln!(
-        "DD GET v2: file_size={}, expected {} data chunks",
-        file_size, expected_data_count
+        "DD GET v2: file_size={}, expected {} index + {} data chunks",
+        file_size, expected_index_count, expected_data_count
     );
+    eprintln!("  fetched index 1/{expected_index_count}");
 
     let need_kp = KeyPair::generate();
     let nt = need_topic(&root_pk);
@@ -619,6 +621,12 @@ pub async fn get_from_root(
         });
         spawned_count += 1;
     }
+
+    let mut fetched_indexes: usize = 1; // root already fetched
+    let mut fetched_data: usize = 0;
+    let mut drained: usize = 0;
+    let mut results: std::collections::HashMap<u32, Vec<u8>> =
+        std::collections::HashMap::new();
 
     while next_pk != [0u8; 32] {
         if !seen_index_keys.insert(next_pk) {
@@ -678,6 +686,16 @@ pub async fn get_from_root(
             idx_offset += 32;
         }
         index_pos += 1;
+        fetched_indexes += 1;
+        eprintln!("  fetched index {fetched_indexes}/{expected_index_count}");
+        while let Ok((pos, opt)) = result_rx.try_recv() {
+            if let Some(data) = opt {
+                results.insert(pos, data);
+            }
+            fetched_data += 1;
+            drained += 1;
+            eprintln!("  fetched data {fetched_data}/{expected_data_count}");
+        }
     }
 
     if all_data_hashes.len() != expected_data_count {
@@ -692,11 +710,17 @@ pub async fn get_from_root(
     }
 
     drop(result_tx);
-    let mut results: std::collections::HashMap<u32, Vec<u8>> =
-        std::collections::HashMap::new();
-    for _ in 0..spawned_count {
-        if let Some((pos, Some(data))) = result_rx.recv().await {
-            results.insert(pos, data);
+    while drained < spawned_count {
+        match result_rx.recv().await {
+            Some((pos, opt)) => {
+                if let Some(data) = opt {
+                    results.insert(pos, data);
+                }
+                fetched_data += 1;
+                drained += 1;
+                eprintln!("  fetched data {fetched_data}/{expected_data_count}");
+            }
+            None => break,
         }
     }
 
