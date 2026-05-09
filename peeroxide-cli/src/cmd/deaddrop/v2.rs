@@ -611,8 +611,29 @@ pub async fn get_from_root(
 
     let need_kp = KeyPair::generate();
     let nt = need_topic(&root_pk);
-    let _ = handle.announce(nt, &need_kp, &[]).await;
     let mut need_seq: u64 = 0;
+
+    // Periodic re-announce task — keeps the need-topic DHT record alive.
+    let reannounce_notify = Arc::new(tokio::sync::Notify::new());
+    let reannounce_notify_task = reannounce_notify.clone();
+    let need_kp_reannounce = need_kp.clone();
+    let handle_reannounce = handle.clone();
+    let reannounce_handle = tokio::spawn(async move {
+        // Initial announce (immediately, replaces the removed one-shot call)
+        if let Err(e) = handle_reannounce.announce(nt, &need_kp_reannounce, &[]).await {
+            eprintln!("  warning: re-announce failed: {e}");
+        }
+        loop {
+            tokio::select! {
+                _ = reannounce_notify_task.notified() => break,
+                _ = tokio::time::sleep(NEED_REANNOUNCE_INTERVAL) => {
+                    if let Err(e) = handle_reannounce.announce(nt, &need_kp_reannounce, &[]).await {
+                        eprintln!("  warning: re-announce failed: {e}");
+                    }
+                }
+            }
+        }
+    });
 
     let sem = Arc::new(Semaphore::new(PARALLEL_FETCH_CAP));
     let (result_tx, mut result_rx) =
@@ -648,6 +669,7 @@ pub async fn get_from_root(
             eprintln!("error: loop detected in index chain");
             need_seq += 1;
             let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
+            reannounce_notify.notify_one();
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -665,6 +687,7 @@ pub async fn get_from_root(
                     let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
                     need_seq += 1;
                     let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
+                    reannounce_notify.notify_one();
                     let _ = handle.destroy().await;
                     let _ = task_handle.await;
                     return 1;
@@ -673,6 +696,7 @@ pub async fn get_from_root(
 
         if idx_data.len() < NON_ROOT_INDEX_HEADER || idx_data[0] != VERSION {
             eprintln!("error: invalid non-root index chunk");
+            reannounce_notify.notify_one();
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -719,6 +743,7 @@ pub async fn get_from_root(
             all_data_hashes.len(),
             expected_data_count
         );
+        reannounce_notify.notify_one();
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -757,6 +782,7 @@ pub async fn get_from_root(
             eprintln!("error: timed out waiting for {} missing chunks", missing.len());
             need_seq += 1;
             let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
+            reannounce_notify.notify_one();
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -821,6 +847,7 @@ pub async fn get_from_root(
             Some(chunk) => {
                 if chunk.is_empty() || chunk[0] != VERSION {
                     eprintln!("error: invalid data chunk at position {pos}");
+                    reannounce_notify.notify_one();
                     let _ = handle.destroy().await;
                     let _ = task_handle.await;
                     return 1;
@@ -829,6 +856,7 @@ pub async fn get_from_root(
             }
             None => {
                 eprintln!("error: missing data chunk at position {pos}");
+                reannounce_notify.notify_one();
                 let _ = handle.destroy().await;
                 let _ = task_handle.await;
                 return 1;
@@ -842,6 +870,7 @@ pub async fn get_from_root(
             payload_data.len(),
             file_size
         );
+        reannounce_notify.notify_one();
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -852,6 +881,7 @@ pub async fn get_from_root(
         eprintln!(
             "error: CRC mismatch (expected {stored_crc:08x}, got {computed_crc:08x})"
         );
+        reannounce_notify.notify_one();
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -867,6 +897,7 @@ pub async fn get_from_root(
 
         if let Err(e) = tokio::fs::write(&temp_path, &payload_data).await {
             eprintln!("error: failed to write temp file: {e}");
+            reannounce_notify.notify_one();
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -875,6 +906,7 @@ pub async fn get_from_root(
         if let Err(e) = tokio::fs::rename(&temp_path, output_path).await {
             let _ = tokio::fs::remove_file(&temp_path).await;
             eprintln!("error: failed to rename: {e}");
+            reannounce_notify.notify_one();
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -885,6 +917,7 @@ pub async fn get_from_root(
         use std::io::Write;
         if let Err(e) = std::io::stdout().write_all(&payload_data) {
             eprintln!("error: failed to write to stdout: {e}");
+            reannounce_notify.notify_one();
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -902,6 +935,8 @@ pub async fn get_from_root(
     }
 
     eprintln!("  done");
+    reannounce_notify.notify_one();
+    let _ = reannounce_handle.await;
     let _ = handle.destroy().await;
     let _ = task_handle.await;
     0
