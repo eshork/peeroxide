@@ -392,7 +392,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let need_topic_key = need_topic(&root_kp.public_key);
     eprintln!("  published to DHT (best-effort)");
     eprintln!("  pickup key printed to stdout");
-    eprintln!("  refreshing every {}s, monitoring for acks...", args.refresh_interval);
+    eprintln!("  refreshing every {}s, polling needs every {}s, monitoring for acks every 30s...", args.refresh_interval, NEED_POLL_INTERVAL.as_secs());
 
     let ack_topic = peeroxide::discovery_key(&[root_kp.public_key.as_slice(), b"ack"].concat());
     let mut seen_acks: HashSet<[u8; 32]> = HashSet::new();
@@ -414,65 +414,95 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let watcher_max_concurrency = max_concurrency;
     let watcher_dispatch_delay = dispatch_delay;
     let need_watcher = tokio::spawn(async move {
+        eprintln!("  need-list watcher started (poll every {}s)", NEED_POLL_INTERVAL.as_secs());
+        let mut seen_peers: HashSet<[u8; 32]> = HashSet::new();
+        let mut lookup_was_err = false;
         loop {
             tokio::select! {
                 _ = watcher_notify_task.notified() => break,
                 _ = tokio::time::sleep(NEED_POLL_INTERVAL) => {
-                    if let Ok(need_results) = watcher_handle.lookup(watcher_need_topic_key).await {
-                        for result in &need_results {
-                            for peer in &result.peers {
-                                if let Ok(Some(mget)) =
-                                    watcher_handle.mutable_get(&peer.public_key, 0).await
-                                {
-                                    if let Ok(needs) = decode_need_list(&mget.value) {
-                                        for need in needs {
-                                            match need {
-                                                NeedEntry::Index { start, end } => {
-                                                    let s = start as usize;
-                                                    let e = (end as usize + 1)
-                                                        .min(watcher_built.index_chunks.len());
-                                                    if s >= e { continue; }
-                                                    let mut tasks: Vec<PublishTask> = Vec::new();
-                                                    for chunk in &watcher_built.index_chunks[s..e] {
-                                                        tasks.push(PublishTask::Index(chunk.clone()));
-                                                    }
-                                                    for j in s..e {
-                                                        let data_start = if j == 0 {
-                                                            0
-                                                        } else {
-                                                            PTRS_PER_ROOT
-                                                                + (j - 1) * PTRS_PER_NON_ROOT
-                                                        };
-                                                        let data_end = if j == 0 {
-                                                            PTRS_PER_ROOT
-                                                        } else {
-                                                            data_start + PTRS_PER_NON_ROOT
-                                                        }.min(watcher_built.data_chunks.len());
-                                                        if data_start < data_end {
-                                                            for chunk in
-                                                                &watcher_built.data_chunks[data_start..data_end]
-                                                            {
-                                                                tasks.push(PublishTask::Data(chunk.clone()));
+                    match watcher_handle.lookup(watcher_need_topic_key).await {
+                        Ok(need_results) => {
+                            lookup_was_err = false;
+                            for result in &need_results {
+                                for peer in &result.peers {
+                                    if seen_peers.insert(peer.public_key) {
+                                        eprintln!("  need-list peer discovered: {} (poll cycle)", &to_hex(&peer.public_key)[..8]);
+                                    }
+                                    match watcher_handle.mutable_get(&peer.public_key, 0).await {
+                                        Ok(Some(mget)) => {
+                                            match decode_need_list(&mget.value) {
+                                                Ok(needs) => {
+                                                    let n_entries = needs.len();
+                                                    eprintln!("  need-list received: {n_entries} entries from {}, republishing", &to_hex(&peer.public_key)[..8]);
+                                                    for need in needs {
+                                                        match need {
+                                                            NeedEntry::Index { start, end } => {
+                                                                let s = start as usize;
+                                                                let e = (end as usize + 1)
+                                                                    .min(watcher_built.index_chunks.len());
+                                                                if s >= e { continue; }
+                                                                let mut tasks: Vec<PublishTask> = Vec::new();
+                                                                for chunk in &watcher_built.index_chunks[s..e] {
+                                                                    tasks.push(PublishTask::Index(chunk.clone()));
+                                                                }
+                                                                for j in s..e {
+                                                                    let data_start = if j == 0 {
+                                                                        0
+                                                                    } else {
+                                                                        PTRS_PER_ROOT
+                                                                            + (j - 1) * PTRS_PER_NON_ROOT
+                                                                    };
+                                                                    let data_end = if j == 0 {
+                                                                        PTRS_PER_ROOT
+                                                                    } else {
+                                                                        data_start + PTRS_PER_NON_ROOT
+                                                                    }.min(watcher_built.data_chunks.len());
+                                                                    if data_start < data_end {
+                                                                        for chunk in
+                                                                            &watcher_built.data_chunks[data_start..data_end]
+                                                                        {
+                                                                            tasks.push(PublishTask::Data(chunk.clone()));
+                                                                        }
+                                                                    }
+                                                                }
+                                                                let n_chunks = tasks.len();
+                                                                let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, false).await;
+                                                                eprintln!("  need-list republish complete: {n_chunks} chunks");
+                                                            }
+                                                            NeedEntry::Data { start, end } => {
+                                                                let s = start as usize;
+                                                                let e = (end as usize + 1)
+                                                                    .min(watcher_built.data_chunks.len());
+                                                                if s >= e { continue; }
+                                                                let tasks: Vec<PublishTask> = watcher_built.data_chunks[s..e]
+                                                                    .iter()
+                                                                    .map(|c| PublishTask::Data(c.clone()))
+                                                                    .collect();
+                                                                let n_chunks = tasks.len();
+                                                                let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, false).await;
+                                                                eprintln!("  need-list republish complete: {n_chunks} chunks");
                                                             }
                                                         }
                                                     }
-                                                    let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, false).await;
                                                 }
-                                                NeedEntry::Data { start, end } => {
-                                                    let s = start as usize;
-                                                    let e = (end as usize + 1)
-                                                        .min(watcher_built.data_chunks.len());
-                                                    if s >= e { continue; }
-                                                    let tasks: Vec<PublishTask> = watcher_built.data_chunks[s..e]
-                                                        .iter()
-                                                        .map(|c| PublishTask::Data(c.clone()))
-                                                        .collect();
-                                                    let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, false).await;
+                                                Err(e) => {
+                                                    eprintln!("  warning: malformed need-list from {}: {e}", &to_hex(&peer.public_key)[..8]);
                                                 }
                                             }
                                         }
+                                        Ok(None) => {}
+                                        Err(e) => {
+                                            eprintln!("  warning: need-list mutable_get failed for {}: {e}", &to_hex(&peer.public_key)[..8]);
+                                        }
                                     }
                                 }
+                            }
+                        }
+                        Err(e) => {
+                            if !lookup_was_err {
+                                eprintln!("  warning: need-topic lookup failed: {e}");
+                                lookup_was_err = true;
                             }
                         }
                     }
