@@ -216,7 +216,23 @@ async fn run_get(args: GetArgs, cfg: &ResolvedConfig) -> i32 {
             reporter.on_start();
             v1::get_from_root(root_data, root_public_key, handle, task_handle, &args, state, reporter).await
         }
-        0x02 => v2::get_from_root(root_data, root_public_key, handle, task_handle, &args).await,
+        0x02 => {
+            let get_filename: Arc<str> = match args.output.as_deref() {
+                None => Arc::from("<stdout>"),
+                Some(p) => {
+                    let base = std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(p);
+                    Arc::from(base)
+                }
+            };
+            let state = ProgressState::new(Phase::Get, 0x02, get_filename);
+            let reporter =
+                ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
+            reporter.on_start();
+            v2::get_from_root(root_data, root_public_key, handle, task_handle, &args, state, reporter).await
+        }
         v => {
             eprintln!("error: unknown dead drop version 0x{v:02x}");
             let _ = handle.destroy().await;

@@ -642,16 +642,20 @@ pub async fn get_from_root(
     handle: HyperDhtHandle,
     task_handle: tokio::task::JoinHandle<Result<(), peeroxide_dht::hyperdht::HyperDhtError>>,
     args: &GetArgs,
+    progress: Arc<ProgressState>,
+    reporter: ProgressReporter,
 ) -> i32 {
     let chunk_timeout = Duration::from_secs(args.timeout);
 
     if root_data.len() < ROOT_INDEX_HEADER {
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
     }
     if root_data[0] != VERSION {
         eprintln!("error: unexpected version byte 0x{:02x}", root_data[0]);
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -673,11 +677,12 @@ pub async fn get_from_root(
 
     let expected_data_count = compute_data_chunk_count(file_size as usize);
     let expected_index_count = compute_index_chain_length(expected_data_count);
-    eprintln!(
-        "DD GET v2: file_size={}, expected {} index + {} data chunks",
-        file_size, expected_index_count, expected_data_count
+    progress.set_length(
+        file_size as u64,
+        expected_index_count as u32,
+        expected_data_count as u32,
     );
-    eprintln!("  fetched index 1/{expected_index_count}");
+    progress.inc_index();
 
     let need_kp = KeyPair::generate();
     let nt = need_topic(&root_pk);
@@ -746,8 +751,6 @@ pub async fn get_from_root(
         spawned_count += 1;
     }
 
-    let mut fetched_indexes: usize = 1; // root already fetched
-    let mut fetched_data: usize = 0;
     let mut drained: usize = 0;
     let mut results: std::collections::HashMap<u32, Vec<u8>> =
         std::collections::HashMap::new();
@@ -758,6 +761,7 @@ pub async fn get_from_root(
             need_seq += 1;
             let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
             reannounce_notify.notify_one();
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -776,6 +780,7 @@ pub async fn get_from_root(
                     need_seq += 1;
                     let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
                     reannounce_notify.notify_one();
+                    reporter.finish().await;
                     let _ = handle.destroy().await;
                     let _ = task_handle.await;
                     return 1;
@@ -785,6 +790,7 @@ pub async fn get_from_root(
         if idx_data.len() < NON_ROOT_INDEX_HEADER || idx_data[0] != VERSION {
             eprintln!("error: invalid non-root index chunk");
             reannounce_notify.notify_one();
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -813,15 +819,14 @@ pub async fn get_from_root(
             idx_offset += 32;
         }
         index_pos += 1;
-        fetched_indexes += 1;
-        eprintln!("  fetched index {fetched_indexes}/{expected_index_count}");
+        progress.inc_index();
         while let Ok((pos, opt)) = result_rx.try_recv() {
             if let Some(data) = opt {
+                let chunk_len = data.len();
                 results.insert(pos, data);
+                progress.inc_data(chunk_len as u64);
             }
-            fetched_data += 1;
             drained += 1;
-            eprintln!("  fetched data {fetched_data}/{expected_data_count}");
         }
     }
 
@@ -832,6 +837,7 @@ pub async fn get_from_root(
             expected_data_count
         );
         reannounce_notify.notify_one();
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -842,11 +848,11 @@ pub async fn get_from_root(
         match result_rx.recv().await {
             Some((pos, opt)) => {
                 if let Some(data) = opt {
+                    let chunk_len = data.len();
                     results.insert(pos, data);
+                    progress.inc_data(chunk_len as u64);
                 }
-                fetched_data += 1;
                 drained += 1;
-                eprintln!("  fetched data {fetched_data}/{expected_data_count}");
             }
             None => break,
         }
@@ -873,6 +879,7 @@ pub async fn get_from_root(
             need_seq += 1;
             let _ = handle.mutable_put(&need_kp, &[], need_seq).await;
             reannounce_notify.notify_one();
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -902,7 +909,9 @@ pub async fn get_from_root(
         }
         for jh in retry_handles {
             if let Ok((pos, Some(data))) = jh.await {
+                let chunk_len = data.len();
                 results.insert(pos, data);
+                progress.inc_data(chunk_len as u64);
                 new_data += 1;
             }
         }
@@ -946,6 +955,7 @@ pub async fn get_from_root(
                 if chunk.is_empty() || chunk[0] != VERSION {
                     eprintln!("error: invalid data chunk at position {pos}");
                     reannounce_notify.notify_one();
+                    reporter.finish().await;
                     let _ = handle.destroy().await;
                     let _ = task_handle.await;
                     return 1;
@@ -955,6 +965,7 @@ pub async fn get_from_root(
             None => {
                 eprintln!("error: missing data chunk at position {pos}");
                 reannounce_notify.notify_one();
+                reporter.finish().await;
                 let _ = handle.destroy().await;
                 let _ = task_handle.await;
                 return 1;
@@ -969,6 +980,7 @@ pub async fn get_from_root(
             file_size
         );
         reannounce_notify.notify_one();
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -980,6 +992,7 @@ pub async fn get_from_root(
             "error: CRC mismatch (expected {stored_crc:08x}, got {computed_crc:08x})"
         );
         reannounce_notify.notify_one();
+        reporter.finish().await;
         let _ = handle.destroy().await;
         let _ = task_handle.await;
         return 1;
@@ -996,6 +1009,7 @@ pub async fn get_from_root(
         if let Err(e) = tokio::fs::write(&temp_path, &payload_data).await {
             eprintln!("error: failed to write temp file: {e}");
             reannounce_notify.notify_one();
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -1005,6 +1019,7 @@ pub async fn get_from_root(
             let _ = tokio::fs::remove_file(&temp_path).await;
             eprintln!("error: failed to rename: {e}");
             reannounce_notify.notify_one();
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -1016,6 +1031,7 @@ pub async fn get_from_root(
         if let Err(e) = std::io::stdout().write_all(&payload_data) {
             eprintln!("error: failed to write to stdout: {e}");
             reannounce_notify.notify_one();
+            reporter.finish().await;
             let _ = handle.destroy().await;
             let _ = task_handle.await;
             return 1;
@@ -1033,6 +1049,9 @@ pub async fn get_from_root(
     }
 
     eprintln!("  done");
+    let crc_hex = format!("{computed_crc:08x}");
+    reporter.on_get_result(payload_data.len() as u64, &crc_hex, args.output.as_deref());
+    reporter.finish().await;
     reannounce_notify.notify_one();
     let _ = reannounce_handle.await;
     let _ = handle.destroy().await;
