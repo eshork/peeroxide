@@ -140,8 +140,6 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
         (None, None)
     };
 
-    eprintln!("DD PUT {} chunks ({} bytes)", total_chunks, data.len());
-
     let filename: Arc<str> = if args.file == "-" {
         Arc::from("<stdin>")
     } else {

@@ -301,7 +301,6 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
 
     let root_kp = KeyPair::from_seed(root_seed);
 
-    eprintln!("  chunking {} bytes...", data.len());
     let built = match build_v2_chunks(&data, &root_seed) {
         Ok(b) => Arc::new(b),
         Err(e) => {
@@ -349,13 +348,6 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
             (None, None)
         };
 
-    eprintln!(
-        "DD PUT v2: {} index chunks, {} data chunks ({} bytes)",
-        built.index_chunks.len(),
-        built.data_chunks.len(),
-        data.len()
-    );
-
     let filename: Arc<str> = if args.file == "-" {
         Arc::from("<stdin>")
     } else {
@@ -379,7 +371,6 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     for chunk in built.data_chunks.iter().cloned() {
         tasks.push(PublishTask::Data(chunk));
     }
-    eprintln!("  publishing {} chunks to DHT...", tasks.len());
     let publish_fut = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, Some(state.clone()));
     tokio::pin!(publish_fut);
     tokio::select! {
@@ -862,12 +853,6 @@ pub async fn get_from_root(
         }
     }
 
-    eprintln!(
-        "  fetched {}/{} data chunks",
-        results.len(),
-        expected_data_count
-    );
-
     let mut last_published_missing: Option<Vec<u32>> = None;
     let mut need_list_topic_logged = false;
     let retry_deadline = tokio::time::Instant::now() + chunk_timeout;
@@ -1001,8 +986,6 @@ pub async fn get_from_root(
         let _ = task_handle.await;
         return 1;
     }
-
-    eprintln!("  reassembled {} bytes", payload_data.len());
 
     if let Some(ref output_path) = args.output {
         let dir = std::path::Path::new(output_path)
