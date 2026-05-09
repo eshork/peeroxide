@@ -299,7 +299,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
 
     eprintln!("  chunking {} bytes...", data.len());
     let built = match build_v2_chunks(&data, &root_seed) {
-        Ok(b) => b,
+        Ok(b) => Arc::new(b),
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
@@ -406,6 +406,81 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let mut ack_interval = tokio::time::interval(Duration::from_secs(30));
     ack_interval.tick().await;
 
+    let watcher_notify = Arc::new(tokio::sync::Notify::new());
+    let watcher_notify_task = watcher_notify.clone();
+    let watcher_handle = handle.clone();
+    let watcher_built = built.clone();
+    let watcher_need_topic_key = need_topic_key;
+    let watcher_max_concurrency = max_concurrency;
+    let watcher_dispatch_delay = dispatch_delay;
+    let need_watcher = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = watcher_notify_task.notified() => break,
+                _ = tokio::time::sleep(NEED_POLL_INTERVAL) => {
+                    if let Ok(need_results) = watcher_handle.lookup(watcher_need_topic_key).await {
+                        for result in &need_results {
+                            for peer in &result.peers {
+                                if let Ok(Some(mget)) =
+                                    watcher_handle.mutable_get(&peer.public_key, 0).await
+                                {
+                                    if let Ok(needs) = decode_need_list(&mget.value) {
+                                        for need in needs {
+                                            match need {
+                                                NeedEntry::Index { start, end } => {
+                                                    let s = start as usize;
+                                                    let e = (end as usize + 1)
+                                                        .min(watcher_built.index_chunks.len());
+                                                    if s >= e { continue; }
+                                                    let mut tasks: Vec<PublishTask> = Vec::new();
+                                                    for chunk in &watcher_built.index_chunks[s..e] {
+                                                        tasks.push(PublishTask::Index(chunk.clone()));
+                                                    }
+                                                    for j in s..e {
+                                                        let data_start = if j == 0 {
+                                                            0
+                                                        } else {
+                                                            PTRS_PER_ROOT
+                                                                + (j - 1) * PTRS_PER_NON_ROOT
+                                                        };
+                                                        let data_end = if j == 0 {
+                                                            PTRS_PER_ROOT
+                                                        } else {
+                                                            data_start + PTRS_PER_NON_ROOT
+                                                        }.min(watcher_built.data_chunks.len());
+                                                        if data_start < data_end {
+                                                            for chunk in
+                                                                &watcher_built.data_chunks[data_start..data_end]
+                                                            {
+                                                                tasks.push(PublishTask::Data(chunk.clone()));
+                                                            }
+                                                        }
+                                                    }
+                                                    let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, false).await;
+                                                }
+                                                NeedEntry::Data { start, end } => {
+                                                    let s = start as usize;
+                                                    let e = (end as usize + 1)
+                                                        .min(watcher_built.data_chunks.len());
+                                                    if s >= e { continue; }
+                                                    let tasks: Vec<PublishTask> = watcher_built.data_chunks[s..e]
+                                                        .iter()
+                                                        .map(|c| PublishTask::Data(c.clone()))
+                                                        .collect();
+                                                    let _ = publish_tasks(&watcher_handle, tasks, watcher_max_concurrency, watcher_dispatch_delay, false).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     loop {
         tokio::select! {
             _ = signal::ctrl_c() => break,
@@ -443,68 +518,11 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
                                 if let Some(max) = args.max_pickups {
                                     if pickup_count >= max {
                                         eprintln!("  max pickups reached, stopping");
+                                        watcher_notify.notify_one();
+                                        let _ = need_watcher.await;
                                         let _ = handle.destroy().await;
                                         let _ = task.await;
                                         return 0;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let Ok(need_results) = handle.lookup(need_topic_key).await {
-                    for result in &need_results {
-                        for peer in &result.peers {
-                            if let Ok(Some(mget)) =
-                                handle.mutable_get(&peer.public_key, 0).await
-                            {
-                                if let Ok(needs) = decode_need_list(&mget.value) {
-                                    for need in needs {
-                                        match need {
-                                            NeedEntry::Index { start, end } => {
-                                                let s = start as usize;
-                                                let e = (end as usize + 1)
-                                                    .min(built.index_chunks.len());
-                                                if s >= e { continue; }
-                                                let mut tasks: Vec<PublishTask> = Vec::new();
-                                                for chunk in &built.index_chunks[s..e] {
-                                                    tasks.push(PublishTask::Index(chunk.clone()));
-                                                }
-                                                for j in s..e {
-                                                    let data_start = if j == 0 {
-                                                        0
-                                                    } else {
-                                                        PTRS_PER_ROOT
-                                                            + (j - 1) * PTRS_PER_NON_ROOT
-                                                    };
-                                                    let data_end = if j == 0 {
-                                                        PTRS_PER_ROOT
-                                                    } else {
-                                                        data_start + PTRS_PER_NON_ROOT
-                                                    }.min(built.data_chunks.len());
-                                                    if data_start < data_end {
-                                                        for chunk in
-                                                            &built.data_chunks[data_start..data_end]
-                                                        {
-                                                            tasks.push(PublishTask::Data(chunk.clone()));
-                                                        }
-                                                    }
-                                                }
-                                                let _ = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, false).await;
-                                            }
-                                            NeedEntry::Data { start, end } => {
-                                                let s = start as usize;
-                                                let e = (end as usize + 1)
-                                                    .min(built.data_chunks.len());
-                                                if s >= e { continue; }
-                                                let tasks: Vec<PublishTask> = built.data_chunks[s..e]
-                                                    .iter()
-                                                    .map(|c| PublishTask::Data(c.clone()))
-                                                    .collect();
-                                                let _ = publish_tasks(&handle, tasks, max_concurrency, dispatch_delay, false).await;
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -516,6 +534,8 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     }
 
     eprintln!("  stopped refreshing; records expire in ~20m");
+    watcher_notify.notify_one();
+    let _ = need_watcher.await;
     let _ = handle.destroy().await;
     let _ = task.await;
     0
