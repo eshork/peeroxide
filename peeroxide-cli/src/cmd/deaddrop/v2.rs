@@ -639,16 +639,34 @@ pub async fn get_from_root(
     let need_kp_reannounce = need_kp.clone();
     let handle_reannounce = handle.clone();
     let reannounce_handle = tokio::spawn(async move {
+        let mut last_announce_was_err = false;
         // Initial announce (immediately, replaces the removed one-shot call)
-        if let Err(e) = handle_reannounce.announce(nt, &need_kp_reannounce, &[]).await {
-            eprintln!("  warning: re-announce failed: {e}");
+        match handle_reannounce.announce(nt, &need_kp_reannounce, &[]).await {
+            Ok(_) => {
+                eprintln!("  announced need-topic {}", &to_hex(&nt)[..8]);
+            }
+            Err(e) => {
+                eprintln!("  warning: re-announce failed: {e}");
+                last_announce_was_err = true;
+            }
         }
         loop {
             tokio::select! {
                 _ = reannounce_notify_task.notified() => break,
                 _ = tokio::time::sleep(NEED_REANNOUNCE_INTERVAL) => {
-                    if let Err(e) = handle_reannounce.announce(nt, &need_kp_reannounce, &[]).await {
-                        eprintln!("  warning: re-announce failed: {e}");
+                    match handle_reannounce.announce(nt, &need_kp_reannounce, &[]).await {
+                        Ok(_) => {
+                            if last_announce_was_err {
+                                eprintln!("  re-announce recovered after errors");
+                                last_announce_was_err = false;
+                            }
+                        }
+                        Err(e) => {
+                            if !last_announce_was_err {
+                                eprintln!("  warning: re-announce failed: {e}");
+                                last_announce_was_err = true;
+                            }
+                        }
                     }
                 }
             }
@@ -791,6 +809,7 @@ pub async fn get_from_root(
     );
 
     let mut last_published_missing: Option<Vec<u32>> = None;
+    let mut need_list_topic_logged = false;
     let retry_deadline = tokio::time::Instant::now() + chunk_timeout;
     loop {
         let missing: Vec<u32> = (0..expected_data_count as u32)
@@ -847,12 +866,19 @@ pub async fn get_from_root(
             let need_entries = compute_need_entries(&missing_now);
             let encoded = encode_need_list(&need_entries);
             need_seq += 1;
-            let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
-            eprintln!(
-                "  waiting for {} missing chunks, published need list",
-                missing_now.len()
-            );
-            last_published_missing = Some(missing_now.clone());
+            if let Err(e) = handle.mutable_put(&need_kp, &encoded, need_seq).await {
+                eprintln!("  warning: need-list publish failed: {e}");
+            } else {
+                if !need_list_topic_logged {
+                    eprintln!("  need-list published under topic {}", &to_hex(&nt)[..8]);
+                    need_list_topic_logged = true;
+                }
+                eprintln!(
+                    "  waiting for {} missing chunks, published need list",
+                    missing_now.len()
+                );
+                last_published_missing = Some(missing_now.clone());
+            }
         }
 
         if new_data == 0 {
