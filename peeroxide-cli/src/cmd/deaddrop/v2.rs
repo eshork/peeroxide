@@ -770,6 +770,7 @@ pub async fn get_from_root(
         expected_data_count
     );
 
+    let mut last_published_missing: Option<Vec<u32>> = None;
     let retry_deadline = tokio::time::Instant::now() + chunk_timeout;
     loop {
         let missing: Vec<u32> = (0..expected_data_count as u32)
@@ -817,24 +818,25 @@ pub async fn get_from_root(
             }
         }
 
+        let missing_now: Vec<u32> = (0..expected_data_count as u32)
+            .filter(|p| !results.contains_key(p))
+            .collect();
+
+        // Publish need-list if the missing set has changed since last publish
+        if Some(&missing_now) != last_published_missing.as_ref() && !missing_now.is_empty() {
+            let need_entries = compute_need_entries(&missing_now);
+            let encoded = encode_need_list(&need_entries);
+            need_seq += 1;
+            let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
+            eprintln!(
+                "  waiting for {} missing chunks, published need list",
+                missing_now.len()
+            );
+            last_published_missing = Some(missing_now.clone());
+        }
+
         if new_data == 0 {
-            let missing_now: Vec<u32> = (0..expected_data_count as u32)
-                .filter(|p| !results.contains_key(p))
-                .collect();
-            if !missing_now.is_empty() {
-                let need_entries: Vec<NeedEntry> = contiguous_ranges(&missing_now)
-                    .iter()
-                    .map(|(s, e)| NeedEntry::Data { start: *s, end: *e })
-                    .collect();
-                let encoded = encode_need_list(&need_entries);
-                need_seq += 1;
-                let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
-                eprintln!(
-                    "  waiting for {} missing chunks, published need list",
-                    missing_now.len()
-                );
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
         }
     }
 
