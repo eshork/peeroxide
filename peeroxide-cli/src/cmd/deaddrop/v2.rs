@@ -228,6 +228,15 @@ pub fn decode_need_list(data: &[u8]) -> Result<Vec<NeedEntry>, String> {
     Ok(entries)
 }
 
+/// Convert a sorted slice of missing data-chunk positions into compact
+/// `NeedEntry::Data` ranges. Each range covers a contiguous run.
+pub fn compute_need_entries(missing: &[u32]) -> Vec<NeedEntry> {
+    contiguous_ranges(missing)
+        .into_iter()
+        .map(|(s, e)| NeedEntry::Data { start: s, end: e })
+        .collect()
+}
+
 pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     if args.refresh_interval == 0 {
         eprintln!("error: --refresh-interval must be greater than 0");
