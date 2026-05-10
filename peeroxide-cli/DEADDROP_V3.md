@@ -8,7 +8,7 @@ When this draft lands, `DEADDROP_V2.md` is rewritten from this document, this fi
 
 The earlier v2 design separated the index and data layers, making data fetch fully parallel. But the index itself remained a singly linked list: each index record named the next, so a receiver had to walk the index chain strictly in order. For a 1 GB payload, that was roughly 35,800 sequential `mutable_get` round trips on the critical path, even though every data chunk could be fetched in parallel once its content hash was known. Empirically the data fetcher consistently caught up to the index walk and starved waiting for the next index hop.
 
-v3 turns the index layer into a tree. Each index chunk carries a small `K` byte naming how many of its slots are pubkeys for child *index* chunks; the remaining slots are pubkeys for *data* chunks. The receiver fetches the root, learns its children, fetches all children in parallel, and recurses. The number of sequential round trips on the critical path drops from `O(N/31)` to `O(log₃₁ N)` — for 1 GB, that is **6 round trips total** (5 sequential index waves plus one data wave) instead of ~35,800.
+v3 turns the index layer into a tree. Each non-root index chunk holds slots of a single kind: either child *index* pubkeys (a non-leaf chunk) or *data* chunk content hashes (a leaf chunk). The kind is not encoded on the wire — instead, the canonical construction algorithm is normative, so the receiver derives the tree's depth from `file_size` and tracks "remaining depth" as it descends. The receiver fetches the root, learns its children, fetches all children in parallel, and recurses. The number of sequential round trips on the critical path drops from `O(N/31)` to `O(log₃₁ N)` — for 1 GB, that is **6 round trips total** (5 sequential index waves plus one data wave) instead of ~35,800.
 
 Data chunks remain immutable and content-addressed; the change is confined to the index layer's shape. A 1-byte per-deaddrop salt is added to every data chunk header so that two unrelated deaddrops with identical content do not share a DHT address-space.
 
@@ -30,7 +30,7 @@ Data chunks remain immutable and content-addressed; the change is confined to th
                             [d0..d30] [d31..d61] [d62..d92] ...    (up to 31 per leaf)
 ```
 
-- The **index tree** is a tree of mutable signed records. Every index chunk has a 1-byte `K` field indicating how many of its slots hold child *index* pubkeys; the remaining `M = total_slots - K` slots hold *data* chunk content hashes. The root is published under the root keypair (its public key is the pickup key); every non-root index chunk is published under a keypair derived deterministically from the root seed.
+- The **index tree** is a tree of mutable signed records. Every index chunk holds a sequence of 32-byte slots — either all data content hashes (a leaf-index chunk) or all child index pubkeys (a non-leaf index chunk). The wire format does not mark which type a chunk is; both senders and receivers derive each chunk's slot kind from its tree position, which is itself computed from `file_size` via the canonical tree-shape rule (see Tree Construction). The root is published under the root keypair (its public key is the pickup key); every non-root index chunk is published under a keypair derived deterministically from the root seed.
 - The **data layer** is a flat collection of immutable, content-addressed records. Each data chunk is stored at a DHT address equal to the BLAKE2b-256 hash of the chunk's encoded bytes, including a 1-byte per-deaddrop salt. The DHT verifies on every read that the returned bytes hash to the requested address, so data chunks are self-verifying.
 
 Round-trip cost on the critical path is bounded by tree depth plus one (for the final data-chunk wave). Data fetches at every tree level overlap with index fetches at deeper levels.
@@ -59,14 +59,14 @@ The salt byte makes the DHT address unique per deaddrop even when two deaddrops 
 ```
 Offset  Size   Field
 0       1      Version (0x02)
-1       1      K (number of leading pubkey slots that point to child index chunks)
-2       ...    K × 32 bytes: child index chunk public keys, in DFS order
-2+K×32  ...    M × 32 bytes: data chunk content hashes, in DFS order
+1       ...    Slot payload: N × 32 bytes
 ```
 
-Header overhead: 2 bytes. Maximum slot count: `(1000 - 2) / 32 = 31` slots (`K + M ≤ 31`).
+Header overhead: 1 byte. Maximum slot count: `(1000 - 1) / 32 = 31` slots (`N ≤ 31`).
 A chunk with fewer than 31 slots is permitted (typically the trailing chunk of a partially filled level).
 Stored via `mutable_put`, signed by the index keypair derived for that position.
+
+A non-root index chunk holds *either* child index pubkeys *or* data content hashes — never a mix. The receiver determines which by computing this chunk's `remaining_depth` from the tree-shape rule (see Tree Construction below): if `remaining_depth == 0`, slots are 32-byte data content hashes; if `remaining_depth > 0`, slots are 32-byte child index chunk public keys.
 
 ### Root index chunk
 
@@ -75,15 +75,15 @@ Offset  Size   Field
 0       1      Version (0x02)
 1       8      Total file size in bytes (u64 LE)
 9       4      CRC-32C (Castagnoli) of fully assembled payload (u32 LE)
-13      1      K (number of leading pubkey slots that point to child index chunks)
-14      ...    K × 32 bytes: child index chunk public keys, in DFS order
-14+K×32 ...    M × 32 bytes: data chunk content hashes, in DFS order
+13      ...    Slot payload: N × 32 bytes
 ```
 
-Header overhead: 14 bytes. Maximum slot count: `(1000 - 14) / 32 = 30` slots (`K + M ≤ 30`).
+Header overhead: 13 bytes. Maximum slot count: `(1000 - 13) / 32 = 30` slots (`N ≤ 30`).
 Stored via `mutable_put`, signed by the root keypair (pickup key).
 
 The root carries `file_size` and `crc32c` so the receiver can size the output buffer and verify integrity once reassembly completes. The root has 30 slots (vs 31 for non-root) because of the larger header.
+
+Like non-root chunks, the root holds *either* child index pubkeys *or* data content hashes. Slot kind is derived from `file_size`: if the canonical tree-shape rule (see Tree Construction below) yields `tree_depth == 0` (i.e., the file is small enough that all data chunks fit directly in the root, `N ≤ 30`), root slots are data hashes; otherwise root slots are child index pubkeys. The empty-file case (`file_size == 0`) yields zero slots.
 
 ### Need-list record
 
@@ -135,30 +135,78 @@ Data chunks have no derived keypair — they are addressed solely by content has
 
 ## Tree Construction & Reassembly Order
 
+### Tree Shape (normative)
+
+The shape of the index tree is fully determined by `file_size`. Both senders and receivers compute it deterministically:
+
+```
+N = ceil(file_size / 998)                     // total data chunk count
+
+canonical_depth(N):
+    if N == 0:        return 0
+    if N <= 30:       return 0
+    layer_count = ceil(N / 31)
+    depth = 1
+    while layer_count > 30:
+        layer_count = ceil(layer_count / 31)
+        depth += 1
+    return depth
+
+tree_depth = canonical_depth(N)
+```
+
+The wire format encodes neither `N` nor `tree_depth` directly; both are derived from `file_size` via this formula. There is no per-chunk slot-kind marker.
+
+Senders MUST produce the canonical tree shape. Specifically:
+
+1. If `N == 0`: root has zero slots.
+2. If `N ≤ 30`: root carries `N` data content hashes directly (no non-root index chunks exist).
+3. Otherwise: pack data hashes 31-at-a-time into leaf-index chunks; pack each layer's pubkeys 31-at-a-time into the next layer up; repeat until the top layer has ≤ 30 chunks; the root holds those top-layer pubkeys directly.
+
+This procedure is uniquely defined for every value of `N`. There is no encoding for any other tree shape — alternative constructions (mixed slot kinds in a single chunk, deeper-than-canonical trees, pre-canonical-edge filling tricks) are not expressible in the v3 wire format.
+
 ### Reassembly Order (normative)
 
-The DFS reassembly rule defines the file-byte order of data chunks across the tree. For each index chunk:
+The DFS reassembly rule defines the file-byte order of data chunks across the tree. For each index chunk, the receiver consults the chunk's `remaining_depth` (root: `tree_depth`; child of any index chunk: `parent_remaining_depth - 1`):
 
-> Emit data slots in slot order, then recurse into index slots in slot order.
+> If `remaining_depth == 0`, the chunk's slots are data content hashes; emit them in slot order at the file positions assigned to this chunk by its parent.
+> If `remaining_depth > 0`, the chunk's slots are child index pubkeys; recurse into each child in slot order, assigning each child a contiguous file-position range sized by that subtree's data-chunk count.
 
-The receiver uses this rule to compute the file-order index of every data chunk it discovers, regardless of the order in which chunks arrive over the network.
+The slot kind is therefore unambiguous from tree position; the receiver never needs to inspect chunk content to disambiguate.
 
-For an index chunk with `K` index slots and `M` data slots, the chunk contributes its `M` data hashes (in slot order) at positions `[base, base+M)` of the file-order sequence, where `base` is the starting position assigned to this chunk by its parent. Each of its `K` index children, in slot order, is then assigned the next contiguous range of file-order indices, with the size of that range determined by the subtree's data-chunk count.
+This rule is canonical: receivers and senders MUST produce identical file-order indices for the same tree structure derived from the same `file_size`.
 
-This rule is canonical: receivers and senders MUST produce identical file-order indices for the same tree structure.
+#### Worked example
 
-### Tree Construction (informative)
+Consider a 70-data-chunk file (`d_0` through `d_69`).
 
-The wire format permits any valid tree shape. The canonical sender uses a **bottom-up greedy** construction algorithm:
+- `N = 70`, so `tree_depth = 1` (since 30 < N ≤ 930).
+- Pack 70 data hashes 31-at-a-time into leaf-index chunks: `leaf_0` (31 hashes for `d_0..d_30`), `leaf_1` (31 hashes for `d_31..d_61`), `leaf_2` (8 hashes for `d_62..d_69`).
+- 3 ≤ 30, so the root holds the three leaf pubkeys directly.
 
-1. Split the input into N data chunks of at most 998 bytes (last chunk may be partial).
-2. **Special case:** if `N ≤ 30`, the root has `K = 0`, `M = N`, and holds the data hashes directly. Tree depth is 0; total round-trip cost is 2.
-3. **Special case:** if `N == 0`, the root has `K = 0`, `M = 0`, no slots, `file_size = 0`, `crc32c = 0`. Tree depth is 0.
-4. Otherwise, pack data hashes 31-at-a-time into leaf-index chunks (`K = 0`, `M ≤ 31`). The trailing leaf may be partial (`M < 31`).
-5. Pack the previous layer's pubkeys 31-at-a-time into the next layer up (`M = 0`, `K ≤ 31`). The trailing chunk of each layer may be partial.
-6. Repeat step 5 until ≤ 30 chunks remain. Those become the root's children: `K = (count of remaining chunks)`, `M = 0`.
+```
+                              root
+                       (3 child index pubkeys,
+                       remaining_depth = 1)
+                       /        |        \
+                      /         |         \
+                  leaf_0     leaf_1     leaf_2
+                  (31 data   (31 data   (8 data
+                   hashes,    hashes,    hashes,
+                   r_d=0)     r_d=0)     r_d=0)
+                d_0..d_30  d_31..d_61  d_62..d_69
+```
 
-Every non-root chunk produced by the canonical algorithm has either `K = 0` (leaf, data hashes only) or `M = 0` (non-leaf, child index pubkeys only). The wire format permits mixed `K > 0 ∧ M > 0` non-root chunks, but the canonical algorithm does not produce them. Receivers MUST handle any valid `(K, M)` combination since alternative construction strategies are not precluded.
+Applying the DFS rule from the root:
+
+1. At **root**: `remaining_depth = 1`, so slots are child index pubkeys. Recurse into each in slot order.
+2. Recurse into **leaf_0**: `remaining_depth = 0`, so slots are data hashes. Emit `d_0..d_30` at file positions `0..30`.
+3. Recurse into **leaf_1**: `remaining_depth = 0`. Emit `d_31..d_61` at file positions `31..61`.
+4. Recurse into **leaf_2**: `remaining_depth = 0`. Emit `d_62..d_69` at file positions `62..69`.
+
+Final file-byte order: `d_0` through `d_69` at file positions `0..69`. Total chunks: 4 index (`root` plus 3 leaves) plus 70 data = 74 chunks. Critical-path RTT: 4 (root → 3 leaves → 70 data).
+
+In a deeper tree (e.g., a 1 GB file with `tree_depth = 4`), the rule recurses uniformly: every internal node has `remaining_depth > 0` and just visits its child index pubkeys in slot order; every leaf-index node has `remaining_depth = 0` and emits its data hashes in slot order at the position assigned by its parent. The receiver never inspects a chunk's content to determine whether it is a leaf — the answer is always derivable from tree position.
 
 ### Sizing Math
 
@@ -186,7 +234,7 @@ Depth `d` capacity is `30 × 31^d` data chunks (root has 30 slots; each non-root
 | 3 | index-of-leaves (31 leaf pubkeys each) | 1,120 |
 | 2 | index-of-L3 (31 L3 pubkeys each) | 37 |
 | 1 | index-of-L2 (31 L2 pubkeys each) | 2 |
-| 0 | root (2 L1 pubkeys, K=2, M=0) | 1 |
+| 0 | root (2 L1 pubkeys) | 1 |
 
 Total non-root index chunks: 35,866. Plus root = **35,867 index chunks total** (~3.33% overhead).
 
@@ -199,12 +247,12 @@ Compare v2-original (unpublished, linked-list index): roughly 35,863 sequential 
 A receiver begins with the pickup key (the root public key) and proceeds:
 
 1. Has the pickup key.
-2. `mutable_get(root_pubkey, 0)` retrieves the root index record. Parse it to learn `file_size`, `crc32c`, `K`, the `K` child index pubkeys, and the `M` data content hashes (`M = 30 - K`).
+2. `mutable_get(root_pubkey, 0)` retrieves the root index record. Parse it to learn `file_size` and `crc32c`. Compute `N = ceil(file_size / 998)` and `tree_depth = canonical_depth(N)`. Compute the slot count from chunk length (`(chunk_len - 13) / 32`); slot kind is derived from `tree_depth` (data hashes if `tree_depth == 0`, child index pubkeys otherwise).
 3. Compute `expected_data_count = ceil(file_size / 998)`. Validate that the root's data hashes plus all subtree contributions will cover `[0, expected_data_count)`.
 4. **Schedule fetches** for every pubkey/hash discovered so far through a shared concurrency budget (default: 64 permits):
    - Each child index pubkey → `mutable_get(child_pk, 0)`.
    - Each data hash → `immutable_get(hash)`.
-5. **As each index chunk arrives**, parse it, assign the DFS file-order positions to its children (per the Reassembly Order rule), and schedule fetches for newly discovered pubkeys/hashes.
+5. **As each index chunk arrives**, parse it. Compute its slot count from chunk length (`(chunk_len - 1) / 32` for non-root chunks). Determine slot kind from the chunk's `remaining_depth` (which the parent knows because it placed this chunk's pubkey in the appropriate slot position): if `remaining_depth == 0`, slots are data hashes; otherwise slots are child index pubkeys. Assign DFS file-order positions to children per the Reassembly Order rule, and schedule fetches for newly discovered pubkeys/hashes.
 6. **As each data chunk arrives**, verify its content addressing (the DHT validates `discovery_key(value) == target` automatically), strip the 2-byte header, and place the payload at its DFS-order file offset.
 7. **Loop detection**: track every index chunk pubkey already visited. If the same pubkey appears more than once, abort.
 8. **Completion**: when all `expected_data_count` data chunks have been received, compute CRC-32C of the reassembled payload. Abort if it does not match the stored CRC.
@@ -234,12 +282,12 @@ A sender begins with input bytes and a root seed (random or derived from a passp
 2. Compute CRC-32C of the entire payload (streaming over chunks if mmap'd).
 3. Compute `salt = root_seed[0]`.
 4. Split the payload into chunks of at most 998 bytes. Encode each chunk as `[0x02][salt][payload_bytes]`. Compute `discovery_key(encoded)` for each — that hash is its DHT address.
-5. **Build the index tree** using the canonical bottom-up algorithm (see Tree Construction). Number index chunks `0, 1, 2, …` in bottom-up build order; derive each non-root index keypair as `KeyPair::from_seed(discovery_key(root_seed || b"idx" || i_le))`. Encode each index chunk.
+5. **Build the index tree** using the canonical bottom-up algorithm (see Tree Shape; this construction is normative — no other tree shape is valid v3). Number index chunks `0, 1, 2, …` in bottom-up build order; derive each non-root index keypair as `KeyPair::from_seed(discovery_key(root_seed || b"idx" || i_le))`. Encode each index chunk as `[0x02][slot bytes]`.
 6. **Publish in dependency order**: data chunks first (via `immutable_put`), then leaf-index chunks, then each upward layer, then the root last. All publishes within a layer run in parallel through a shared concurrency budget. The root is published last so that a partial publish does not produce a discoverable but incomplete drop.
 7. Print the pickup key (the root public key, 64-character hex) to stdout.
 8. Enter a refresh loop, monitoring the ack topic and the need topic until terminated.
 
-Senders MUST: sign each index record with its associated derived keypair; use a monotonically increasing `seq` (the current Unix timestamp is the canonical choice) on every `mutable_put`; publish the root last on initial publish; include the per-deaddrop salt in every data chunk header.
+Senders MUST: produce the canonical tree shape implied by `file_size`; sign each index record with its associated derived keypair; use a monotonically increasing `seq` (the current Unix timestamp is the canonical choice) on every `mutable_put`; publish the root last on initial publish; include the per-deaddrop salt in every data chunk header.
 
 Senders SHOULD (implementation choices): pipeline publishes through a shared concurrency budget; honor rate limits (AIMD); poll the ack topic; service need-list requests; use mmap on the input file when reading from disk.
 
@@ -282,7 +330,7 @@ For each non-empty need-list record received from a peer, for each `NeedEntry { 
 
 The root is re-published on the regular refresh tick, not on need-list response. This avoids thrashing the most-watched record on every receiver request.
 
-The sender MAY further restrict the response (e.g., publish only data chunks if it has reason to believe the receiver has all required index chunks). Conformant senders MUST do at least the full-path republish; smarter senders are permitted but not required.
+Senders MUST NOT attempt to elide any of the three categories above based on inference about receiver state. Conformant senders republish the full path on every need-list entry.
 
 ### Validation requirements (both sides)
 
@@ -321,8 +369,10 @@ The ack channel does NOT prove successful reassembly — only that some peer ann
 - All v3 frame and record types use version byte `0x02` as the first byte.
 - Index chunks are stored via `mutable_put`, signed by their position-derived keypair.
 - Data chunks are stored via `immutable_put`; their address is `discovery_key(encoded_chunk)`, where the encoded chunk includes the 1-byte salt prefix.
-- Root index header layout: `[0x02][file_size_u64_le][crc_u32_le][K_u8][K×index_pks][M×data_hashes]`, with `K + M ≤ 30`.
-- Non-root index header layout: `[0x02][K_u8][K×index_pks][M×data_hashes]`, with `K + M ≤ 31`.
+- Root index header layout: `[0x02][file_size_u64_le][crc_u32_le][N×32_byte_slots]`, with `N ≤ 30`.
+- Non-root index header layout: `[0x02][N×32_byte_slots]`, with `N ≤ 31`.
+- Slot kind (data hash vs child index pubkey) is derived from the chunk's `remaining_depth`, computed from `file_size` via the canonical tree-shape rule. There is no per-chunk slot-kind marker.
+- Senders MUST produce the canonical tree shape defined by `canonical_depth(N)`. No alternative tree shapes are expressible in the v3 wire format.
 - Data chunk header layout: `[0x02][salt_u8][payload]`, with payload ≤ 998 bytes.
 - The salt byte is `root_seed[0]` and is constant across refresh cycles.
 - Index keypair derivation uses 4-byte little-endian `i` with the `b"idx"` domain separator.
@@ -342,19 +392,18 @@ The ack channel does NOT prove successful reassembly — only that some peer ann
 - Streaming stdout output via emit-as-contiguous bookkeeping.
 - Ack channel announcement on successful pickup (receivers MAY suppress).
 - Sender polling cadence for the need and ack topics.
-- Smart need-list responses (sub-tree-aware republish optimization).
 
 ## Practical Limits
 
 - Data chunk payload: 998 bytes.
-- Slots per index chunk: 30 (root) / 31 (non-root). `K + M` may be less for trailing partial chunks.
+- Slots per index chunk: 30 (root) / 31 (non-root). Trailing chunks of a partially filled level may have fewer slots; the slot count of any chunk is `(chunk_len - header_size) / 32`.
 - Index-keypair derivation index: u32 (up to 2³² − 1 non-root index chunks per deaddrop).
 - Format maximum file size: bounded only by `file_size` (u64) — no protocol cap.
-- Reference implementation soft cap: tree depth ≤ 6 (≈ 24 TB at 998 B/chunk). Override available via flag (`--allow-deep` or equivalent) on the sender. The receiver imposes no depth cap; it handles any depth that fits in u32 keypair indices.
+- Reference implementation soft cap: tree depth ≤ 4 (≈ 25.78 GB at 998 B/chunk). Override available via flag (`--allow-deep` or equivalent) on the sender. The receiver imposes no depth cap; it handles any depth that fits in u32 keypair indices.
 - DHT record TTL on the public network: ~20 minutes; the refresh interval should be ≤ TTL/2.
 - Default parallel fetch cap: 64 permits, shared between index and data fetches.
 - Reorder buffer for streaming stdout: bounded by `parallel_fetch_cap × 998 B` (~64 KB at default).
-- An empty input file is valid: `file_size = 0`, `crc = 0`, root has `K = 0`, `M = 0`, no slots.
+- An empty input file is valid: `file_size = 0`, `crc = 0`, root has zero slots (13-byte chunk).
 
 ## Security Properties
 
@@ -376,6 +425,8 @@ The ack channel does NOT prove successful reassembly — only that some peer ann
 |----------|----|--------------------------------|------------------------------------------|
 | Data payload per chunk | 961 (root) / 967 (non-root) | 999 | **998** |
 | Data chunk header | 39 / 33 B | 1 B | **2 B (version + salt)** |
+| Index chunk header (root / non-root) | n/a | 41 / 33 B | **13 / 1 B** |
+| Per-chunk slot-kind marker | n/a | implicit (chain) | **none — derived from tree position** |
 | Data layer mutability | Mutable signed | Immutable, content-addressed | Immutable, content-addressed |
 | Index layer shape | Linked list (data carries pointers) | Linked list of index chunks | **Tree of index chunks** |
 | Address-space isolation | per-chunk derived keypair | none (raw content hash) | **per-deaddrop salt** |
@@ -384,7 +435,7 @@ The ack channel does NOT prove successful reassembly — only that some peer ann
 | Need-list format | none | Index-range + data-range entries | **Data-chunk-index ranges only (8 B/entry)** |
 | File size field | u16 chunk count | u32 bytes | **u64 bytes** |
 | Format max file size | ~60 MB | ~1.83 GB | **u64 (no protocol cap)** |
-| Reference soft cap | n/a | n/a | **depth 6 (~24 TB)** |
+| Reference soft cap | n/a | n/a | **depth 4 (~25.78 GB)** |
 | Pickup key | root public key (hex) | root public key (hex) | root public key (hex) |
 | Streaming output | not supported | not supported | **wire-compatible; reference impl streams to stdout** |
 
@@ -415,12 +466,13 @@ v3 RTT = `tree_depth + 2` (root fetch, then `tree_depth` sequential index waves,
 
 ## Resolved Decisions
 
-- **Tree shape**: every non-root index chunk has either `K = 0` (leaf) or `M = 0` (non-leaf) under the canonical bottom-up greedy algorithm. The wire format permits mixed `K > 0 ∧ M > 0`; receivers MUST handle any valid combination.
-- **N ≤ 30 special case**: the root holds data hashes directly (`K = 0`, `M = N`), bypassing the leaf-index level entirely. Saves one round trip on small files.
+- **Tree shape**: fully determined by `file_size`. Every chunk's slots are either all data content hashes (leaf) or all child index pubkeys (non-leaf); the wire format does not encode which, and the receiver derives slot kind from the chunk's tree position via the `canonical_depth` rule. Mixed slot kinds within a single chunk are not expressible in v3.
+- **Canonical algorithm is normative**: senders MUST produce exactly the bottom-up greedy tree shape implied by `file_size`. No alternative constructions are valid v3.
+- **N ≤ 30 special case**: the root holds data hashes directly, bypassing the leaf-index level entirely. Saves one round trip on small files. (This is just `tree_depth == 0` in the `canonical_depth` formula; not a separate codepath in the receiver.)
 - **No inline payload**: even for files small enough to fit in the root chunk's slot region, files always go through the data layer as a separate `immutable_put`. Single canonical encoding per file size; 2 RTT minimum.
 - **Salt byte**: `root_seed[0]`. Deterministic across refreshes (preserving idempotent re-publish). Provides ~256× DHT address isolation between unrelated deaddrops with identical content.
 - **Need-list format**: `(u32 start, u32 end)` data-chunk-index ranges, 8 bytes per entry. No separate Index/Data variants — all reconciliation is expressed in terms of data chunk file-order indices, with the sender translating to required index chunks.
-- **Need-list response policy**: senders MUST republish the full path (data chunks + leaf-index + every ancestor up to root). Smart sub-tree-aware optimizations are permitted but not required.
+- **Need-list response policy**: senders MUST republish the full path (data chunks + leaf-index + every ancestor up to root). Sub-tree-aware republish elision is explicitly disallowed — every need-list entry produces a full-path response.
 - **File-size field**: u64 LE in the root header. No protocol cap; sender soft cap configurable.
 - **Index-keypair derivation index width**: u32 LE (up from v2-original's u16). Supports trees deep enough for u32 file-order chunk indices.
 - **Reassembly order**: implicit DFS (data slots first, then index slots recursively, in slot order). No per-chunk file-order index in the data chunk header.
@@ -430,7 +482,7 @@ v3 RTT = `tree_depth + 2` (root fetch, then `tree_depth` sequential index waves,
 - **Concurrency cap default**: 64 permits, shared between index and data fetches on both sides.
 - **mmap I/O**: required for the reference implementation. Sender mmaps input files (`memmap2::Mmap`); receiver mmaps preallocated output files (`memmap2::MmapMut`) for `--output`. Stdin (sender) is buffered in RAM; small payload usage is implicit. Stdout (receiver) uses streaming.
 - **Streaming stdout**: receiver prioritizes left-DFS index fetches and emits data chunks as they arrive in file-order. Reorder buffer bounded by `PARALLEL_FETCH_CAP × 998 B`. CRC computed streaming; mismatch reported at end (already-emitted bytes are downstream).
-- **Sender soft cap default**: tree depth ≤ 6 (~24 TB). Override flag for deeper trees. Receiver enforces no cap.
+- **Sender soft cap default**: tree depth ≤ 4 (~25.78 GB). Override flag for deeper trees. Receiver enforces no cap.
 - **No streaming for `--output`**: the file mmap path writes chunks to their final byte offsets as they arrive but does not commit until reassembly completes (atomic temp+rename). CRC is verified before the final rename.
 
 ## Open Questions
@@ -439,4 +491,3 @@ None blocking implementation. Possible future iterations:
 
 - A `--no-ack` mode is wire-compatible (receiver simply does not announce). Spec requires no change.
 - A future v4 could trade the per-deaddrop salt for a per-chunk derivable address (using the existing index-keypair derivation scheme) to enable receiver-side speculative prefetch of data chunks before their parent index arrives. This is a wire-format change and would bump the version byte.
-- The sender's smart need-list response (sub-tree-aware republish vs full-path republish) is a pure optimization with no protocol impact; it can be added without a wire change.
