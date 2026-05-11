@@ -167,103 +167,50 @@ async fn put_mutable(
     }
 }
 
-/// Publish all data chunks in parallel through the shared concurrency budget.
-async fn publish_data_layer(
-    handle: &HyperDhtHandle,
-    tree: &BuiltTree,
-    state: &ConcurrencyState,
-    progress: Option<Arc<ProgressState>>,
-) -> Result<(), String> {
-    let mut tasks = tokio::task::JoinSet::new();
-    for chunk in &tree.data_chunks {
-        let permit = state.acquire().await;
-        let h = handle.clone();
-        let bytes = chunk.encoded.clone();
-        let chunk_len = bytes.len() as u64;
-        let st = state.clone();
-        let pg = progress.clone();
-        tasks.spawn(async move {
-            let result = h.immutable_put(&bytes).await;
-            let degraded = result.is_err();
-            st.record(degraded).await;
-            drop(permit);
-            if let Some(state) = pg {
-                state.inc_data(chunk_len);
-            }
-            result.map(|_| ()).map_err(|e| format!("immutable_put failed: {e}"))
-        });
-    }
-    while let Some(joined) = tasks.join_next().await {
-        joined.map_err(|e| format!("data publish task panicked: {e}"))??;
-    }
-    Ok(())
+/// One unit of work for the publish pipeline.
+enum PublishUnit {
+    /// An immutable data chunk (`immutable_put`).
+    Data { encoded: Vec<u8> },
+    /// A signed mutable index chunk (`mutable_put`).
+    Index { keypair: KeyPair, encoded: Vec<u8> },
 }
 
-/// Publish all index chunks in a single layer in parallel.
-async fn publish_index_layer(
-    handle: &HyperDhtHandle,
-    layer_chunks: Vec<(KeyPair, Vec<u8>)>,
-    state: &ConcurrencyState,
-    progress: Option<Arc<ProgressState>>,
-) -> Result<(), String> {
-    let mut tasks = tokio::task::JoinSet::new();
-    for (kp, bytes) in layer_chunks {
-        let permit = state.acquire().await;
-        let h = handle.clone();
-        let st = state.clone();
-        let pg = progress.clone();
-        tasks.spawn(async move {
-            let res = put_mutable(&h, &kp, &bytes).await;
-            let degraded = res.as_ref().map(|d| *d).unwrap_or(true);
-            st.record(degraded).await;
-            drop(permit);
-            if let Some(state) = pg {
-                state.inc_index();
-            }
-            res.map(|_| ())
-        });
-    }
-    while let Some(joined) = tasks.join_next().await {
-        joined.map_err(|e| format!("index publish task panicked: {e}"))??;
-    }
-    Ok(())
-}
-
-/// Publish the tree in dependency order (data → leaves → upward → root).
+/// Publish all non-root chunks (data + every index layer) interleaved through
+/// the shared concurrency budget, then publish the root last.
+///
+/// The spec only requires that the root be published last — non-root chunks
+/// can go in any order, since the root is the only discoverable entry point.
+/// Interleaving lets the index counter make progress alongside the data
+/// counter and avoids a "ramp twice" pattern (data then index) under AIMD.
 async fn publish_tree_initial(
     handle: &HyperDhtHandle,
     tree: &BuiltTree,
     state: &ConcurrencyState,
     progress: Option<Arc<ProgressState>>,
 ) -> Result<(), String> {
-    publish_data_layer(handle, tree, state, progress.clone()).await?;
-
-    // Group index chunks by layer (index_chunks is in bottom-up build order:
-    // all of layer 0 first, then layer 1, etc.).
-    let mut by_layer: Vec<Vec<(KeyPair, Vec<u8>)>> = Vec::new();
-    let mut current_layer: Option<u32> = None;
-    let mut acc: Vec<(KeyPair, Vec<u8>)> = Vec::new();
+    let mut units: Vec<PublishUnit> = Vec::with_capacity(tree.data_chunks.len() + tree.index_chunks.len());
+    for chunk in &tree.data_chunks {
+        units.push(PublishUnit::Data {
+            encoded: chunk.encoded.clone(),
+        });
+    }
     for chunk in &tree.index_chunks {
-        if Some(chunk.layer) != current_layer {
-            if !acc.is_empty() {
-                by_layer.push(std::mem::take(&mut acc));
-            }
-            current_layer = Some(chunk.layer);
-        }
-        acc.push((chunk.keypair.clone(), chunk.encoded.clone()));
+        units.push(PublishUnit::Index {
+            keypair: chunk.keypair.clone(),
+            encoded: chunk.encoded.clone(),
+        });
     }
-    if !acc.is_empty() {
-        by_layer.push(acc);
-    }
+    publish_units(handle, units, state, progress).await?;
 
-    for layer in by_layer {
-        publish_index_layer(handle, layer, state, progress.clone()).await?;
-    }
-
-    // Root last.
-    publish_index_layer(
+    // Root last. This is the spec's only ordering requirement: until the root
+    // is published, no one can derive any other pubkey in the drop, so a
+    // partial publish is not discoverable.
+    publish_units(
         handle,
-        vec![(tree.root_keypair.clone(), tree.root_encoded.clone())],
+        vec![PublishUnit::Index {
+            keypair: tree.root_keypair.clone(),
+            encoded: tree.root_encoded.clone(),
+        }],
         state,
         None,
     )
@@ -272,38 +219,77 @@ async fn publish_tree_initial(
     Ok(())
 }
 
-/// Re-publish the entire tree (refresh tick).
+/// Re-publish the entire tree on a refresh tick.
 async fn publish_tree_refresh(
     handle: &HyperDhtHandle,
     tree: &BuiltTree,
     state: &ConcurrencyState,
 ) -> Result<(), String> {
-    publish_data_layer(handle, tree, state, None).await?;
-    let mut by_layer: Vec<Vec<(KeyPair, Vec<u8>)>> = Vec::new();
-    let mut current_layer: Option<u32> = None;
-    let mut acc: Vec<(KeyPair, Vec<u8>)> = Vec::new();
+    let mut units: Vec<PublishUnit> = Vec::with_capacity(tree.data_chunks.len() + tree.index_chunks.len() + 1);
+    for chunk in &tree.data_chunks {
+        units.push(PublishUnit::Data {
+            encoded: chunk.encoded.clone(),
+        });
+    }
     for chunk in &tree.index_chunks {
-        if Some(chunk.layer) != current_layer {
-            if !acc.is_empty() {
-                by_layer.push(std::mem::take(&mut acc));
+        units.push(PublishUnit::Index {
+            keypair: chunk.keypair.clone(),
+            encoded: chunk.encoded.clone(),
+        });
+    }
+    units.push(PublishUnit::Index {
+        keypair: tree.root_keypair.clone(),
+        encoded: tree.root_encoded.clone(),
+    });
+    publish_units(handle, units, state, None).await
+}
+
+/// Fan out a batch of `PublishUnit`s through the shared concurrency budget.
+async fn publish_units(
+    handle: &HyperDhtHandle,
+    units: Vec<PublishUnit>,
+    state: &ConcurrencyState,
+    progress: Option<Arc<ProgressState>>,
+) -> Result<(), String> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for unit in units {
+        let permit = state.acquire().await;
+        let h = handle.clone();
+        let st = state.clone();
+        let pg = progress.clone();
+        match unit {
+            PublishUnit::Data { encoded } => {
+                let chunk_len = encoded.len() as u64;
+                tasks.spawn(async move {
+                    let result = h.immutable_put(&encoded).await;
+                    let degraded = result.is_err();
+                    st.record(degraded).await;
+                    drop(permit);
+                    if let Some(state) = pg {
+                        state.inc_data(chunk_len);
+                    }
+                    result
+                        .map(|_| ())
+                        .map_err(|e| format!("immutable_put failed: {e}"))
+                });
             }
-            current_layer = Some(chunk.layer);
+            PublishUnit::Index { keypair, encoded } => {
+                tasks.spawn(async move {
+                    let res = put_mutable(&h, &keypair, &encoded).await;
+                    let degraded = res.as_ref().map(|d| *d).unwrap_or(true);
+                    st.record(degraded).await;
+                    drop(permit);
+                    if let Some(state) = pg {
+                        state.inc_index();
+                    }
+                    res.map(|_| ())
+                });
+            }
         }
-        acc.push((chunk.keypair.clone(), chunk.encoded.clone()));
     }
-    if !acc.is_empty() {
-        by_layer.push(acc);
+    while let Some(joined) = tasks.join_next().await {
+        joined.map_err(|e| format!("publish task panicked: {e}"))??;
     }
-    for layer in by_layer {
-        publish_index_layer(handle, layer, state, None).await?;
-    }
-    publish_index_layer(
-        handle,
-        vec![(tree.root_keypair.clone(), tree.root_encoded.clone())],
-        state,
-        None,
-    )
-    .await?;
     Ok(())
 }
 
@@ -618,7 +604,10 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
         } else {
             (None, None)
         };
-    let initial_concurrency = 4usize;
+    // Initial concurrency. AIMD will adjust based on observed degradation;
+    // starting higher gives better throughput on healthy networks while still
+    // allowing the controller to shrink if puts start timing out.
+    let initial_concurrency = 16usize;
     let conc = ConcurrencyState::new(initial_concurrency, max_concurrency);
 
     // 7. Progress reporter.

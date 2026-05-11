@@ -283,7 +283,7 @@ A sender begins with input bytes and a root seed (random or derived from a passp
 3. Compute `salt = root_seed[0]`.
 4. Split the payload into chunks of at most 998 bytes. Encode each chunk as `[0x02][salt][payload_bytes]`. Compute `discovery_key(encoded)` for each — that hash is its DHT address.
 5. **Build the index tree** using the canonical bottom-up algorithm (see Tree Shape; this construction is normative — no other tree shape is valid v2). Number index chunks `0, 1, 2, …` in bottom-up build order; derive each non-root index keypair as `KeyPair::from_seed(discovery_key(root_seed || b"idx" || i_le))`. Encode each index chunk as `[0x02][slot bytes]`.
-6. **Publish in dependency order**: data chunks first (via `immutable_put`), then leaf-index chunks, then each upward layer, then the root last. All publishes within a layer run in parallel through a shared concurrency budget. The root is published last so that a partial publish does not produce a discoverable but incomplete drop.
+6. **Publish with the root last**: every non-root chunk (all data chunks via `immutable_put` and all index chunks at every layer via `mutable_put`) is published in any order through a shared concurrency budget. Once they have all completed, the root is published. The root is the only discoverable entry point — until it exists, no receiver can derive any other pubkey in the drop, so a partial publish is not discoverable. Senders MAY interleave data and index publishes to balance progress reporting and concurrency utilization; they MUST NOT publish the root before every other chunk has been written.
 7. Print the pickup key (the root public key, 64-character hex) to stdout.
 8. Enter a refresh loop, monitoring the ack topic and the need topic until terminated.
 
@@ -477,7 +477,7 @@ v2 RTT = `tree_depth + 2` (root fetch, then `tree_depth` sequential index waves,
 - **Index-keypair derivation index width**: u32 LE (up from v2-original's u16). Supports trees deep enough for u32 file-order chunk indices.
 - **Reassembly order**: implicit DFS (data slots first, then index slots recursively, in slot order). No per-chunk file-order index in the data chunk header.
 - **CRC scope**: CRC-32C over the reassembled file bytes (not over encoded chunks). Matches v2-original.
-- **Initial publish ordering**: dependency order — data chunks → leaf-index chunks → upward layer-by-layer → root last. Ensures the pickup key is not discoverable until every chunk it transitively references has been published.
+- **Initial publish ordering**: every non-root chunk is published in any order through a shared concurrency budget; the root is published last. The root-last requirement (and only the root-last requirement) ensures the pickup key is not discoverable until every chunk it transitively references has been written. The reference sender interleaves data and index puts so that progress is observable on both counters from the start of the publish.
 - **Refresh interval default**: 600 seconds (well under DHT TTL/2).
 - **Concurrency cap default**: 64 permits, shared between index and data fetches on both sides.
 - **mmap I/O**: required for the reference implementation. Sender mmaps input files (`memmap2::Mmap`); receiver mmaps preallocated output files (`memmap2::MmapMut`) for `--output`. Stdin (sender) is buffered in RAM; small payload usage is implicit. Stdout (receiver) uses streaming.
