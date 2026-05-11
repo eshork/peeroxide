@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -58,6 +58,9 @@ const NEED_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(60);
 /// from the larger target have a chance to drain before the next contraction.
 struct AimdController {
     current: usize,
+    /// Original target chosen at startup. Used by the stall watchdog as the
+    /// reference for its recovery floor.
+    initial: usize,
     max_cap: Option<usize>,
     /// EWMA of degradation in [0.0, 1.0]. Updated on every sample.
     ewma: f64,
@@ -82,6 +85,7 @@ impl AimdController {
     fn new(initial: usize, max_cap: Option<usize>) -> Self {
         Self {
             current: initial,
+            initial,
             max_cap,
             ewma: 0.0,
             // alpha = 0.1 → ~7-sample half-life; comparable reactivity to the
@@ -94,6 +98,24 @@ impl AimdController {
             fast_trip_threshold: 10,
             shrink_cooldown: false,
         }
+    }
+
+    /// Watchdog escape hatch: forcibly lift `current` to a recovery floor
+    /// (half of initial) and clear adaptive state so the next real samples
+    /// drive the decision afresh. Only returns Some when it actually raises
+    /// current — if we're already at/above the floor, the stall is not an
+    /// AIMD-wedge problem and we leave things alone.
+    fn kick_stall(&mut self) -> Option<usize> {
+        let floor = (self.initial / 2).max(1);
+        if self.current >= floor {
+            return None;
+        }
+        self.current = floor;
+        self.ewma = 0.0;
+        self.shrink_cooldown = false;
+        self.samples_since_decision = 0;
+        self.degraded_since_decision = 0;
+        Some(self.current)
     }
 
     fn shrink_step(&mut self) -> usize {
@@ -169,6 +191,13 @@ pub(super) struct ConcurrencyState {
     target: Arc<AtomicUsize>,
     forget_pending: Arc<AtomicUsize>,
     aimd: Arc<Mutex<AimdController>>,
+    /// Unix-ms timestamp of the most recent `record()`. Drives the stall
+    /// watchdog: if this stops moving, no put is resolving (success or
+    /// failure), which usually means AIMD has wedged itself low.
+    last_record_ms: Arc<AtomicU64>,
+    /// Unix-ms timestamp of the most recent watchdog kick. Used to
+    /// rate-limit kicks so a genuinely overloaded link can settle.
+    last_kick_ms: Arc<AtomicU64>,
 }
 
 impl ConcurrencyState {
@@ -178,6 +207,8 @@ impl ConcurrencyState {
             target: Arc::new(AtomicUsize::new(initial)),
             forget_pending: Arc::new(AtomicUsize::new(0)),
             aimd: Arc::new(Mutex::new(AimdController::new(initial, max_cap))),
+            last_record_ms: Arc::new(AtomicU64::new(now_ms())),
+            last_kick_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -201,27 +232,69 @@ impl ConcurrencyState {
 
     /// Record an outcome and rebalance permits if AIMD has changed the target.
     async fn record(&self, degraded: bool) {
+        self.last_record_ms.store(now_ms(), Ordering::Relaxed);
         let new_target = {
             let mut ctrl = self.aimd.lock().await;
             ctrl.record(degraded)
         };
         if let Some(target) = new_target {
-            let current_target = self.target.load(Ordering::Relaxed);
-            match target.cmp(&current_target) {
-                std::cmp::Ordering::Greater => {
-                    let add = target - current_target;
-                    self.sem.add_permits(add);
-                    self.target.store(target, Ordering::Relaxed);
-                }
-                std::cmp::Ordering::Less => {
-                    let remove = current_target - target;
-                    self.forget_pending.fetch_add(remove, Ordering::Relaxed);
-                    self.target.store(target, Ordering::Relaxed);
-                }
-                std::cmp::Ordering::Equal => {}
-            }
+            self.apply_target(target);
         }
     }
+
+    /// Watchdog entry. If no put has resolved in `stall_threshold` and we
+    /// haven't kicked recently, ask AIMD to lift off the floor and rebalance
+    /// permits. Returns the new target on a successful kick (for logging).
+    async fn kick_if_stalled(
+        &self,
+        stall_threshold: Duration,
+        min_kick_interval: Duration,
+    ) -> Option<usize> {
+        let now = now_ms();
+        let since_record = now.saturating_sub(self.last_record_ms.load(Ordering::Relaxed));
+        if since_record < stall_threshold.as_millis() as u64 {
+            return None;
+        }
+        let since_kick = now.saturating_sub(self.last_kick_ms.load(Ordering::Relaxed));
+        if since_kick < min_kick_interval.as_millis() as u64 {
+            return None;
+        }
+        let new_target = {
+            let mut ctrl = self.aimd.lock().await;
+            ctrl.kick_stall()
+        };
+        if let Some(target) = new_target {
+            self.last_kick_ms.store(now, Ordering::Relaxed);
+            // Refresh the record clock so we don't immediately re-kick while
+            // the new permits work their way through the system.
+            self.last_record_ms.store(now, Ordering::Relaxed);
+            self.apply_target(target);
+        }
+        new_target
+    }
+
+    fn apply_target(&self, target: usize) {
+        let current_target = self.target.load(Ordering::Relaxed);
+        match target.cmp(&current_target) {
+            std::cmp::Ordering::Greater => {
+                self.sem.add_permits(target - current_target);
+                self.target.store(target, Ordering::Relaxed);
+            }
+            std::cmp::Ordering::Less => {
+                self.forget_pending
+                    .fetch_add(current_target - target, Ordering::Relaxed);
+                self.target.store(target, Ordering::Relaxed);
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Publish a single mutable record (signed by `kp` with the current Unix
@@ -734,6 +807,30 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
         dispatcher_shutdown.clone(),
     ));
 
+    // Stall watchdog: if no put has resolved in 30s, kick AIMD off the floor.
+    // Rate-limited to once per 2 min so a genuinely overloaded link can settle
+    // at its true ceiling rather than oscillating around the kick target.
+    let watchdog_shutdown = Arc::new(Notify::new());
+    let watchdog_shutdown_inner = watchdog_shutdown.clone();
+    let watchdog_conc = conc.clone();
+    let watchdog_handle = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        tick.tick().await;
+        loop {
+            tokio::select! {
+                _ = watchdog_shutdown_inner.notified() => break,
+                _ = tick.tick() => {
+                    if let Some(t) = watchdog_conc
+                        .kick_if_stalled(Duration::from_secs(30), Duration::from_secs(120))
+                        .await
+                    {
+                        eprintln!("  stall watchdog: AIMD kicked → target {t}");
+                    }
+                }
+            }
+        }
+    });
+
     // Initial publish: non-root chunks first (data + index layers), then
     // the root last. The "root last" rule is the only ordering constraint
     // in v3: until the root is published, no other pubkey is derivable.
@@ -851,6 +948,8 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let _ = watcher_handle.await;
     dispatcher_shutdown.notify_one();
     let _ = dispatcher_handle.await;
+    watchdog_shutdown.notify_one();
+    let _ = watchdog_handle.await;
     eprintln!("  stopped refreshing; records expire in ~20m");
     reporter.finish().await;
     let _ = handle.destroy().await;
