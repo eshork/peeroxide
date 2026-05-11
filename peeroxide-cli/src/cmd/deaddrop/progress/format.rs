@@ -84,9 +84,9 @@ pub fn draw_bar(done: u64, total: u64) -> String {
 }
 
 pub fn render_bar_line(state: &ProgressState, smoothed_rate: f64, eta: Option<f64>) -> String {
-    let (_, bytes_total, indexes_done, indexes_total, bytes_done, _) = snapshot(state);
-    let bar = draw_bar(bytes_done.into(), bytes_total);
-    let pct = pct(bytes_done.into(), bytes_total);
+    let (bytes_done, bytes_total, indexes_done, indexes_total, _, _) = snapshot(state);
+    let bar = draw_bar(bytes_done, bytes_total);
+    let pct = pct(bytes_done, bytes_total);
     let rate = human_rate(smoothed_rate);
     let eta = human_eta(eta);
 
@@ -94,7 +94,7 @@ pub fn render_bar_line(state: &ProgressState, smoothed_rate: f64, eta: Option<f6
         format!(
             "↑ {}  D({}/{})  [{}]  {:.0}%  {}  ETA {}",
             state.filename,
-            human_bytes(bytes_done.into()),
+            human_bytes(bytes_done),
             human_bytes(bytes_total),
             bar,
             pct,
@@ -107,7 +107,7 @@ pub fn render_bar_line(state: &ProgressState, smoothed_rate: f64, eta: Option<f6
             state.filename,
             indexes_done,
             indexes_total,
-            human_bytes(bytes_done.into()),
+            human_bytes(bytes_done),
             human_bytes(bytes_total),
             bar,
             pct,
@@ -128,13 +128,13 @@ pub fn render_index_line(state: &ProgressState, smoothed_rate: f64) -> String {
 }
 
 pub fn render_data_line(state: &ProgressState, smoothed_rate: f64, eta: Option<f64>) -> String {
-    let (_, bytes_total, _, _, bytes_done, _) = snapshot(state);
+    let (bytes_done, bytes_total, _, _, _, _) = snapshot(state);
     format!(
         "D({}/{})  [{}]  {:.0}%  {}  ETA {}",
-        human_bytes(bytes_done.into()),
+        human_bytes(bytes_done),
         human_bytes(bytes_total),
-        draw_bar(bytes_done.into(), bytes_total),
-        pct(bytes_done.into(), bytes_total),
+        draw_bar(bytes_done, bytes_total),
+        pct(bytes_done, bytes_total),
         human_rate(smoothed_rate),
         human_eta(eta)
     )
@@ -237,6 +237,42 @@ mod tests {
         let s = render_bar_line(&state, 2048.0, Some(12.0));
         assert!(s.starts_with("↑ file.bin  I[1/2]  D("));
         assert!(s.contains("ETA 12s"));
+    }
+
+    #[test]
+    fn render_bar_line_byte_values_and_pct_are_bytes_not_chunks() {
+        // Regression for the snapshot-destructure bug: render_bar_line was
+        // pulling data_done (a chunk count) into a variable named bytes_done
+        // and formatting it as bytes. Verify that with N=4 chunks done out of
+        // 4 totalling 10 KiB, the displayed byte count is 5 KiB (real bytes),
+        // NOT "2 B" (the chunk count formatted as bytes), and the percentage
+        // reflects 5/10 = 50% (bytes), not 2/10240 ≈ 0% (chunks vs bytes).
+        let state = ProgressState::new(Phase::Put, 2, Arc::<str>::from("file.bin"));
+        state.set_length(10 * 1024, 2, 4);
+        state.bytes_done.store(5 * 1024, Ordering::Relaxed);
+        state.indexes_done.store(1, Ordering::Relaxed);
+        state.data_done.store(2, Ordering::Relaxed);
+        let s = render_bar_line(&state, 0.0, None);
+        assert!(
+            s.contains("D(5.0 KiB/10.0 KiB)"),
+            "expected D(5.0 KiB/10.0 KiB) in: {s}"
+        );
+        assert!(s.contains("50%"), "expected 50% in: {s}");
+    }
+
+    #[test]
+    fn render_data_line_byte_values_and_pct_are_bytes_not_chunks() {
+        // Same regression for the v2-GET multi-bar path.
+        let state = ProgressState::new(Phase::Get, 2, Arc::<str>::from("out.bin"));
+        state.set_length(10 * 1024, 2, 4);
+        state.bytes_done.store(5 * 1024, Ordering::Relaxed);
+        state.data_done.store(2, Ordering::Relaxed);
+        let s = render_data_line(&state, 0.0, None);
+        assert!(
+            s.contains("D(5.0 KiB/10.0 KiB)"),
+            "expected D(5.0 KiB/10.0 KiB) in: {s}"
+        );
+        assert!(s.contains("50%"), "expected 50% in: {s}");
     }
 
     #[test]
