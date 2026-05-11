@@ -23,11 +23,35 @@ pub struct ProgressState {
     pub indexes_done: AtomicU32,
     pub data_total: AtomicU32,
     pub data_done: AtomicU32,
+    /// Cumulative UDP bytes sent at the DHT IO layer. Shared `Arc<AtomicU64>`
+    /// with `peeroxide_dht::io::WireCounters` so the display can sample the
+    /// live counter without going through a getter call. Default-constructed
+    /// states have an unconnected counter that stays at 0 (useful for v1
+    /// where wire stats aren't displayed).
+    pub wire_bytes_sent: Arc<AtomicU64>,
+    /// Cumulative UDP bytes received at the DHT IO layer. See `wire_bytes_sent`.
+    pub wire_bytes_received: Arc<AtomicU64>,
     pub start_instant: Instant,
 }
 
 impl ProgressState {
     pub fn new(phase: Phase, version: u8, filename: Arc<str>) -> Arc<Self> {
+        Self::new_with_wire(
+            phase,
+            version,
+            filename,
+            peeroxide_dht::io::WireCounters::default(),
+        )
+    }
+
+    /// Construct a `ProgressState` connected to a live `WireCounters` so the
+    /// renderer can display real DHT wire-byte rates alongside payload rates.
+    pub fn new_with_wire(
+        phase: Phase,
+        version: u8,
+        filename: Arc<str>,
+        wire: peeroxide_dht::io::WireCounters,
+    ) -> Arc<Self> {
         Arc::new(Self {
             phase,
             version,
@@ -38,6 +62,8 @@ impl ProgressState {
             indexes_done: AtomicU32::new(0),
             data_total: AtomicU32::new(0),
             data_done: AtomicU32::new(0),
+            wire_bytes_sent: wire.bytes_sent,
+            wire_bytes_received: wire.bytes_received,
             start_instant: Instant::now(),
         })
     }
@@ -84,6 +110,37 @@ mod tests {
         state.inc_data(0);
         assert_eq!(state.data_done.load(Ordering::Relaxed), 1);
         assert_eq!(state.bytes_done.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn new_with_wire_shares_atomics_with_counters() {
+        // Verify that incrementing the WireCounters' atomics is visible from
+        // the ProgressState (i.e. the Arcs are shared, not cloned by value).
+        use std::sync::atomic::AtomicU64;
+        let wire = peeroxide_dht::io::WireCounters {
+            bytes_sent: Arc::new(AtomicU64::new(0)),
+            bytes_received: Arc::new(AtomicU64::new(0)),
+        };
+        let state = ProgressState::new_with_wire(
+            Phase::Put,
+            2,
+            Arc::<str>::from("file.txt"),
+            wire.clone(),
+        );
+        wire.bytes_sent.store(12_345, Ordering::Relaxed);
+        wire.bytes_received.store(67_890, Ordering::Relaxed);
+        assert_eq!(state.wire_bytes_sent.load(Ordering::Relaxed), 12_345);
+        assert_eq!(state.wire_bytes_received.load(Ordering::Relaxed), 67_890);
+    }
+
+    #[test]
+    fn new_default_wire_is_unconnected_zero() {
+        // Plain `new` produces a state whose wire counters are independent
+        // and stay at 0 forever — useful for v1 paths that don't display
+        // wire stats.
+        let state = ProgressState::new(Phase::Put, 1, Arc::<str>::from("file.txt"));
+        assert_eq!(state.wire_bytes_sent.load(Ordering::Relaxed), 0);
+        assert_eq!(state.wire_bytes_received.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

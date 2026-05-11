@@ -151,6 +151,40 @@ pub fn render_overall_line(state: &ProgressState) -> String {
     )
 }
 
+/// Render the wire-level network metrics line.
+///
+/// Displays raw UDP send/receive rates from the DHT IO layer alongside
+/// an "amplification factor" — the ratio of total wire bytes to useful
+/// payload bytes. Returns an empty string when wire stats are unavailable
+/// (e.g. v1 path where `ProgressState::new` was used without wire counters).
+///
+/// `up_bps` and `down_bps` are pre-computed by the caller (smoothed across
+/// a rate window). `wire_total` is the cumulative `wire_sent + wire_received`
+/// since the operation started; used to compute the amplification ratio
+/// against the cumulative payload bytes from `state.bytes_done`.
+///
+/// Format: "W  ↑ {up}  ↓ {down}  (×{amp} amplification)"
+pub fn render_wire_line(
+    state: &ProgressState,
+    up_bps: f64,
+    down_bps: f64,
+    wire_total: u64,
+) -> String {
+    let bytes_done = state.bytes_done.load(Ordering::Relaxed);
+    let amp_str = if bytes_done == 0 {
+        String::new()
+    } else {
+        let amp = wire_total as f64 / bytes_done as f64;
+        format!("  (×{amp:.1} amplification)")
+    };
+    format!(
+        "W  ↑ {}   ↓ {}{}",
+        human_rate(up_bps),
+        human_rate(down_bps),
+        amp_str
+    )
+}
+
 pub fn render_log_line(state: &ProgressState, smoothed_rate: f64, eta: Option<f64>) -> String {
     let (bytes_done, bytes_total, indexes_done, indexes_total, data_done, data_total) = snapshot(state);
     let phase = match state.phase {
@@ -279,6 +313,33 @@ mod tests {
     fn render_log_line_shape() {
         let s = render_log_line(&state(), 500.0, Some(4.0));
         assert!(s.starts_with("[dd-put] indexes 1/2, data 2/4, 5.0 KiB/10.0 KiB (50%), 500 B/s, eta 4s"));
+    }
+
+    #[test]
+    fn render_wire_line_shows_rates_and_amplification() {
+        let s = ProgressState::new(Phase::Get, 2, Arc::<str>::from("file.bin"));
+        s.set_length(10 * 1024, 0, 0);
+        // 1 KiB of useful payload, 35 KiB of wire traffic → ×35 amplification.
+        s.bytes_done.store(1024, Ordering::Relaxed);
+        let line = render_wire_line(&s, 12_345.0, 67_890.0, 35 * 1024);
+        assert!(line.starts_with("W  ↑ "), "got: {line}");
+        assert!(line.contains(" ↓ "), "got: {line}");
+        assert!(line.contains("×35.0 amplification"), "got: {line}");
+    }
+
+    #[test]
+    fn render_wire_line_omits_amplification_when_no_payload() {
+        let s = ProgressState::new(Phase::Get, 2, Arc::<str>::from("file.bin"));
+        let line = render_wire_line(&s, 0.0, 1024.0, 4096);
+        assert!(line.starts_with("W  ↑ "), "got: {line}");
+        assert!(!line.contains("amplification"), "should be omitted: {line}");
+    }
+
+    #[test]
+    fn render_wire_line_zero_rates_renders_cleanly() {
+        let s = ProgressState::new(Phase::Get, 2, Arc::<str>::from("file.bin"));
+        let line = render_wire_line(&s, 0.0, 0.0, 0);
+        assert_eq!(line, "W  ↑ 0 B/s   ↓ 0 B/s");
     }
 
     #[test]

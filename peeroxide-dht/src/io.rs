@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -74,6 +75,32 @@ pub struct IoStats {
     pub responses: u64,
     pub timeouts: u64,
     pub retries: u64,
+}
+
+/// Wire-byte counters shared between the IO layer and consumers (e.g. progress
+/// reporters in `peeroxide-cli`). Increments are `Relaxed` — these are
+/// observability metrics, not synchronization primitives.
+///
+/// The counters track every UDP datagram the IO layer hands to or receives
+/// from the OS sockets, regardless of which protocol layer originated it
+/// (queries, requests, replies, relays, retries — all counted).
+#[derive(Debug, Clone, Default)]
+pub struct WireCounters {
+    pub bytes_sent: Arc<AtomicU64>,
+    pub bytes_received: Arc<AtomicU64>,
+}
+
+impl WireCounters {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> (u64, u64) {
+        (
+            self.bytes_sent.load(Ordering::Relaxed),
+            self.bytes_received.load(Ordering::Relaxed),
+        )
+    }
 }
 
 /// Which socket was used for a message.
@@ -251,6 +278,7 @@ pub struct Io {
     firewalled: bool,
     pub ephemeral: bool,
     pub stats: IoStats,
+    pub wire: WireCounters,
     table: Arc<Mutex<RoutingTable>>,
     destroying: bool,
 }
@@ -293,9 +321,15 @@ impl Io {
             firewalled: config.firewalled,
             ephemeral: config.ephemeral,
             stats: IoStats::default(),
+            wire: WireCounters::default(),
             table,
             destroying: false,
         })
+    }
+
+    /// Get a clone of the wire-byte counters. Cheap (Arc clone).
+    pub fn wire_counters(&self) -> WireCounters {
+        self.wire.clone()
     }
 
     pub async fn server_local_addr(&self) -> IoResult<std::net::SocketAddr> {
@@ -323,6 +357,9 @@ impl Io {
                 msg = self.client_rx.recv() => (msg?, SocketKind::Client),
                 msg = self.server_rx.recv() => (msg?, SocketKind::Server),
             };
+            self.wire
+                .bytes_received
+                .fetch_add(datagram.data.len() as u64, Ordering::Relaxed);
             tracing::debug!(
                 from = %datagram.addr,
                 len = datagram.data.len(),
@@ -637,10 +674,12 @@ impl Io {
             SocketKind::Server => &self.server_socket,
         };
 
+        let buffer_len = buffer.len() as u64;
         if let Err(e) = socket.send_to(&buffer, addr) {
             tracing::warn!(err = %e, "relay: send_to failed");
             return false;
         }
+        self.wire.bytes_sent.fetch_add(buffer_len, Ordering::Relaxed);
 
         true
     }
@@ -734,8 +773,11 @@ impl Io {
             SocketKind::Server => &self.server_socket,
         };
 
+        let bytes_len = bytes.len() as u64;
         if let Err(e) = socket.send_to(&bytes, addr) {
             tracing::warn!(err = %e, "send_reply_internal: send_to failed");
+        } else {
+            self.wire.bytes_sent.fetch_add(bytes_len, Ordering::Relaxed);
         }
     }
 
@@ -755,8 +797,11 @@ impl Io {
             SocketKind::Server => &self.server_socket,
         };
 
+        let buffer_len = buffer.len() as u64;
         if let Err(e) = socket.send_to(&buffer, addr) {
             tracing::warn!(err = %e, "send_inflight_at: send_to failed");
+        } else {
+            self.wire.bytes_sent.fetch_add(buffer_len, Ordering::Relaxed);
         }
     }
 

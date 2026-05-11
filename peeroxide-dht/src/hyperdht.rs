@@ -452,6 +452,26 @@ pub struct HyperDhtHandle {
 }
 
 impl HyperDhtHandle {
+    // ── WIRE STATS ────────────────────────────────────────────────────────────
+
+    /// Snapshot of cumulative wire bytes (sent, received) since this DHT
+    /// node started. Counts every UDP datagram exchanged at the IO layer
+    /// — queries, requests, replies, retries, relays, and any user-issued
+    /// puts/gets — regardless of which higher-level operation produced them.
+    ///
+    /// Useful for distinguishing "useful payload throughput" (what consumers
+    /// see) from "raw network throughput" (what the OS sees). The ratio
+    /// between them is the DHT's protocol amplification factor.
+    pub fn wire_stats(&self) -> (u64, u64) {
+        self.dht.wire_stats()
+    }
+
+    /// Borrow the shared wire-counter handle for long-lived sampling. The
+    /// returned counters are `Arc<AtomicU64>` internally; cloning is cheap.
+    pub fn wire_counters(&self) -> crate::io::WireCounters {
+        self.dht.wire_counters()
+    }
+
     // ── LOOKUP ────────────────────────────────────────────────────────────────
 
     /// Query the DHT for peers advertising the target.
@@ -2281,6 +2301,37 @@ mod tests {
             join,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn wire_stats_starts_at_zero_and_is_addressable() {
+        let runtime = libudx::UdxRuntime::new().expect("runtime");
+        let config = HyperDhtConfig {
+            dht: DhtConfig {
+                bootstrap: vec![],
+                port: 0,
+                ..DhtConfig::default()
+            },
+            persistent: PersistentConfig::default(),
+        };
+        let (join, handle, _rx) = spawn(&runtime, config).await.expect("spawn");
+        let (sent, received) = handle.wire_stats();
+        assert_eq!(sent, 0, "no traffic yet");
+        assert_eq!(received, 0);
+        // Counters are shared via Arc — incrementing through `wire_counters()`
+        // must be visible via `wire_stats()`.
+        let counters = handle.wire_counters();
+        counters
+            .bytes_sent
+            .fetch_add(123, std::sync::atomic::Ordering::Relaxed);
+        counters
+            .bytes_received
+            .fetch_add(456, std::sync::atomic::Ordering::Relaxed);
+        let (sent, received) = handle.wire_stats();
+        assert_eq!(sent, 123);
+        assert_eq!(received, 456);
+        handle.destroy().await.expect("destroy");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), join).await;
     }
 
     #[test]

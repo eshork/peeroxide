@@ -210,7 +210,12 @@ async fn run_get(args: GetArgs, cfg: &ResolvedConfig) -> i32 {
                     Arc::from(base)
                 }
             };
-            let state = ProgressState::new(Phase::Get, 0x01, get_filename);
+            let state = ProgressState::new_with_wire(
+                Phase::Get,
+                0x01,
+                get_filename,
+                handle.wire_counters(),
+            );
             let reporter =
                 ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
             reporter.on_start();
@@ -227,7 +232,12 @@ async fn run_get(args: GetArgs, cfg: &ResolvedConfig) -> i32 {
                     Arc::from(base)
                 }
             };
-            let state = ProgressState::new(Phase::Get, 0x02, get_filename);
+            let state = ProgressState::new_with_wire(
+                Phase::Get,
+                0x02,
+                get_filename,
+                handle.wire_counters(),
+            );
             let reporter =
                 ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
             reporter.on_start();

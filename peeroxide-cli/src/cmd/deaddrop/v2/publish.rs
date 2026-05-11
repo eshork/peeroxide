@@ -620,7 +620,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
             .unwrap_or_else(|| args.file.clone());
         Arc::from(base.as_str())
     };
-    let state = ProgressState::new(Phase::Put, 2, filename);
+    let state = ProgressState::new_with_wire(Phase::Put, 2, filename, handle.wire_counters());
     state.set_length(
         data.len() as u64,
         (tree.index_chunks.len() + 1) as u32, // include root

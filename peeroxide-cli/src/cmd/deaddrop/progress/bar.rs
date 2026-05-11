@@ -9,7 +9,10 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 
 use crate::cmd::deaddrop::progress::{
-    format::{render_bar_line, render_data_line, render_index_line, render_overall_line},
+    format::{
+        render_bar_line, render_data_line, render_index_line, render_overall_line,
+        render_wire_line,
+    },
     rate::RateCalculator,
     state::{Phase, ProgressState},
 };
@@ -21,8 +24,15 @@ enum BarLayout {
 }
 
 /// indicatif-driven renderer that ticks a background task to refresh the
-/// progress bar(s). Single-bar mode for v1 and v2 PUT, 3-bar MultiProgress
-/// for v2 GET.
+/// progress bar(s).
+///
+/// Layout:
+///   Single (v1 + v2 PUT): 2 bars — main bar line, wire-stats line.
+///   V2GetMulti (v2 GET): 4 bars — index, data, wire, overall.
+///
+/// The wire line samples `state.wire_bytes_sent` / `state.wire_bytes_received`
+/// (which are `Arc<AtomicU64>` shared with `peeroxide_dht::io::WireCounters`)
+/// and renders rates plus an amplification factor (wire bytes / payload bytes).
 pub struct BarRenderer {
     layout: BarLayout,
     #[allow(dead_code)]
@@ -46,32 +56,33 @@ impl BarRenderer {
 
         let style = ProgressStyle::with_template("{msg}").expect("static template is valid");
 
-        let (mp, bars) = match layout {
-            BarLayout::Single => {
-                let bar = ProgressBar::new(0);
-                bar.set_style(style);
-                bar.enable_steady_tick(Duration::from_millis(100));
-                (None, vec![bar])
-            }
-            BarLayout::V2GetMulti => {
-                let mp = MultiProgress::new();
-                let mut bars = Vec::with_capacity(3);
-                for _ in 0..3 {
-                    let bar = mp.add(ProgressBar::new(0));
-                    bar.set_style(style.clone());
-                    bar.enable_steady_tick(Duration::from_millis(100));
-                    bars.push(bar);
-                }
-                (Some(mp), bars)
-            }
+        // All layouts now use MultiProgress because we add a wire-stats bar.
+        let bar_count = match layout {
+            BarLayout::Single => 2, // main + wire
+            BarLayout::V2GetMulti => 4, // index + data + wire + overall
         };
+        let mp = MultiProgress::new();
+        let mut bars = Vec::with_capacity(bar_count);
+        for _ in 0..bar_count {
+            let bar = mp.add(ProgressBar::new(0));
+            bar.set_style(style.clone());
+            bar.enable_steady_tick(Duration::from_millis(100));
+            bars.push(bar);
+        }
+        let mp = Some(mp);
 
         let rate = Arc::new(Mutex::new(RateCalculator::new()));
+        // Separate rate calculators for wire-up and wire-down. They share the
+        // same window/sample policy but track distinct atomic counters.
+        let wire_up_rate = Arc::new(Mutex::new(RateCalculator::new()));
+        let wire_down_rate = Arc::new(Mutex::new(RateCalculator::new()));
         let stop = Arc::new(Notify::new());
 
         let stop_clone = stop.clone();
         let state_clone = state.clone();
         let rate_clone = rate.clone();
+        let wire_up_clone = wire_up_rate.clone();
+        let wire_down_clone = wire_down_rate.clone();
         let bars_clone = bars.clone();
         let layout_clone = layout;
 
@@ -80,21 +91,41 @@ impl BarRenderer {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let mut rate_guard = rate_clone.lock().await;
                         let now = std::time::Instant::now();
+
+                        // Payload-throughput rate calc.
+                        let mut rate_guard = rate_clone.lock().await;
                         let bytes_done = state_clone.bytes_done.load(Ordering::Relaxed);
                         rate_guard.record(now, bytes_done);
                         let smoothed = rate_guard.rate_bps();
                         let total = state_clone.bytes_total.load(Ordering::Relaxed);
-                        let done = state_clone.bytes_done.load(Ordering::Relaxed);
-                        let eta = rate_guard.eta_secs(total, done);
+                        let eta = rate_guard.eta_secs(total, bytes_done);
                         drop(rate_guard);
+
+                        // Wire-byte rate calcs (independent up/down).
+                        let wire_sent = state_clone.wire_bytes_sent.load(Ordering::Relaxed);
+                        let wire_recv = state_clone.wire_bytes_received.load(Ordering::Relaxed);
+                        let mut up_guard = wire_up_clone.lock().await;
+                        up_guard.record(now, wire_sent);
+                        let up_bps = up_guard.rate_bps();
+                        drop(up_guard);
+                        let mut down_guard = wire_down_clone.lock().await;
+                        down_guard.record(now, wire_recv);
+                        let down_bps = down_guard.rate_bps();
+                        drop(down_guard);
+                        let wire_total = wire_sent.saturating_add(wire_recv);
+                        let wire_line = render_wire_line(
+                            &state_clone, up_bps, down_bps, wire_total,
+                        );
 
                         match layout_clone {
                             BarLayout::Single => {
                                 let msg = render_bar_line(&state_clone, smoothed, eta);
                                 if let Some(bar) = bars_clone.first() {
                                     bar.set_message(msg);
+                                }
+                                if let Some(bar) = bars_clone.get(1) {
+                                    bar.set_message(wire_line);
                                 }
                             }
                             BarLayout::V2GetMulti => {
@@ -105,6 +136,9 @@ impl BarRenderer {
                                     bar.set_message(render_data_line(&state_clone, smoothed, eta));
                                 }
                                 if let Some(bar) = bars_clone.get(2) {
+                                    bar.set_message(wire_line);
+                                }
+                                if let Some(bar) = bars_clone.get(3) {
                                     bar.set_message(render_overall_line(&state_clone));
                                 }
                             }
@@ -183,8 +217,9 @@ mod tests {
     async fn single_layout_for_v1() {
         let renderer = BarRenderer::new(put_v1_state());
         assert_eq!(renderer.layout, BarLayout::Single);
-        assert_eq!(renderer.bars.len(), 1);
-        assert!(renderer.mp.is_none());
+        // 2 bars: main line + wire-stats line.
+        assert_eq!(renderer.bars.len(), 2);
+        assert!(renderer.mp.is_some());
         renderer.finish().await;
     }
 
@@ -192,7 +227,8 @@ mod tests {
     async fn multi_layout_for_v2_get() {
         let renderer = BarRenderer::new(get_v2_state());
         assert_eq!(renderer.layout, BarLayout::V2GetMulti);
-        assert_eq!(renderer.bars.len(), 3);
+        // 4 bars: index + data + wire + overall.
+        assert_eq!(renderer.bars.len(), 4);
         assert!(renderer.mp.is_some());
         renderer.finish().await;
     }
@@ -201,8 +237,8 @@ mod tests {
     async fn single_layout_for_v2_put() {
         let renderer = BarRenderer::new(put_v2_state());
         assert_eq!(renderer.layout, BarLayout::Single);
-        assert_eq!(renderer.bars.len(), 1);
-        assert!(renderer.mp.is_none());
+        assert_eq!(renderer.bars.len(), 2);
+        assert!(renderer.mp.is_some());
         renderer.finish().await;
     }
 

@@ -149,7 +149,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
             .unwrap_or_else(|| args.file.clone());
         Arc::from(base.as_str())
     };
-    let state = ProgressState::new(Phase::Put, 1, filename);
+    let state = ProgressState::new_with_wire(Phase::Put, 1, filename, handle.wire_counters());
     state.set_length(data.len() as u64, 0, total_chunks as u32);
     let mut reporter = ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
     reporter.on_start();
