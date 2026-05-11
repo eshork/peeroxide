@@ -169,6 +169,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     eprintln!("  pickup key printed to stdout");
     eprintln!("  refreshing every {}s, monitoring for acks...", args.refresh_interval);
 
+    let op_factory = reporter.operation_factory();
     let ack_topic = peeroxide::discovery_key(&[root_kp.public_key.as_slice(), b"ack"].concat());
     let mut seen_acks: HashSet<[u8; 32]> = HashSet::new();
     let mut pickup_count: u64 = 0;
@@ -192,7 +193,18 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
             } => break,
             _ = refresh_interval.tick() => {
                 eprintln!("  refreshing {} chunks...", chunks.len());
-                if let Err(e) = publish_chunks(&handle, &chunks, max_concurrency, dispatch_delay, None).await {
+                let bytes_total: u64 = chunks.iter().map(|c| c.encoded.len() as u64).sum();
+                let op = op_factory.begin_operation(bytes_total, 0, chunks.len() as u32);
+                let refresh_result = publish_chunks(
+                    &handle,
+                    &chunks,
+                    max_concurrency,
+                    dispatch_delay,
+                    Some(op.state()),
+                )
+                .await;
+                op.finish().await;
+                if let Err(e) = refresh_result {
                     eprintln!("  warning: refresh failed: {e}");
                 }
             }

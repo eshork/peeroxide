@@ -182,6 +182,22 @@ impl BarRenderer {
         self.finish_initial().await;
     }
 
+    /// Stop the tick task and remove the bar lines from the terminal,
+    /// consuming `self`. Used for transient per-operation bars where we
+    /// don't want empty placeholder lines left behind.
+    pub async fn finish_and_clear(mut self) {
+        if !self.finished {
+            self.stop.notify_one();
+            if let Some(handle) = self.tick_handle.take() {
+                let _ = handle.await;
+            }
+            self.finished = true;
+        }
+        for bar in &self.bars {
+            bar.finish_and_clear();
+        }
+    }
+
     pub fn state(&self) -> &Arc<ProgressState> {
         &self.state
     }

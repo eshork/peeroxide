@@ -14,7 +14,7 @@ use rand::RngCore;
 use tokio::signal;
 use tokio::sync::{Mutex, Notify, Semaphore};
 
-use crate::cmd::deaddrop::progress::reporter::ProgressReporter;
+use crate::cmd::deaddrop::progress::reporter::{OperationFactory, ProgressReporter};
 use crate::cmd::deaddrop::progress::state::{Phase, ProgressState};
 use crate::cmd::sigterm_recv;
 use crate::config::ResolvedConfig;
@@ -298,6 +298,7 @@ async fn publish_tree_refresh(
     handle: &HyperDhtHandle,
     tree: &BuiltTree,
     state: &ConcurrencyState,
+    progress: Option<Arc<ProgressState>>,
 ) -> Result<(), String> {
     let mut units: Vec<PublishUnit> = Vec::with_capacity(tree.data_chunks.len() + tree.index_chunks.len() + 1);
     for chunk in &tree.data_chunks {
@@ -315,7 +316,7 @@ async fn publish_tree_refresh(
         keypair: tree.root_keypair.clone(),
         encoded: tree.root_encoded.clone(),
     });
-    publish_units(handle, units, state, None).await
+    publish_units(handle, units, state, progress).await
 }
 
 /// Fan out a batch of `PublishUnit`s through the shared concurrency budget.
@@ -374,6 +375,7 @@ async fn publish_partial(
     data_indices: &[usize],
     index_indices: &[usize],
     state: &ConcurrencyState,
+    progress: Option<Arc<ProgressState>>,
 ) -> Result<(), String> {
     // Data chunks first.
     let mut tasks = tokio::task::JoinSet::new();
@@ -382,11 +384,16 @@ async fn publish_partial(
         let h = handle.clone();
         let bytes = tree.data_chunks[i].encoded.clone();
         let st = state.clone();
+        let pg = progress.clone();
+        let chunk_len = bytes.len() as u64;
         tasks.spawn(async move {
             let res = h.immutable_put(&bytes).await;
             let degraded = res.is_err();
             st.record(degraded).await;
             drop(permit);
+            if let Some(p) = pg {
+                p.inc_data(chunk_len);
+            }
             res.map(|_| ()).map_err(|e| format!("immutable_put failed: {e}"))
         });
     }
@@ -402,11 +409,15 @@ async fn publish_partial(
         let kp = chunk.keypair.clone();
         let bytes = chunk.encoded.clone();
         let st = state.clone();
+        let pg = progress.clone();
         tasks.spawn(async move {
             let res = put_mutable(&h, &kp, &bytes).await;
             let degraded = res.as_ref().map(|d| *d).unwrap_or(true);
             st.record(degraded).await;
             drop(permit);
+            if let Some(p) = pg {
+                p.inc_index();
+            }
             res.map(|_| ())
         });
     }
@@ -423,6 +434,7 @@ async fn run_need_watcher(
     tree: Arc<BuiltTree>,
     need_topic_key: [u8; 32],
     state: ConcurrencyState,
+    op_factory: OperationFactory,
     shutdown: Arc<Notify>,
 ) {
     let mut seen_peers: HashSet<[u8; 32]> = HashSet::new();
@@ -482,14 +494,27 @@ async fn run_need_watcher(
                             n_data,
                             n_index
                         );
-                        if let Err(e) = publish_partial(
+                        let bytes_total: u64 = resp
+                            .data_chunk_indices
+                            .iter()
+                            .map(|&i| tree.data_chunks[i].encoded.len() as u64)
+                            .sum();
+                        let op = op_factory.begin_operation(
+                            bytes_total,
+                            n_index as u32,
+                            n_data as u32,
+                        );
+                        let publish_result = publish_partial(
                             &handle,
                             &tree,
                             &resp.data_chunk_indices,
                             &resp.index_chunk_indices,
                             &state,
+                            Some(op.state()),
                         )
-                        .await
+                        .await;
+                        op.finish().await;
+                        if let Err(e) = publish_result
                         {
                             eprintln!("  warning: need-list republish failed: {e}");
                         } else {
@@ -728,11 +753,13 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let tree_arc = Arc::new(tree);
     let need_topic_key = need_topic(&tree_arc.root_keypair.public_key);
     let watcher_shutdown = Arc::new(Notify::new());
+    let op_factory = reporter.operation_factory();
     let watcher_handle = tokio::spawn(run_need_watcher(
         handle.clone(),
         tree_arc.clone(),
         need_topic_key,
         conc.clone(),
+        op_factory.clone(),
         watcher_shutdown.clone(),
     ));
 
@@ -765,7 +792,18 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
                     tree_arc.index_chunks.len() + 1,
                     tree_arc.data_chunks.len()
                 );
-                if let Err(e) = publish_tree_refresh(&handle, &tree_arc, &conc).await {
+                let bytes_total: u64 = tree_arc
+                    .data_chunks
+                    .iter()
+                    .map(|c| c.encoded.len() as u64)
+                    .sum();
+                let idx_total = (tree_arc.index_chunks.len() + 1) as u32;
+                let data_total = tree_arc.data_chunks.len() as u32;
+                let op = op_factory.begin_operation(bytes_total, idx_total, data_total);
+                let refresh_result =
+                    publish_tree_refresh(&handle, &tree_arc, &conc, Some(op.state())).await;
+                op.finish().await;
+                if let Err(e) = refresh_result {
                     eprintln!("  warning: refresh failed: {e}");
                 }
             }

@@ -10,7 +10,7 @@
 //! so it can fill the rate/eta fields on each progress snapshot.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::Mutex;
 
@@ -20,7 +20,7 @@ use crate::cmd::deaddrop::progress::{
     log::PeriodicLogRenderer,
     mode::ProgressMode,
     rate::RateCalculator,
-    state::ProgressState,
+    state::{Phase, ProgressState},
 };
 
 pub enum ProgressReporter {
@@ -168,6 +168,135 @@ impl ProgressReporter {
             emitter.emit_progress(rate_bps, eta);
         }
     }
+
+    /// Build a clonable factory for spawning short-lived per-operation
+    /// progress bars after the initial publish has finished. Use this
+    /// for refresh ticks and need-list republishes — `begin_operation`
+    /// returns a fresh transient bar that the caller drives by
+    /// `inc_data`/`inc_index` on the returned state and then disposes
+    /// with `OperationHandle::finish`.
+    ///
+    /// The factory inherits wire counters / filename / version from the
+    /// reporter so wire-throughput readings stay continuous across
+    /// operations.
+    pub fn operation_factory(&self) -> OperationFactory {
+        let kind = match self {
+            Self::Bar(r) => {
+                let st = r.state();
+                OperationFactoryKind::Bar {
+                    wire_sent: st.wire_bytes_sent.clone(),
+                    wire_received: st.wire_bytes_received.clone(),
+                    filename: st.filename.clone(),
+                    version: st.version,
+                }
+            }
+            Self::Log(_) | Self::Json { .. } | Self::Off => OperationFactoryKind::Quiet,
+        };
+        OperationFactory { kind }
+    }
+}
+
+/// Cloneable handle that can spawn transient per-operation progress
+/// bars. Safe to pass into background tasks (e.g. the need-list
+/// watcher) so they can show their own progress without holding a
+/// reference to the main reporter.
+#[derive(Clone)]
+pub struct OperationFactory {
+    kind: OperationFactoryKind,
+}
+
+#[derive(Clone)]
+enum OperationFactoryKind {
+    Bar {
+        wire_sent: Arc<AtomicU64>,
+        wire_received: Arc<AtomicU64>,
+        filename: Arc<str>,
+        version: u8,
+    },
+    /// Log / Json / Off: no visible per-operation UI. The handle still
+    /// exposes a `ProgressState` so publish helpers can call
+    /// `inc_data`/`inc_index` unconditionally without branching.
+    Quiet,
+}
+
+impl OperationFactory {
+    /// Begin a per-operation progress display. The returned handle owns
+    /// a fresh `ProgressState` that callers should hand to publish
+    /// helpers via `handle.state()`. Drop or call `finish()` when the
+    /// operation completes.
+    pub fn begin_operation(
+        &self,
+        bytes_total: u64,
+        indexes_total: u32,
+        data_total: u32,
+    ) -> OperationHandle {
+        match &self.kind {
+            OperationFactoryKind::Bar {
+                wire_sent,
+                wire_received,
+                filename,
+                version,
+            } => {
+                let wire = peeroxide_dht::io::WireCounters {
+                    bytes_sent: wire_sent.clone(),
+                    bytes_received: wire_received.clone(),
+                };
+                let state = ProgressState::new_with_wire(
+                    Phase::Put,
+                    *version,
+                    filename.clone(),
+                    wire,
+                );
+                state.set_length(bytes_total, indexes_total, data_total);
+                let renderer = BarRenderer::new(state.clone());
+                OperationHandle {
+                    state,
+                    inner: OperationInner::Bar(Some(renderer)),
+                }
+            }
+            OperationFactoryKind::Quiet => {
+                let state = ProgressState::new(Phase::Put, 2, Arc::<str>::from(""));
+                state.set_length(bytes_total, indexes_total, data_total);
+                OperationHandle {
+                    state,
+                    inner: OperationInner::Quiet,
+                }
+            }
+        }
+    }
+}
+
+/// Handle to an in-flight per-operation progress display.
+pub struct OperationHandle {
+    state: Arc<ProgressState>,
+    inner: OperationInner,
+}
+
+enum OperationInner {
+    Bar(Option<BarRenderer>),
+    Quiet,
+}
+
+impl OperationHandle {
+    /// Shared progress state for this operation. Hand it to publish
+    /// helpers so they can increment data/index counters as work
+    /// completes.
+    pub fn state(&self) -> Arc<ProgressState> {
+        self.state.clone()
+    }
+
+    /// Stop the per-operation bar and clear its lines from the
+    /// terminal. Quiet variants no-op. Consumes `self`.
+    pub async fn finish(mut self) {
+        match &mut self.inner {
+            OperationInner::Bar(slot) => {
+                if let Some(renderer) = slot.take() {
+                    renderer.finish_and_clear().await;
+                }
+            }
+            OperationInner::Quiet => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +415,51 @@ mod tests {
     async fn bar_finish_initial_then_finish() {
         let mut r = ProgressReporter::new(ProgressMode::Bar, make_state());
         r.finish_initial().await;
+        r.finish().await;
+    }
+
+    #[tokio::test]
+    async fn bar_operation_factory_begin_creates_visible_bar() {
+        let r = ProgressReporter::new(ProgressMode::Bar, make_state());
+        let factory = r.operation_factory();
+        let op = factory.begin_operation(500, 1, 4);
+        // The op state should have been initialized with the requested totals.
+        assert_eq!(op.state().bytes_total.load(Ordering::Relaxed), 500);
+        assert_eq!(op.state().indexes_total.load(Ordering::Relaxed), 1);
+        assert_eq!(op.state().data_total.load(Ordering::Relaxed), 4);
+        // Incrementing the state should be reflected.
+        op.state().inc_data(100);
+        assert_eq!(op.state().bytes_done.load(Ordering::Relaxed), 100);
+        assert_eq!(op.state().data_done.load(Ordering::Relaxed), 1);
+        op.finish().await;
+        r.finish().await;
+    }
+
+    #[tokio::test]
+    async fn quiet_operation_factory_returns_usable_state() {
+        for mode in [ProgressMode::Off, ProgressMode::PeriodicLog, ProgressMode::Json] {
+            let r = ProgressReporter::new(mode, make_state());
+            let factory = r.operation_factory();
+            let op = factory.begin_operation(100, 0, 1);
+            op.state().inc_data(50);
+            assert_eq!(op.state().bytes_done.load(Ordering::Relaxed), 50);
+            op.finish().await;
+            r.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn operation_factory_is_clone_and_send() {
+        let r = ProgressReporter::new(ProgressMode::Bar, make_state());
+        let factory = r.operation_factory();
+        let f2 = factory.clone();
+        let task = tokio::spawn(async move {
+            let op = f2.begin_operation(10, 0, 1);
+            op.finish().await;
+        });
+        task.await.unwrap();
+        let op = factory.begin_operation(20, 0, 1);
+        op.finish().await;
         r.finish().await;
     }
 }
