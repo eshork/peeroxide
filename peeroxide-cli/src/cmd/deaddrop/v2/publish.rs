@@ -42,12 +42,39 @@ const NEED_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// AIMD controller: monitors put-result degradation and adjusts an effective
 /// concurrency target.
+///
+/// Reacts continuously via an EWMA of the degraded-put rate, with two
+/// decision paths:
+///
+/// 1. **Normal**: every `decision_interval` samples, consult the EWMA and
+///    shrink (>30%), grow (<5%), or hold (the dead band in between).
+/// 2. **Fast trip**: if `fast_trip_threshold` degraded puts accumulate within
+///    a single decision interval, shrink immediately without waiting for the
+///    boundary. This catches sudden cliffs (e.g. a DHT region going dark)
+///    that the EWMA alone would smear over.
+///
+/// A one-shot `shrink_cooldown` damps back-to-back shrinks so in-flight puts
+/// from the larger target have a chance to drain before the next contraction.
 struct AimdController {
     current: usize,
     max_cap: Option<usize>,
-    window_size: usize,
-    degraded_in_window: u32,
-    total_in_window: u32,
+    /// EWMA of degradation in [0.0, 1.0]. Updated on every sample.
+    ewma: f64,
+    /// EWMA smoothing factor (per-sample weight). Smaller = smoother / slower
+    /// to react; larger = more reactive but jumpier.
+    alpha: f64,
+    /// Samples observed since the last decision (gates the normal path).
+    samples_since_decision: u32,
+    /// Make a normal decision every `decision_interval` samples.
+    decision_interval: u32,
+    /// Degraded samples observed since the last decision (gates fast-trip).
+    degraded_since_decision: u32,
+    /// If degraded count reaches this *within* a decision interval, shrink
+    /// immediately rather than waiting for the boundary.
+    fast_trip_threshold: u32,
+    /// If true, the previous decision shrank; suppress the next shrink so
+    /// the system can drain before contracting again.
+    shrink_cooldown: bool,
 }
 
 impl AimdController {
@@ -55,34 +82,81 @@ impl AimdController {
         Self {
             current: initial,
             max_cap,
-            window_size: 10,
-            degraded_in_window: 0,
-            total_in_window: 0,
+            ewma: 0.0,
+            // alpha = 0.1 → ~7-sample half-life; comparable reactivity to the
+            // old 10-sample tumbling window but smooth and never blind.
+            alpha: 0.1,
+            samples_since_decision: 0,
+            decision_interval: 20,
+            degraded_since_decision: 0,
+            // 50% degraded inside one decision interval → emergency shrink.
+            fast_trip_threshold: 10,
+            shrink_cooldown: false,
         }
     }
 
+    fn shrink_step(&mut self) -> usize {
+        self.current = ((self.current as f64 * 0.75) as usize).max(1);
+        self.shrink_cooldown = true;
+        self.current
+    }
+
+    fn grow_step(&mut self) -> usize {
+        let next = self.current + 2;
+        self.current = match self.max_cap {
+            Some(cap) => next.min(cap),
+            None => next,
+        };
+        self.shrink_cooldown = false;
+        self.current
+    }
+
+    fn reset_decision_window(&mut self) {
+        self.samples_since_decision = 0;
+        self.degraded_since_decision = 0;
+    }
+
     fn record(&mut self, degraded: bool) -> Option<usize> {
+        // Continuous EWMA update — never blind between decisions.
+        let sample = if degraded { 1.0 } else { 0.0 };
+        self.ewma = self.alpha * sample + (1.0 - self.alpha) * self.ewma;
+        self.samples_since_decision += 1;
         if degraded {
-            self.degraded_in_window += 1;
+            self.degraded_since_decision += 1;
         }
-        self.total_in_window += 1;
-        if self.total_in_window >= self.window_size as u32 {
-            let ratio = self.degraded_in_window as f64 / self.total_in_window as f64;
-            self.degraded_in_window = 0;
-            self.total_in_window = 0;
-            if ratio > 0.3 {
-                self.current = (self.current / 2).max(1);
-            } else if ratio == 0.0 {
-                let next = self.current + 1;
-                self.current = match self.max_cap {
-                    Some(cap) => next.min(cap),
-                    None => next,
-                };
+
+        // Fast-trip path: a burst of degradation mid-interval triggers an
+        // immediate shrink (still honoring back-to-back cooldown).
+        if self.degraded_since_decision >= self.fast_trip_threshold {
+            self.reset_decision_window();
+            if self.shrink_cooldown {
+                self.shrink_cooldown = false;
+                return None;
             }
-            Some(self.current)
-        } else {
-            None
+            return Some(self.shrink_step());
         }
+
+        // Normal decision boundary.
+        if self.samples_since_decision >= self.decision_interval {
+            let ewma = self.ewma;
+            self.reset_decision_window();
+            if ewma > 0.3 {
+                if self.shrink_cooldown {
+                    self.shrink_cooldown = false;
+                    return None;
+                }
+                return Some(self.shrink_step());
+            } else if ewma < 0.05 {
+                return Some(self.grow_step());
+            } else {
+                // Dead band: hold the line, but clear cooldown so a real
+                // spike afterwards can react without delay.
+                self.shrink_cooldown = false;
+                return None;
+            }
+        }
+
+        None
     }
 }
 
@@ -607,7 +681,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     // Initial concurrency. AIMD will adjust based on observed degradation;
     // starting higher gives better throughput on healthy networks while still
     // allowing the controller to shrink if puts start timing out.
-    let initial_concurrency = 16usize;
+    let initial_concurrency = 128usize;
     let conc = ConcurrencyState::new(initial_concurrency, max_concurrency);
 
     // 7. Progress reporter.
