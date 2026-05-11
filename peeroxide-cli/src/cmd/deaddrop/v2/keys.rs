@@ -11,13 +11,14 @@
 
 use peeroxide::{discovery_key, KeyPair};
 
-/// Per-deaddrop salt byte. Embedded in every data chunk header so unrelated
-/// deaddrops with identical content end up at distinct DHT addresses.
+/// Per-deaddrop salt byte. Embedded in every data chunk header.
 ///
-/// Deterministic across refresh cycles (so refresh re-publishes to the same
-/// addresses).
-pub fn salt(root_seed: &[u8; 32]) -> u8 {
-    root_seed[0]
+/// Currently forced to `0x00`: the original intent was DHT address-space
+/// isolation between unrelated deaddrops with identical content, but in
+/// practice this is unnecessary. The header byte is retained so the wire
+/// format does not change.
+pub fn salt(_root_seed: &[u8; 32]) -> u8 {
+    0x00
 }
 
 /// Derive the keypair for non-root index chunk number `i`.
@@ -64,11 +65,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn salt_is_first_seed_byte() {
+    fn salt_is_zero() {
         let mut seed = [0u8; 32];
         seed[0] = 0xAB;
         seed[1] = 0xCD;
-        assert_eq!(salt(&seed), 0xAB);
+        assert_eq!(salt(&seed), 0x00);
     }
 
     #[test]

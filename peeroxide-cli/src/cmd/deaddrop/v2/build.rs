@@ -387,7 +387,7 @@ mod tests {
         let tree = build_tree_from_bytes(&seed, &data).unwrap();
         for dc in &tree.data_chunks {
             assert_eq!(dc.encoded[0], 0x02); // version
-            assert_eq!(dc.encoded[1], 0xAA); // salt
+            assert_eq!(dc.encoded[1], 0x00); // salt (forced to 0)
         }
     }
 
