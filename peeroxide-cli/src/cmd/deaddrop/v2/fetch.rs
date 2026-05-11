@@ -41,6 +41,24 @@ enum TaskOutcome {
     },
 }
 
+/// Per-data-position state. Drives need-list publishing: only `Failed`
+/// positions are advertised, so the sender is not asked to re-publish
+/// chunks the receiver hasn't actually attempted yet.
+#[derive(Clone, Debug)]
+enum ChunkState {
+    /// No fetch has been scheduled — the parent index chunk hasn't been
+    /// decoded yet, so we don't know the chunk's address.
+    Unscheduled,
+    /// A fetch task is running (or queued behind the parallel-fetch
+    /// semaphore) for this address.
+    InFlight { address: [u8; 32] },
+    /// The fetch task returned an error. Eligible for re-spawn on the
+    /// next need-list publish cycle.
+    Failed { address: [u8; 32] },
+    /// The chunk has been successfully decoded and written.
+    Done,
+}
+
 /// Output destination strategy.
 enum OutputSink {
     /// Memory-mapped output file (write-by-position).
@@ -362,6 +380,10 @@ pub async fn get_from_root(
     let seen_index = Arc::new(Mutex::new(HashSet::<[u8; 32]>::new()));
     seen_index.lock().await.insert(root_pk);
 
+    // Per-data-position state. Drives need-list publishing and re-spawn
+    // of failed fetches; see `ChunkState` for the state machine.
+    let mut chunk_states: Vec<ChunkState> = vec![ChunkState::Unscheduled; n as usize];
+
     // Schedule all of root's children first (or root data slots if depth 0).
     schedule_children_from_index(
         &handle,
@@ -372,6 +394,7 @@ pub async fn get_from_root(
         0,
         n,
         chunk_timeout,
+        &mut chunk_states,
     )
     .await;
 
@@ -386,7 +409,6 @@ pub async fn get_from_root(
         need_shutdown.clone(),
     ));
     let mut need_seq: u64 = 0;
-    let mut received_data: HashSet<u64> = HashSet::new();
     let mut last_need_publish = tokio::time::Instant::now();
     let need_publish_interval = Duration::from_secs(20);
     // Skip republishing identical need-list content; keep a single
@@ -443,6 +465,7 @@ pub async fn get_from_root(
                                     base,
                                     end,
                                     chunk_timeout,
+                                    &mut chunk_states,
                                 )
                                 .await;
                             }
@@ -464,6 +487,11 @@ pub async fn get_from_root(
                 TaskOutcome::Data { position, result } => match result {
                     Ok(bytes) => match decode_data_chunk(&bytes) {
                         Ok(payload) => {
+                            // Drop late duplicates if this position was
+                            // re-spawned and an earlier task also returned.
+                            if matches!(chunk_states[position as usize], ChunkState::Done) {
+                                continue;
+                            }
                             // Trim payload for the last chunk if necessary.
                             let trim_len = if (position + 1) * super::wire::DATA_PAYLOAD_MAX as u64
                                 > root.file_size
@@ -481,7 +509,7 @@ pub async fn get_from_root(
                             }
                             progress.inc_data(trimmed.len() as u64);
                             last_progress_at = tokio::time::Instant::now();
-                            received_data.insert(position);
+                            chunk_states[position as usize] = ChunkState::Done;
                         }
                         Err(e) => {
                             eprintln!("error: invalid data chunk at position {position}: {e}");
@@ -493,19 +521,36 @@ pub async fn get_from_root(
                         eprintln!(
                             "  warning: failed to fetch data chunk at position {position}: {e}"
                         );
-                        // Continue — we may republish via need-list and retry.
+                        // Transition InFlight → Failed so the next need-list
+                        // cycle advertises it and re-spawns a fetch.
+                        if let ChunkState::InFlight { address } =
+                            chunk_states[position as usize]
+                        {
+                            chunk_states[position as usize] =
+                                ChunkState::Failed { address };
+                        }
                     }
                 },
             }
         }
 
-        // Periodically publish need-list for missing data positions.
+        // Periodically publish need-list for chunks the receiver has
+        // actually attempted and confirmed missing (Failed state). Chunks
+        // that haven't been scheduled yet, or whose fetch is still in
+        // flight, are deliberately excluded — we don't want to ask the
+        // sender to re-publish what the normal DHT get path may still
+        // deliver. The 20s cadence is a batching window so a burst of
+        // failures gets coalesced into one need-list update.
         if tokio::time::Instant::now() - last_need_publish >= need_publish_interval {
-            let mut missing: Vec<u32> = (0..n as u32)
-                .filter(|p| !received_data.contains(&(*p as u64)))
+            let missing: Vec<u32> = chunk_states
+                .iter()
+                .enumerate()
+                .filter_map(|(p, s)| match s {
+                    ChunkState::Failed { .. } => Some(p as u32),
+                    _ => None,
+                })
                 .collect();
-            missing.sort_unstable();
-            if !missing.is_empty() && missing.len() < n as usize {
+            if !missing.is_empty() {
                 let entries = coalesce_missing_ranges(&missing);
                 let encoded = encode_need_list(&entries);
                 let unchanged = last_published_encoded.as_deref() == Some(encoded.as_slice());
@@ -516,6 +561,29 @@ pub async fn get_from_root(
                     let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
                     last_actual_publish_at = Some(tokio::time::Instant::now());
                     last_published_encoded = Some(encoded);
+                }
+                // Re-spawn fetch tasks for Failed positions: with the
+                // need-list now published, the sender will republish the
+                // missing chunks, and the in-flight retry loop in the new
+                // task gets a fresh chunk_timeout window to pick them up.
+                for (pos, state) in chunk_states.iter_mut().enumerate() {
+                    if let ChunkState::Failed { address } = *state {
+                        let h = handle.clone();
+                        let permit_sem = sem.clone();
+                        tasks.spawn(async move {
+                            let _permit = permit_sem.acquire_owned().await.unwrap();
+                            let task_deadline =
+                                tokio::time::Instant::now() + chunk_timeout;
+                            let result =
+                                fetch_immutable_with_retry(&h, &address, task_deadline)
+                                    .await;
+                            TaskOutcome::Data {
+                                position: pos as u64,
+                                result,
+                            }
+                        });
+                        *state = ChunkState::InFlight { address };
+                    }
                 }
             }
             last_need_publish = tokio::time::Instant::now();
@@ -544,11 +612,14 @@ pub async fn get_from_root(
     }
 
     // Verify all data positions arrived.
-    if (received_data.len() as u64) != n {
+    let done_count = chunk_states
+        .iter()
+        .filter(|s| matches!(s, ChunkState::Done))
+        .count() as u64;
+    if done_count != n {
         eprintln!(
             "error: only {} of {} data chunks received",
-            received_data.len(),
-            n
+            done_count, n
         );
         output.discard();
         return cleanup(handle, task_handle, reporter, Some(need_kp), 1).await;
@@ -596,6 +667,7 @@ async fn schedule_children_from_index(
     base: u64,
     end: u64,
     chunk_timeout: Duration,
+    chunk_states: &mut [ChunkState],
 ) {
     if remaining_depth == 0 {
         // Slots are data hashes. Position[i] = base + i.
@@ -604,6 +676,7 @@ async fn schedule_children_from_index(
             if pos >= end {
                 break;
             }
+            chunk_states[pos as usize] = ChunkState::InFlight { address };
             let h = handle.clone();
             let permit_sem = sem.clone();
             tasks.spawn(async move {
