@@ -35,6 +35,14 @@ pub const SOFT_DEPTH_CAP: u32 = 4;
 /// How often the sender polls for need-list publishers from receivers.
 const NEED_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Hard wall-clock cap on a single DHT put. The DHT layer has no terminal
+/// timeout on `query` — a degenerate convergence can keep iterating
+/// indefinitely while holding the publish-pipeline permit. Healthy puts
+/// finish in 4–6s; 30s is ~5–7× that, well outside healthy variance.
+/// On timeout the future is dropped (freeing the permit) and the outcome
+/// is reported as degraded so AIMD reacts.
+const PUT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How often the sender re-announces its presence on the need topic
 /// (this is on the receiver side; we keep the constant here for the
 /// equivalent receiver-side use).
@@ -346,12 +354,21 @@ async fn dispatcher(
             let (degraded, bytes, is_data) = match unit {
                 PublishUnit::Data { encoded } => {
                     let len = encoded.len() as u64;
-                    let r = h.immutable_put(&encoded).await;
-                    (r.is_err(), len, true)
+                    let r = tokio::time::timeout(PUT_TIMEOUT, h.immutable_put(&encoded)).await;
+                    let degraded = match r {
+                        Ok(Ok(_)) => false,
+                        Ok(Err(_)) | Err(_) => true,
+                    };
+                    (degraded, len, true)
                 }
                 PublishUnit::Index { keypair, encoded } => {
-                    let r = put_mutable(&h, &keypair, &encoded).await;
-                    (r.as_ref().map(|d| *d).unwrap_or(true), 0, false)
+                    let r = tokio::time::timeout(PUT_TIMEOUT, put_mutable(&h, &keypair, &encoded))
+                        .await;
+                    let degraded = match r {
+                        Ok(Ok(d)) => d,
+                        Ok(Err(_)) | Err(_) => true,
+                    };
+                    (degraded, 0, false)
                 }
             };
             st.record(degraded).await;
