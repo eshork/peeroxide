@@ -343,8 +343,20 @@ pub async fn get_from_root(
     };
 
     // 4. BFS fetch.
+    //
+    // `chunk_timeout` is a *sliding* no-progress window: if no chunk has been
+    // successfully decoded for this long, the operation aborts. It's *not* a
+    // wall-clock budget for the whole download — a steady-progressing fetch
+    // can run as long as it needs to.
+    //
+    // Per-fetch-task deadlines are anchored at spawn time (see
+    // `schedule_children_from_index`), so each individual `mutable_get` /
+    // `immutable_get` retry loop has up to `chunk_timeout` to land its
+    // chunk. Combined with the outer sliding window, this gives:
+    //   - Any single chunk: up to chunk_timeout from when its task started.
+    //   - Whole operation: aborts only when no progress is being made
+    //     anywhere for chunk_timeout.
     let chunk_timeout = Duration::from_secs(args.timeout);
-    let deadline = tokio::time::Instant::now() + chunk_timeout;
     let sem = Arc::new(Semaphore::new(PARALLEL_FETCH_CAP));
     let mut tasks: JoinSet<TaskOutcome> = JoinSet::new();
     let seen_index = Arc::new(Mutex::new(HashSet::<[u8; 32]>::new()));
@@ -359,7 +371,7 @@ pub async fn get_from_root(
         tree_depth,
         0,
         n,
-        deadline,
+        chunk_timeout,
     )
     .await;
 
@@ -377,6 +389,17 @@ pub async fn get_from_root(
     let mut received_data: HashSet<u64> = HashSet::new();
     let mut last_need_publish = tokio::time::Instant::now();
     let need_publish_interval = Duration::from_secs(20);
+    // Skip republishing identical need-list content; keep a single
+    // keepalive republish so the DHT record (which expires in ~20m) stays
+    // alive even when the missing-set hasn't changed. 10m = half the TTL.
+    let mut last_published_encoded: Option<Vec<u8>> = None;
+    let mut last_actual_publish_at: Option<tokio::time::Instant> = None;
+    let need_keepalive_interval = Duration::from_secs(600);
+
+    // Sliding no-progress window: updated on every successful index/data
+    // decode. The drain loop aborts only if this stops moving forward for
+    // `chunk_timeout` seconds.
+    let mut last_progress_at = tokio::time::Instant::now();
 
     // 6. Drain results.
     let mut had_error = false;
@@ -405,6 +428,7 @@ pub async fn get_from_root(
                         match decode_non_root_index(&bytes) {
                             Ok(slots) => {
                                 progress.inc_index();
+                                last_progress_at = tokio::time::Instant::now();
                                 let mut seen = seen_index.lock().await;
                                 // No-op for loop detection; we already
                                 // de-duplicate at schedule time below.
@@ -418,7 +442,7 @@ pub async fn get_from_root(
                                     remaining_depth,
                                     base,
                                     end,
-                                    deadline,
+                                    chunk_timeout,
                                 )
                                 .await;
                             }
@@ -456,6 +480,7 @@ pub async fn get_from_root(
                                 break;
                             }
                             progress.inc_data(trimmed.len() as u64);
+                            last_progress_at = tokio::time::Instant::now();
                             received_data.insert(position);
                         }
                         Err(e) => {
@@ -483,15 +508,27 @@ pub async fn get_from_root(
             if !missing.is_empty() && missing.len() < n as usize {
                 let entries = coalesce_missing_ranges(&missing);
                 let encoded = encode_need_list(&entries);
-                need_seq += 1;
-                let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
+                let unchanged = last_published_encoded.as_deref() == Some(encoded.as_slice());
+                let needs_keepalive = last_actual_publish_at
+                    .map_or(true, |t| t.elapsed() >= need_keepalive_interval);
+                if !unchanged || needs_keepalive {
+                    need_seq += 1;
+                    let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
+                    last_actual_publish_at = Some(tokio::time::Instant::now());
+                    last_published_encoded = Some(encoded);
+                }
             }
             last_need_publish = tokio::time::Instant::now();
         }
 
-        // Timeout check.
-        if tokio::time::Instant::now() >= deadline {
-            eprintln!("error: timeout waiting for chunks");
+        // Sliding-window timeout: abort only if no chunk has decoded in
+        // the last `chunk_timeout` seconds. Steady-progressing downloads
+        // can run as long as they need.
+        if tokio::time::Instant::now() - last_progress_at >= chunk_timeout {
+            eprintln!(
+                "error: no progress for {}s; aborting",
+                chunk_timeout.as_secs()
+            );
             had_error = true;
             break;
         }
@@ -558,7 +595,7 @@ async fn schedule_children_from_index(
     remaining_depth: u32,
     base: u64,
     end: u64,
-    deadline: tokio::time::Instant,
+    chunk_timeout: Duration,
 ) {
     if remaining_depth == 0 {
         // Slots are data hashes. Position[i] = base + i.
@@ -571,7 +608,12 @@ async fn schedule_children_from_index(
             let permit_sem = sem.clone();
             tasks.spawn(async move {
                 let _permit = permit_sem.acquire_owned().await.unwrap();
-                let result = fetch_immutable_with_retry(&h, &address, deadline).await;
+                // Per-task deadline anchored at when the task actually
+                // starts running, so chunks scheduled mid-fetch get a
+                // full budget rather than inheriting the original
+                // operation-start deadline.
+                let task_deadline = tokio::time::Instant::now() + chunk_timeout;
+                let result = fetch_immutable_with_retry(&h, &address, task_deadline).await;
                 TaskOutcome::Data {
                     position: pos,
                     result,
@@ -602,7 +644,8 @@ async fn schedule_children_from_index(
         let permit_sem = sem.clone();
         tasks.spawn(async move {
             let _permit = permit_sem.acquire_owned().await.unwrap();
-            let result = fetch_mutable_with_retry(&h, &child_pk, deadline).await;
+            let task_deadline = tokio::time::Instant::now() + chunk_timeout;
+            let result = fetch_mutable_with_retry(&h, &child_pk, task_deadline).await;
             TaskOutcome::Index {
                 remaining_depth: child_remaining,
                 base: child_base,

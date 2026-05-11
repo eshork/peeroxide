@@ -15,6 +15,7 @@ pub mod fetch;
 pub mod keys;
 pub mod need;
 pub mod publish;
+pub mod queue;
 pub mod stream;
 pub mod tree;
 pub mod wire;

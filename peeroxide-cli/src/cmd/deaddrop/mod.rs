@@ -96,7 +96,8 @@ pub struct GetArgs {
     #[arg(long, requires = "output")]
     pub json: bool,
 
-    /// Give up on any single chunk after this duration (default: 1200s)
+    /// Abort if no progress is made for this duration (sliding window, default: 1200s).
+    /// Steady-progressing downloads have no hard wall-clock limit.
     #[arg(long, default_value_t = 1200)]
     timeout: u64,
 

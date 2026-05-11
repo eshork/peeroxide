@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,6 +23,7 @@ use super::super::{build_dht_config, to_hex, PutArgs};
 use super::build::{build_tree, BuiltTree};
 use super::keys::{ack_topic, need_topic};
 use super::need::{decode_need_list, response_chunks_for_list};
+use super::queue::{ChunkId, Lane, Operation, WorkQueue};
 use super::tree::data_chunk_count;
 use super::wire::DATA_PAYLOAD_MAX;
 
@@ -163,7 +164,7 @@ impl AimdController {
 /// Single shared concurrency state between the publish pipeline and the AIMD
 /// controller. Permits are forgotten on shrink and added back on grow.
 #[derive(Clone)]
-struct ConcurrencyState {
+pub(super) struct ConcurrencyState {
     sem: Arc<Semaphore>,
     target: Arc<AtomicUsize>,
     forget_pending: Arc<AtomicUsize>,
@@ -242,202 +243,174 @@ async fn put_mutable(
 }
 
 /// One unit of work for the publish pipeline.
-enum PublishUnit {
+pub(super) enum PublishUnit {
     /// An immutable data chunk (`immutable_put`).
     Data { encoded: Vec<u8> },
     /// A signed mutable index chunk (`mutable_put`).
     Index { keypair: KeyPair, encoded: Vec<u8> },
 }
 
-/// Publish all non-root chunks (data + every index layer) interleaved through
-/// the shared concurrency budget, then publish the root last.
-///
-/// The spec only requires that the root be published last — non-root chunks
-/// can go in any order, since the root is the only discoverable entry point.
-/// Interleaving lets the index counter make progress alongside the data
-/// counter and avoids a "ramp twice" pattern (data then index) under AIMD.
-async fn publish_tree_initial(
-    handle: &HyperDhtHandle,
-    tree: &BuiltTree,
-    state: &ConcurrencyState,
-    progress: Option<Arc<ProgressState>>,
-) -> Result<(), String> {
-    let mut units: Vec<PublishUnit> = Vec::with_capacity(tree.data_chunks.len() + tree.index_chunks.len());
-    for chunk in &tree.data_chunks {
-        units.push(PublishUnit::Data {
-            encoded: chunk.encoded.clone(),
-        });
-    }
-    for chunk in &tree.index_chunks {
-        units.push(PublishUnit::Index {
-            keypair: chunk.keypair.clone(),
-            encoded: chunk.encoded.clone(),
-        });
-    }
-    publish_units(handle, units, state, progress).await?;
-
-    // Root last. This is the spec's only ordering requirement: until the root
-    // is published, no one can derive any other pubkey in the drop, so a
-    // partial publish is not discoverable.
-    publish_units(
-        handle,
-        vec![PublishUnit::Index {
-            keypair: tree.root_keypair.clone(),
-            encoded: tree.root_encoded.clone(),
-        }],
-        state,
-        None,
-    )
-    .await?;
-
-    Ok(())
-}
-
-/// Re-publish the entire tree on a refresh tick.
-async fn publish_tree_refresh(
-    handle: &HyperDhtHandle,
-    tree: &BuiltTree,
-    state: &ConcurrencyState,
-    progress: Option<Arc<ProgressState>>,
-) -> Result<(), String> {
-    let mut units: Vec<PublishUnit> = Vec::with_capacity(tree.data_chunks.len() + tree.index_chunks.len() + 1);
-    for chunk in &tree.data_chunks {
-        units.push(PublishUnit::Data {
-            encoded: chunk.encoded.clone(),
-        });
-    }
-    for chunk in &tree.index_chunks {
-        units.push(PublishUnit::Index {
-            keypair: chunk.keypair.clone(),
-            encoded: chunk.encoded.clone(),
-        });
-    }
-    units.push(PublishUnit::Index {
-        keypair: tree.root_keypair.clone(),
-        encoded: tree.root_encoded.clone(),
-    });
-    publish_units(handle, units, state, progress).await
-}
-
-/// Fan out a batch of `PublishUnit`s through the shared concurrency budget.
-async fn publish_units(
-    handle: &HyperDhtHandle,
-    units: Vec<PublishUnit>,
-    state: &ConcurrencyState,
-    progress: Option<Arc<ProgressState>>,
-) -> Result<(), String> {
-    let mut tasks = tokio::task::JoinSet::new();
-    for unit in units {
+/// Long-lived dispatcher: pull from the queue, acquire a permit, spawn the
+/// put. Exits cleanly on `shutdown`.
+async fn dispatcher(
+    handle: HyperDhtHandle,
+    queue: Arc<WorkQueue>,
+    state: ConcurrencyState,
+    shutdown: Arc<Notify>,
+) {
+    loop {
+        let pop_fut = queue.pop();
+        tokio::pin!(pop_fut);
+        let (id, unit, _subs) = tokio::select! {
+            _ = shutdown.notified() => break,
+            r = &mut pop_fut => r,
+        };
         let permit = state.acquire().await;
         let h = handle.clone();
         let st = state.clone();
-        let pg = progress.clone();
-        match unit {
-            PublishUnit::Data { encoded } => {
-                let chunk_len = encoded.len() as u64;
-                tasks.spawn(async move {
-                    let result = h.immutable_put(&encoded).await;
-                    let degraded = result.is_err();
-                    st.record(degraded).await;
-                    drop(permit);
-                    if let Some(state) = pg {
-                        state.inc_data(chunk_len);
-                    }
-                    result
-                        .map(|_| ())
-                        .map_err(|e| format!("immutable_put failed: {e}"))
-                });
-            }
-            PublishUnit::Index { keypair, encoded } => {
-                tasks.spawn(async move {
-                    let res = put_mutable(&h, &keypair, &encoded).await;
-                    let degraded = res.as_ref().map(|d| *d).unwrap_or(true);
-                    st.record(degraded).await;
-                    drop(permit);
-                    if let Some(state) = pg {
-                        state.inc_index();
-                    }
-                    res.map(|_| ())
-                });
-            }
-        }
-    }
-    while let Some(joined) = tasks.join_next().await {
-        joined.map_err(|e| format!("publish task panicked: {e}"))??;
-    }
-    Ok(())
-}
-
-/// Re-publish a specific subset of chunks (for need-list responses).
-async fn publish_partial(
-    handle: &HyperDhtHandle,
-    tree: &BuiltTree,
-    data_indices: &[usize],
-    index_indices: &[usize],
-    state: &ConcurrencyState,
-    progress: Option<Arc<ProgressState>>,
-) -> Result<(), String> {
-    // Data chunks first.
-    let mut tasks = tokio::task::JoinSet::new();
-    for &i in data_indices {
-        let permit = state.acquire().await;
-        let h = handle.clone();
-        let bytes = tree.data_chunks[i].encoded.clone();
-        let st = state.clone();
-        let pg = progress.clone();
-        let chunk_len = bytes.len() as u64;
-        tasks.spawn(async move {
-            let res = h.immutable_put(&bytes).await;
-            let degraded = res.is_err();
+        let q = queue.clone();
+        tokio::spawn(async move {
+            let (degraded, bytes, is_data) = match unit {
+                PublishUnit::Data { encoded } => {
+                    let len = encoded.len() as u64;
+                    let r = h.immutable_put(&encoded).await;
+                    (r.is_err(), len, true)
+                }
+                PublishUnit::Index { keypair, encoded } => {
+                    let r = put_mutable(&h, &keypair, &encoded).await;
+                    (r.as_ref().map(|d| *d).unwrap_or(true), 0, false)
+                }
+            };
             st.record(degraded).await;
+            q.mark_done(id, bytes, is_data).await;
             drop(permit);
-            if let Some(p) = pg {
-                p.inc_data(chunk_len);
-            }
-            res.map(|_| ()).map_err(|e| format!("immutable_put failed: {e}"))
         });
     }
-    while let Some(joined) = tasks.join_next().await {
-        joined.map_err(|e| format!("partial-data task panicked: {e}"))??;
-    }
-    // Then index chunks.
-    let mut tasks = tokio::task::JoinSet::new();
-    for &i in index_indices {
-        let chunk = &tree.index_chunks[i];
-        let permit = state.acquire().await;
-        let h = handle.clone();
-        let kp = chunk.keypair.clone();
-        let bytes = chunk.encoded.clone();
-        let st = state.clone();
-        let pg = progress.clone();
-        tasks.spawn(async move {
-            let res = put_mutable(&h, &kp, &bytes).await;
-            let degraded = res.as_ref().map(|d| *d).unwrap_or(true);
-            st.record(degraded).await;
-            drop(permit);
-            if let Some(p) = pg {
-                p.inc_index();
-            }
-            res.map(|_| ())
-        });
-    }
-    while let Some(joined) = tasks.join_next().await {
-        joined.map_err(|e| format!("partial-index task panicked: {e}"))??;
-    }
-    Ok(())
 }
 
-/// Background task: poll the need topic and republish chunks as receivers
-/// request them. Ends when `shutdown` fires.
+/// Enqueue every non-root chunk of `tree` against `op` on the given lane.
+async fn enqueue_tree_non_root(
+    queue: &WorkQueue,
+    tree: &BuiltTree,
+    lane: Lane,
+    op: &Operation,
+) {
+    for (i, c) in tree.data_chunks.iter().enumerate() {
+        queue
+            .enqueue(
+                ChunkId::Data(i),
+                PublishUnit::Data {
+                    encoded: c.encoded.clone(),
+                },
+                lane,
+                op.subscriber(),
+            )
+            .await;
+    }
+    for (i, c) in tree.index_chunks.iter().enumerate() {
+        queue
+            .enqueue(
+                ChunkId::Index(i),
+                PublishUnit::Index {
+                    keypair: c.keypair.clone(),
+                    encoded: c.encoded.clone(),
+                },
+                lane,
+                op.subscriber(),
+            )
+            .await;
+    }
+}
+
+/// Enqueue only the chunks listed in `data_idx` / `index_idx` (need-list
+/// response). Always uses the High lane.
+async fn enqueue_partial(
+    queue: &WorkQueue,
+    tree: &BuiltTree,
+    data_idx: &[usize],
+    index_idx: &[usize],
+    op: &Operation,
+) {
+    for &i in data_idx {
+        let c = &tree.data_chunks[i];
+        queue
+            .enqueue(
+                ChunkId::Data(i),
+                PublishUnit::Data {
+                    encoded: c.encoded.clone(),
+                },
+                Lane::High,
+                op.subscriber(),
+            )
+            .await;
+    }
+    for &i in index_idx {
+        let c = &tree.index_chunks[i];
+        queue
+            .enqueue(
+                ChunkId::Index(i),
+                PublishUnit::Index {
+                    keypair: c.keypair.clone(),
+                    encoded: c.encoded.clone(),
+                },
+                Lane::High,
+                op.subscriber(),
+            )
+            .await;
+    }
+}
+
+/// Enqueue the root index chunk.
+async fn enqueue_root(queue: &WorkQueue, tree: &BuiltTree, lane: Lane, op: &Operation) {
+    queue
+        .enqueue(
+            ChunkId::Root,
+            PublishUnit::Index {
+                keypair: tree.root_keypair.clone(),
+                encoded: tree.root_encoded.clone(),
+            },
+            lane,
+            op.subscriber(),
+        )
+        .await;
+}
+
+/// Per-peer state tracked by the need-watcher. Dedups by value-hash so a
+/// receiver's 10-minute keepalive republish (identical content, bumped
+/// seq) doesn't trigger a duplicate service.
+#[derive(Default)]
+struct PeerState {
+    /// Hash of the last value bytes we serviced (or empty-marker for done).
+    last_value_hash: Option<[u8; 32]>,
+    /// True once we've observed the empty-need-list "done" sentinel; we
+    /// stop fetching from this peer thereafter.
+    completed: bool,
+    /// Last seq we observed — informational, only used for log clarity.
+    last_seq: Option<u64>,
+}
+
+fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let out = h.finalize();
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&out);
+    arr
+}
+
+/// Background task: poll the need topic and enqueue chunks as receivers
+/// request them. Dedups by per-peer value hash so identical keepalive
+/// republishes from the receiver cost only a single `mutable_get`.
 async fn run_need_watcher(
     handle: HyperDhtHandle,
     tree: Arc<BuiltTree>,
+    queue: Arc<WorkQueue>,
     need_topic_key: [u8; 32],
-    state: ConcurrencyState,
     op_factory: OperationFactory,
     shutdown: Arc<Notify>,
 ) {
-    let mut seen_peers: HashSet<[u8; 32]> = HashSet::new();
+    let mut peers: HashMap<[u8; 32], PeerState> = HashMap::new();
     eprintln!(
         "  need-list watcher started (poll every {}s)",
         NEED_POLL_INTERVAL.as_secs()
@@ -455,42 +428,62 @@ async fn run_need_watcher(
                 };
                 for result in &lookup {
                     for peer in &result.peers {
-                        if seen_peers.insert(peer.public_key) {
+                        let pk_short = to_hex(&peer.public_key);
+                        let entry = peers.entry(peer.public_key).or_insert_with(|| {
                             eprintln!(
                                 "  need-list peer discovered: {}",
-                                &to_hex(&peer.public_key)[..8]
+                                &pk_short[..8]
                             );
+                            PeerState::default()
+                        });
+                        if entry.completed {
+                            continue;
                         }
-                        let value = match handle.mutable_get(&peer.public_key, 0).await {
-                            Ok(Some(v)) => v.value,
+                        let mv = match handle.mutable_get(&peer.public_key, 0).await {
+                            Ok(Some(v)) => v,
                             Ok(None) => continue,
                             Err(e) => {
                                 eprintln!(
                                     "  warning: need-list get from {} failed: {e}",
-                                    &to_hex(&peer.public_key)[..8]
+                                    &pk_short[..8]
                                 );
                                 continue;
                             }
                         };
-                        let entries = match decode_need_list(&value) {
+                        let value_hash = hash_bytes(&mv.value);
+                        if entry.last_value_hash == Some(value_hash) {
+                            // Same content as last time we serviced — keepalive
+                            // republish from the receiver. Skip.
+                            entry.last_seq = Some(mv.seq);
+                            continue;
+                        }
+                        let entries = match decode_need_list(&mv.value) {
                             Ok(v) => v,
                             Err(e) => {
                                 eprintln!(
                                     "  warning: malformed need-list from {}: {e}",
-                                    &to_hex(&peer.public_key)[..8]
+                                    &pk_short[..8]
                                 );
                                 continue;
                             }
                         };
                         if entries.is_empty() {
+                            entry.completed = true;
+                            entry.last_value_hash = Some(value_hash);
+                            entry.last_seq = Some(mv.seq);
+                            eprintln!(
+                                "  need-list peer {} signaled done",
+                                &pk_short[..8]
+                            );
                             continue;
                         }
                         let resp = response_chunks_for_list(&tree, &entries);
                         let n_data = resp.data_chunk_indices.len();
                         let n_index = resp.index_chunk_indices.len();
                         eprintln!(
-                            "  need-list received from {}: {} data + {} index chunks to republish",
-                            &to_hex(&peer.public_key)[..8],
+                            "  need-list received from {} (seq {}): {} data + {} index chunks to republish",
+                            &pk_short[..8],
+                            mv.seq,
                             n_data,
                             n_index
                         );
@@ -499,29 +492,32 @@ async fn run_need_watcher(
                             .iter()
                             .map(|&i| tree.data_chunks[i].encoded.len() as u64)
                             .sum();
-                        let op = op_factory.begin_operation(
+                        let handle_op = op_factory.begin_operation(
                             bytes_total,
                             n_index as u32,
                             n_data as u32,
                         );
-                        let publish_result = publish_partial(
-                            &handle,
+                        let op = Operation::new(handle_op.state(), n_data + n_index);
+                        enqueue_partial(
+                            &queue,
                             &tree,
                             &resp.data_chunk_indices,
                             &resp.index_chunk_indices,
-                            &state,
-                            Some(op.state()),
+                            &op,
                         )
                         .await;
-                        op.finish().await;
-                        if let Err(e) = publish_result
-                        {
-                            eprintln!("  warning: need-list republish failed: {e}");
-                        } else {
-                            eprintln!(
-                                "  need-list republish complete: {n_data} data + {n_index} index"
-                            );
-                        }
+                        // Mark as serviced on enqueue (not completion) — a
+                        // failed put causes AIMD shrink, the receiver
+                        // times out and publishes a fresh seq with the
+                        // still-missing set, which we'll see as a new
+                        // value hash and service again.
+                        entry.last_value_hash = Some(value_hash);
+                        entry.last_seq = Some(mv.seq);
+                        op.await_done().await;
+                        handle_op.finish().await;
+                        eprintln!(
+                            "  need-list republish complete: {n_data} data + {n_index} index"
+                        );
                     }
                 }
             }
@@ -728,14 +724,27 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let mut reporter = ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
     reporter.on_start();
 
-    // 8. Initial publish.
-    if let Err(e) = publish_tree_initial(&handle, &tree, &conc, Some(state.clone())).await {
-        eprintln!("error: publish failed: {e}");
-        reporter.finish().await;
-        let _ = handle.destroy().await;
-        let _ = task.await;
-        return 1;
-    }
+    // 8. Spawn the dispatcher and run the initial publish through the queue.
+    let queue = WorkQueue::new();
+    let dispatcher_shutdown = Arc::new(Notify::new());
+    let dispatcher_handle = tokio::spawn(dispatcher(
+        handle.clone(),
+        queue.clone(),
+        conc.clone(),
+        dispatcher_shutdown.clone(),
+    ));
+
+    // Initial publish: non-root chunks first (data + index layers), then
+    // the root last. The "root last" rule is the only ordering constraint
+    // in v3: until the root is published, no other pubkey is derivable.
+    let non_root_count = tree.data_chunks.len() + tree.index_chunks.len();
+    let initial_op = Operation::new(state.clone(), non_root_count);
+    enqueue_tree_non_root(&queue, &tree, Lane::Normal, &initial_op).await;
+    initial_op.await_done().await;
+
+    let root_op = Operation::new(state.clone(), 1);
+    enqueue_root(&queue, &tree, Lane::Normal, &root_op).await;
+    root_op.await_done().await;
 
     // 9. Print pickup key.
     let pickup_key = to_hex(&tree.root_keypair.public_key);
@@ -757,15 +766,15 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let watcher_handle = tokio::spawn(run_need_watcher(
         handle.clone(),
         tree_arc.clone(),
+        queue.clone(),
         need_topic_key,
-        conc.clone(),
         op_factory.clone(),
         watcher_shutdown.clone(),
     ));
 
     // 11. Refresh + ack loop.
     let ack_topic_key = ack_topic(&tree_arc.root_keypair.public_key);
-    let mut seen_acks: HashSet<[u8; 32]> = HashSet::new();
+    let mut seen_acks: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
     let mut pickup_count: u64 = 0;
     let ttl_deadline = args
         .ttl
@@ -799,13 +808,16 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
                     .sum();
                 let idx_total = (tree_arc.index_chunks.len() + 1) as u32;
                 let data_total = tree_arc.data_chunks.len() as u32;
-                let op = op_factory.begin_operation(bytes_total, idx_total, data_total);
-                let refresh_result =
-                    publish_tree_refresh(&handle, &tree_arc, &conc, Some(op.state())).await;
-                op.finish().await;
-                if let Err(e) = refresh_result {
-                    eprintln!("  warning: refresh failed: {e}");
-                }
+                let total_chunks = tree_arc.index_chunks.len() + tree_arc.data_chunks.len() + 1;
+                let handle_op = op_factory.begin_operation(bytes_total, idx_total, data_total);
+                let op = Operation::new(handle_op.state(), total_chunks);
+                // Concurrent refresh ticks coalesce naturally: chunks still
+                // queued or in flight from a prior tick attach this op as a
+                // subscriber rather than producing a duplicate put.
+                enqueue_tree_non_root(&queue, &tree_arc, Lane::Normal, &op).await;
+                enqueue_root(&queue, &tree_arc, Lane::Normal, &op).await;
+                op.await_done().await;
+                handle_op.finish().await;
             }
             _ = ack_interval.tick() => {
                 let mut max_reached = false;
@@ -837,6 +849,8 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     // 12. Cleanup.
     watcher_shutdown.notify_one();
     let _ = watcher_handle.await;
+    dispatcher_shutdown.notify_one();
+    let _ = dispatcher_handle.await;
     eprintln!("  stopped refreshing; records expire in ~20m");
     reporter.finish().await;
     let _ = handle.destroy().await;
