@@ -67,6 +67,15 @@ pub struct JoinArgs {
     /// fill the batch sooner.
     #[arg(long, default_value = "50")]
     pub batch_wait_ms: u64,
+
+    /// After stdin closes (EOF), remain joined to the channel in read-only
+    /// mode instead of exiting. Useful when a script pipes a burst of
+    /// messages and the operator wants to keep watching the channel
+    /// afterward. Default is to exit cleanly once stdin is exhausted, which
+    /// matches the natural shell-pipe lifecycle (`file | peeroxide chat join`
+    /// finishes when the file does).
+    #[arg(long)]
+    pub stay_after_eof: bool,
 }
 
 pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
@@ -177,6 +186,7 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
     let mut pub_tx: Option<mpsc::Sender<PubJob>> = None;
     let mut publisher_handle: Option<JoinHandle<()>> = None;
     let mut stdin_handle: Option<JoinHandle<()>> = None;
+    let mut stdin_eof_rx: Option<tokio::sync::oneshot::Receiver<()>> = None;
 
     if let Some(fs) = feed_state {
         let (tx, rx) = mpsc::channel::<PubJob>(64);
@@ -203,7 +213,10 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         }));
 
         // stdin → publisher channel. send().await applies natural backpressure
-        // when the publisher cannot keep up.
+        // when the publisher cannot keep up. The oneshot signals the main loop
+        // on EOF so it can choose whether to exit (default) or remain joined.
+        let (eof_tx, eof_rx) = tokio::sync::oneshot::channel::<()>();
+        stdin_eof_rx = Some(eof_rx);
         stdin_handle = Some(tokio::spawn(async move {
             let stdin = tokio::io::stdin();
             let mut lines = BufReader::new(stdin).lines();
@@ -231,7 +244,11 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                     }
                 }
             }
-            eprintln!("*** stdin closed, entering read-only mode");
+            // Drop tx so the publisher's rx.recv() returns None once it has
+            // drained any in-flight job. Notify the main loop of EOF so it
+            // can apply the --stay-after-eof policy.
+            drop(tx);
+            let _ = eof_tx.send(());
         }));
     }
 
@@ -259,6 +276,13 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
     let mut backlog_done = false;
     let friends_reload_interval = tokio::time::Duration::from_secs(30);
     let mut friends_reload_tick = tokio::time::interval(friends_reload_interval);
+    let mut eof_handled = false;
+    // True when we exit the loop because stdin reached EOF and the user
+    // did NOT pass --stay-after-eof. In that case the publish queue must be
+    // fully drained before we return; aborting mid-batch would leave the
+    // user's messages un-published. False on Ctrl-C / SIGTERM, where the
+    // user has explicitly asked to stop and a short drain timeout suffices.
+    let mut graceful_eof_exit = false;
 
     loop {
         tokio::select! {
@@ -275,6 +299,26 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                     display_state.reload_friends(updated_friends);
                 }
             }
+            // Fires exactly once when the stdin task reports EOF. The guard
+            // disables the arm after first delivery so the oneshot (which
+            // returns Pending forever after consumption) is not re-polled.
+            () = async {
+                if let Some(rx) = stdin_eof_rx.as_mut() {
+                    let _ = rx.await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if !eof_handled && stdin_eof_rx.is_some() => {
+                eof_handled = true;
+                stdin_eof_rx = None;
+                if args.stay_after_eof {
+                    eprintln!("*** stdin closed, entering read-only mode");
+                    // continue running; reader + publisher (idle) stay alive
+                } else {
+                    graceful_eof_exit = true;
+                    break;
+                }
+            }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\n*** shutting down");
                 break;
@@ -287,16 +331,32 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
     }
 
     // Drop the publisher send half so the publisher's rx.recv() returns None
-    // and the worker exits cleanly.
+    // and the worker exits cleanly once it has drained its in-flight batch
+    // and any queued jobs.
     drop(pub_tx);
 
     if let Some(h) = stdin_handle {
         h.abort();
     }
     if let Some(h) = publisher_handle {
-        // Give the publisher a chance to finish its in-flight batch before
-        // tearing the DHT down.
-        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), h).await;
+        if graceful_eof_exit {
+            // EOF-driven exit — the user piped a file and expects every line
+            // to land on the wire. Wait for the queue to drain naturally.
+            // A second Ctrl-C aborts in case of a stuck DHT.
+            eprintln!("*** flushing publish queue (Ctrl-C to abort)…");
+            tokio::select! {
+                _ = h => {
+                    eprintln!("*** publish queue flushed");
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    eprintln!("\n*** abort: outgoing messages may not have reached the network");
+                }
+            }
+        } else {
+            // Interrupted exit (Ctrl-C / SIGTERM) — the user asked to stop.
+            // Give the in-flight batch a short window to wrap up, then move on.
+            let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), h).await;
+        }
     }
     reader_handle.abort();
     if let Some(h) = nexus_handle {
