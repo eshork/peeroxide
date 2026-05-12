@@ -472,7 +472,7 @@ async fn publish_chunks(
         }
     }
 
-    for (h, chunk_bytes) in handles.into_iter().zip(chunk_byte_sizes.into_iter()) {
+    for (h, chunk_bytes) in handles.into_iter().zip(chunk_byte_sizes) {
         match h.await {
             Ok(Ok(_)) => {
                 if let Some(ref state) = progress {

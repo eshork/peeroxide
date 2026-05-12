@@ -76,9 +76,8 @@ pub fn decode_need_list(bytes: &[u8]) -> Result<Vec<NeedEntry>, WireError> {
     let entry_bytes = &bytes[NEED_LIST_HEADER_SIZE..];
     if entry_bytes.len() % NEED_ENTRY_SIZE != 0 {
         return Err(WireError::Truncated {
-            needed: NEED_LIST_HEADER_SIZE + (entry_bytes.len() + (NEED_ENTRY_SIZE - 1))
-                / NEED_ENTRY_SIZE
-                * NEED_ENTRY_SIZE,
+            needed: NEED_LIST_HEADER_SIZE
+                + entry_bytes.len().div_ceil(NEED_ENTRY_SIZE) * NEED_ENTRY_SIZE,
             got: bytes.len(),
         });
     }

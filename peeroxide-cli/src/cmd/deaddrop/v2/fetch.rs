@@ -555,7 +555,7 @@ pub async fn get_from_root(
                 let encoded = encode_need_list(&entries);
                 let unchanged = last_published_encoded.as_deref() == Some(encoded.as_slice());
                 let needs_keepalive = last_actual_publish_at
-                    .map_or(true, |t| t.elapsed() >= need_keepalive_interval);
+                    .is_none_or(|t| t.elapsed() >= need_keepalive_interval);
                 if !unchanged || needs_keepalive {
                     need_seq += 1;
                     let _ = handle.mutable_put(&need_kp, &encoded, need_seq).await;
