@@ -84,18 +84,37 @@ pub struct PendingMessage {
     pub display: DisplayMessage,
     pub msg_hash: [u8; 32],
     pub prev_msg_hash: [u8; 32],
+    /// Per-feed chain identifier. A single `id_pubkey` may publish across
+    /// multiple feeds (each CLI run generates a fresh `feed_keypair`, and
+    /// in-process rotation also creates new ones). Chains are scoped per
+    /// feed: messages from the same identity but different feeds are
+    /// independent streams, ordered against themselves but not against
+    /// each other.
+    pub feed_pubkey: [u8; 32],
+}
+
+/// Per-(id, feed) chain identity. Two messages from the same `id_pubkey`
+/// but different `feed_pubkey`s are independent chains — they may overlap
+/// in time, share no causal link, and must not block on each other.
+type ChainKey = ([u8; 32], [u8; 32]);
+
+fn key_of(msg: &PendingMessage) -> ChainKey {
+    (msg.display.id_pubkey, msg.feed_pubkey)
 }
 
 type BufferedByPrev = HashMap<[u8; 32], (PendingMessage, Instant)>;
 
-/// Tracks per-sender chain state and enforces strict `prev_msg_hash` ordering.
+/// Tracks per-(id, feed) chain state and enforces strict `prev_msg_hash`
+/// ordering within each chain.
 ///
-/// Callers submit messages oldest-first. The first message seen for a given
-/// `id_pubkey` anchors the chain; subsequent messages must link to the last
-/// released hash, or they are buffered until their predecessor arrives.
+/// Callers submit messages oldest-first. The first message seen for a
+/// given `(id_pubkey, feed_pubkey)` anchors that chain; subsequent
+/// messages must link to its last released hash, or they are buffered
+/// until their predecessor arrives. A second feed from the same identity
+/// gets its own independent anchor and chain.
 pub struct ChainGate {
-    last_released: HashMap<[u8; 32], [u8; 32]>,
-    pending: HashMap<[u8; 32], BufferedByPrev>,
+    last_released: HashMap<ChainKey, [u8; 32]>,
+    pending: HashMap<ChainKey, BufferedByPrev>,
 }
 
 #[derive(Debug)]
@@ -113,40 +132,41 @@ impl ChainGate {
         }
     }
 
-    /// Submit one message. If its predecessor has been released (or this is
-    /// the first message we've seen for this sender), release immediately and
-    /// drain any chain-linked buffered descendants. Otherwise buffer and
-    /// return the predecessor hash so the caller can kick off a refetch.
+    /// Submit one message. If its predecessor has been released for this
+    /// chain (or this is the first message we've seen for `(id, feed)`),
+    /// release immediately and drain any chain-linked buffered
+    /// descendants. Otherwise buffer and return the predecessor hash so
+    /// the caller can kick off a refetch.
     ///
-    /// `dedup` is the shared receiver-wide message-hash ring. Any hash already
-    /// present is rejected as `Duplicate` before chain logic runs, so a hash
-    /// is never released twice even if upstream code paths submit it more
-    /// than once.
+    /// `dedup` is the shared receiver-wide message-hash ring. Any hash
+    /// already present is rejected as `Duplicate` before chain logic
+    /// runs, so a hash is never released twice even if upstream code
+    /// paths submit it more than once.
     pub fn submit(
         &mut self,
         msg: PendingMessage,
         dedup: &mut DedupRing,
         tx: &mpsc::UnboundedSender<DisplayMessage>,
     ) -> SubmitOutcome {
-        let id = msg.display.id_pubkey;
+        let key = key_of(&msg);
         let prev = msg.prev_msg_hash;
         let own = msg.msg_hash;
 
-        if dedup.contains(&own) || self.last_released.get(&id) == Some(&own) {
+        if dedup.contains(&own) || self.last_released.get(&key) == Some(&own) {
             return SubmitOutcome::Duplicate;
         }
 
-        let anchor = !self.last_released.contains_key(&id);
-        let chains = self.last_released.get(&id) == Some(&prev);
+        let anchor = !self.last_released.contains_key(&key);
+        let chains = self.last_released.get(&key) == Some(&prev);
 
         if anchor || chains {
             self.release(msg, dedup, tx);
-            self.drain(&id, dedup, tx);
+            self.drain(&key, dedup, tx);
             return SubmitOutcome::Released;
         }
 
         self.pending
-            .entry(id)
+            .entry(key)
             .or_default()
             .insert(prev, (msg, Instant::now()));
         SubmitOutcome::Buffered {
@@ -160,7 +180,7 @@ impl ChainGate {
         dedup: &mut DedupRing,
         tx: &mpsc::UnboundedSender<DisplayMessage>,
     ) {
-        let id = msg.display.id_pubkey;
+        let key = key_of(&msg);
         let hash = msg.msg_hash;
         // Mark this hash as seen in the shared ring so no other code path can
         // re-release it. `insert` is a no-op if it was already present.
@@ -176,24 +196,24 @@ impl ChainGate {
             );
         }
         let _ = tx.send(msg.display);
-        self.last_released.insert(id, hash);
+        self.last_released.insert(key, hash);
     }
 
     fn drain(
         &mut self,
-        id: &[u8; 32],
+        key: &ChainKey,
         dedup: &mut DedupRing,
         tx: &mpsc::UnboundedSender<DisplayMessage>,
     ) {
         loop {
-            let cursor = match self.last_released.get(id) {
+            let cursor = match self.last_released.get(key) {
                 Some(h) => *h,
                 None => return,
             };
             let next = self
                 .pending
-                .get_mut(id)
-                .and_then(|per_id| per_id.remove(&cursor));
+                .get_mut(key)
+                .and_then(|per_chain| per_chain.remove(&cursor));
             let Some((msg, _)) = next else {
                 return;
             };
@@ -215,14 +235,14 @@ impl ChainGate {
     ) -> Vec<[u8; 32]> {
         let mut abandoned_predecessors: Vec<[u8; 32]> = Vec::new();
 
-        let ids: Vec<[u8; 32]> = self.pending.keys().copied().collect();
-        for id in ids {
+        let keys: Vec<ChainKey> = self.pending.keys().copied().collect();
+        for key in keys {
             let expired_prevs: Vec<[u8; 32]> = {
-                let per_id = match self.pending.get(&id) {
+                let per_chain = match self.pending.get(&key) {
                     Some(p) => p,
                     None => continue,
                 };
-                per_id
+                per_chain
                     .iter()
                     .filter(|(_, (_, t))| now.duration_since(*t) >= timeout)
                     .map(|(k, _)| *k)
@@ -234,9 +254,9 @@ impl ChainGate {
             }
 
             let mut expired_msgs: Vec<PendingMessage> = Vec::new();
-            if let Some(per_id) = self.pending.get_mut(&id) {
+            if let Some(per_chain) = self.pending.get_mut(&key) {
                 for prev in &expired_prevs {
-                    if let Some((mut m, _)) = per_id.remove(prev) {
+                    if let Some((mut m, _)) = per_chain.remove(prev) {
                         m.display.late = true;
                         expired_msgs.push(m);
                     }
@@ -248,7 +268,7 @@ impl ChainGate {
             for m in expired_msgs {
                 let prev = m.prev_msg_hash;
                 self.release(m, dedup, tx);
-                self.drain(&id, dedup, tx);
+                self.drain(&key, dedup, tx);
                 abandoned_predecessors.push(prev);
             }
         }
@@ -258,8 +278,8 @@ impl ChainGate {
 
     pub fn buffered_predecessors(&self) -> Vec<[u8; 32]> {
         let mut out = Vec::new();
-        for per_id in self.pending.values() {
-            for prev in per_id.keys() {
+        for per_chain in self.pending.values() {
+            for prev in per_chain.keys() {
                 out.push(*prev);
             }
         }
@@ -267,20 +287,22 @@ impl ChainGate {
     }
 }
 
-/// Sort a batch of messages so each sender's chain plays oldest-first.
+/// Sort a batch of messages so each `(id_pubkey, feed_pubkey)` chain plays
+/// oldest-first.
 ///
-/// For each `id_pubkey`, walks the `prev_msg_hash` chain starting from the
-/// message whose `prev_msg_hash` is not the `msg_hash` of any other message
-/// in the batch (i.e. the chain root from the batch's perspective). Messages
-/// not reachable from any root are appended at the end in arrival order.
+/// Within each chain, walks the `prev_msg_hash` link starting from the
+/// message whose `prev_msg_hash` is not the `msg_hash` of any other
+/// message in the batch (i.e. the chain root from the batch's
+/// perspective). Messages not reachable from any root are appended at
+/// the end in arrival order.
 pub fn chain_sort(messages: Vec<PendingMessage>) -> Vec<PendingMessage> {
-    let mut by_sender: HashMap<[u8; 32], Vec<PendingMessage>> = HashMap::new();
+    let mut by_chain: HashMap<ChainKey, Vec<PendingMessage>> = HashMap::new();
     for m in messages {
-        by_sender.entry(m.display.id_pubkey).or_default().push(m);
+        by_chain.entry(key_of(&m)).or_default().push(m);
     }
 
     let mut out: Vec<PendingMessage> = Vec::new();
-    for (_id, batch) in by_sender {
+    for (_chain, batch) in by_chain {
         let mut by_prev: HashMap<[u8; 32], PendingMessage> = HashMap::new();
         let mut own_hashes: std::collections::HashSet<[u8; 32]> =
             std::collections::HashSet::new();
@@ -321,7 +343,21 @@ mod tests {
         [b; 32]
     }
 
+    /// Default test feed_pubkey. The single-feed legacy tests all use one
+    /// implicit feed; cross-feed behavior is exercised by `msg_on_feed`.
+    const DEFAULT_FEED: [u8; 32] = [0xFE; 32];
+
     fn msg(id: u8, own: u8, prev: u8, ts: u64) -> PendingMessage {
+        msg_on_feed(id, DEFAULT_FEED, own, prev, ts)
+    }
+
+    fn msg_on_feed(
+        id: u8,
+        feed_pubkey: [u8; 32],
+        own: u8,
+        prev: u8,
+        ts: u64,
+    ) -> PendingMessage {
         PendingMessage {
             display: DisplayMessage {
                 id_pubkey: h(id),
@@ -333,6 +369,7 @@ mod tests {
             },
             msg_hash: h(own),
             prev_msg_hash: h(prev),
+            feed_pubkey,
         }
     }
 
@@ -564,5 +601,90 @@ mod tests {
             });
         assert_eq!(by_sender[&h(1)], vec!["msg-1", "msg-2", "msg-3"]);
         assert_eq!(by_sender[&h(2)], vec!["msg-10", "msg-20", "msg-30"]);
+    }
+
+    #[test]
+    fn two_feeds_same_id_independent_chains() {
+        // Same id_pubkey publishes via two different feeds (e.g. CLI run A
+        // and CLI run B with the same profile). Each feed has its own
+        // independent chain rooted at prev=0. Neither should buffer or be
+        // marked late just because the other anchor is set.
+        let (tx, mut rx) = unbounded_channel();
+        let mut g = ChainGate::new();
+        let mut d = DedupRing::new(1000);
+        let feed_a = [0xA1; 32];
+        let feed_b = [0xB2; 32];
+
+        // Feed A chain: anchor + one more
+        assert!(matches!(
+            g.submit(msg_on_feed(1, feed_a, 1, 0, 1), &mut d, &tx),
+            SubmitOutcome::Released
+        ));
+        assert!(matches!(
+            g.submit(msg_on_feed(1, feed_a, 2, 1, 2), &mut d, &tx),
+            SubmitOutcome::Released
+        ));
+
+        // Feed B (same id) starts a NEW chain rooted at prev=0. Old behavior
+        // (single-anchor-per-id) would buffer this because last_released[id]
+        // would already be set to feed_a's tail. New behavior anchors per
+        // (id, feed_b) independently.
+        assert!(matches!(
+            g.submit(msg_on_feed(1, feed_b, 10, 0, 1), &mut d, &tx),
+            SubmitOutcome::Released
+        ));
+        assert!(matches!(
+            g.submit(msg_on_feed(1, feed_b, 11, 10, 2), &mut d, &tx),
+            SubmitOutcome::Released
+        ));
+
+        let got = collect(&mut rx);
+        assert_eq!(got, vec!["msg-1", "msg-2", "msg-10", "msg-11"]);
+    }
+
+    #[test]
+    fn two_feeds_same_id_no_cross_buffer_under_gap() {
+        // Feed A has a gap (msg 2 missing). Feed B from the same id is
+        // entirely intact. The gap on feed A must not cause feed B's
+        // messages to buffer or be marked late.
+        let (tx, mut rx) = unbounded_channel();
+        let mut g = ChainGate::new();
+        let mut d = DedupRing::new(1000);
+        let feed_a = [0xA1; 32];
+        let feed_b = [0xB2; 32];
+
+        // Feed A: anchor msg 1, then msg 3 (gap on msg 2)
+        let _ = g.submit(msg_on_feed(1, feed_a, 1, 0, 1), &mut d, &tx);
+        let _ = g.submit(msg_on_feed(1, feed_a, 3, 2, 3), &mut d, &tx);
+
+        // Feed B: complete chain, must not be impacted by feed A's gap.
+        assert!(matches!(
+            g.submit(msg_on_feed(1, feed_b, 10, 0, 1), &mut d, &tx),
+            SubmitOutcome::Released
+        ));
+        assert!(matches!(
+            g.submit(msg_on_feed(1, feed_b, 11, 10, 2), &mut d, &tx),
+            SubmitOutcome::Released
+        ));
+
+        let got = collect_with_late(&mut rx);
+        // msg-1 from feed_a anchors (no late), msg-3 buffered (not in output
+        // yet), msg-10 + msg-11 from feed_b release cleanly without late tag.
+        assert_eq!(
+            got,
+            vec![
+                ("msg-1".to_string(), false),
+                ("msg-10".to_string(), false),
+                ("msg-11".to_string(), false),
+            ]
+        );
+
+        // Now expire — feed_a's msg-3 should release as late on its own
+        // chain only, leaving feed_b untouched.
+        let later = Instant::now() + Duration::from_secs(10);
+        let abandoned = g.expire(later, Duration::from_secs(5), &mut d, &tx);
+        assert_eq!(abandoned, vec![h(2)]);
+        let got = collect_with_late(&mut rx);
+        assert_eq!(got, vec![("msg-3".to_string(), true)]);
     }
 }

@@ -63,6 +63,7 @@ const REFETCH_SCHEDULE_MS: [u64; 4] = [0, 500, 1500, 3000];
 struct RefetchResult {
     hash: [u8; 32],
     owner: [u8; 32],
+    feed_pubkey: [u8; 32],
     data: Option<Vec<u8>>,
 }
 
@@ -70,6 +71,7 @@ fn spawn_refetch(
     handle: HyperDhtHandle,
     hash: [u8; 32],
     owner: [u8; 32],
+    feed_pubkey: [u8; 32],
     tx: mpsc::UnboundedSender<RefetchResult>,
 ) {
     tokio::spawn(async move {
@@ -81,6 +83,7 @@ fn spawn_refetch(
                 let _ = tx.send(RefetchResult {
                     hash,
                     owner,
+                    feed_pubkey,
                     data: Some(data),
                 });
                 return;
@@ -89,6 +92,7 @@ fn spawn_refetch(
         let _ = tx.send(RefetchResult {
             hash,
             owner,
+            feed_pubkey,
             data: None,
         });
     });
@@ -110,6 +114,7 @@ fn decode_envelope(
 fn envelope_to_pending(
     env: MessageEnvelope,
     msg_hash: [u8; 32],
+    feed_pubkey: [u8; 32],
     self_id_pubkey: &[u8; 32],
 ) -> PendingMessage {
     let prev_msg_hash = env.prev_msg_hash;
@@ -126,6 +131,7 @@ fn envelope_to_pending(
         },
         msg_hash,
         prev_msg_hash,
+        feed_pubkey,
     }
 }
 
@@ -139,6 +145,7 @@ fn submit_to_gate(
     handle: &HyperDhtHandle,
 ) {
     let id = msg.display.id_pubkey;
+    let feed_pubkey = msg.feed_pubkey;
     if let SubmitOutcome::Buffered {
         missing_predecessor,
     } = gate.submit(msg, dedup, msg_tx)
@@ -148,6 +155,7 @@ fn submit_to_gate(
                 handle.clone(),
                 missing_predecessor,
                 id,
+                feed_pubkey,
                 refetch_tx.clone(),
             );
         }
@@ -250,6 +258,7 @@ pub async fn run_reader(
                     &message_key,
                     &record.msg_hashes,
                     &record.id_pubkey,
+                    feed_pk,
                     &mut dedup,
                     &profile_name,
                     &self_id_pubkey,
@@ -269,6 +278,7 @@ pub async fn run_reader(
                     &message_key,
                     record.summary_hash,
                     &record.id_pubkey,
+                    feed_pk,
                     &mut dedup,
                     &mut backlog,
                     &profile_name,
@@ -343,7 +353,12 @@ pub async fn run_reader(
                             // gate will insert on release. Pre-inserting would
                             // make submit_to_gate reject this very message as
                             // duplicate.
-                            let pm = envelope_to_pending(env, result.hash, &self_id_pubkey);
+                            let pm = envelope_to_pending(
+                                env,
+                                result.hash,
+                                result.feed_pubkey,
+                                &self_id_pubkey,
+                            );
                             submit_to_gate(
                                 &mut gate,
                                 pm,
@@ -497,6 +512,7 @@ pub async fn run_reader(
                             &message_key,
                             &record.msg_hashes,
                             &owner_pubkey,
+                            feed_pk,
                             &mut dedup,
                             &profile_name,
                             &self_id_pubkey,
@@ -535,6 +551,7 @@ pub async fn run_reader(
                                 &message_key,
                                 record.summary_hash,
                                 &owner_pubkey,
+                                feed_pk,
                                 &mut dedup,
                                 &mut history,
                                 &profile_name,
@@ -631,11 +648,13 @@ async fn run_discovery(
 /// Validates and fetches messages from a newest-first hash list.
 /// Chain validation: each message's prev_msg_hash must equal the hash of the
 /// next-older message in the list (msg_hashes[i+1]).
+#[allow(clippy::too_many_arguments)]
 async fn fetch_and_validate_messages(
     handle: &HyperDhtHandle,
     message_key: &[u8; 32],
     msg_hashes: &[[u8; 32]],
     owner_pubkey: &[u8; 32],
+    feed_pubkey: [u8; 32],
     dedup: &mut DedupRing,
     profile_name: &str,
     self_id_pubkey: &[u8; 32],
@@ -747,6 +766,7 @@ async fn fetch_and_validate_messages(
                     },
                     msg_hash: *msg_hash,
                     prev_msg_hash,
+                    feed_pubkey,
                 });
             }
         }
@@ -760,6 +780,7 @@ async fn fetch_summary_history(
     message_key: &[u8; 32],
     mut summary_hash: [u8; 32],
     owner_pubkey: &[u8; 32],
+    feed_pubkey: [u8; 32],
     dedup: &mut DedupRing,
     backlog: &mut Vec<PendingMessage>,
     profile_name: &str,
@@ -786,6 +807,7 @@ async fn fetch_summary_history(
             message_key,
             &reversed,
             owner_pubkey,
+            feed_pubkey,
             dedup,
             profile_name,
             self_id_pubkey,
