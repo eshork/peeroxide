@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -48,6 +48,84 @@ const PUT_TIMEOUT: Duration = Duration::from_secs(30);
 /// equivalent receiver-side use).
 #[allow(dead_code)]
 const NEED_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Cooperative cancellation primitive shared across every long-running task
+/// and `.await` in this module.
+///
+/// `Notify::notified()` is edge-triggered — a late waiter misses a past
+/// `notify_waiters()` call — so we pair it with an `AtomicBool` flag so the
+/// signal is sticky: once tripped, every future call to `cancelled()`
+/// resolves immediately.
+///
+/// **Discipline rule:** any `.await` inside a `tokio::select!` arm body
+/// must itself `select!` against `shutdown.cancelled()`. Once a select arm
+/// body starts executing, the other arms are dropped, so an unguarded
+/// `.await` deep inside one will deafen ctrl-c. The double-ctrl-c hard
+/// exit in `spawn_signal_handler` is insurance against this rule being
+/// violated — graceful shutdown still depends on the rule itself.
+#[derive(Clone)]
+pub(super) struct Shutdown {
+    flag: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl Shutdown {
+    pub fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
+    /// Trip the signal. Idempotent; safe to call from any task.
+    pub fn cancel(&self) {
+        if !self.flag.swap(true, Ordering::SeqCst) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once shutdown has been requested. Safe to await repeatedly.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        // Subscribe before the second flag check to close the race between
+        // `is_cancelled()` returning false and `notify_waiters()` firing.
+        let waiter = self.notify.notified();
+        if self.is_cancelled() {
+            return;
+        }
+        waiter.await;
+    }
+}
+
+/// Spawn the global signal handler.
+///
+/// First SIGINT/SIGTERM trips `shutdown` (graceful). A second signal after
+/// that — with no timer — calls `std::process::exit(130)` unconditionally.
+/// The user's patience is the timer; if they're hitting ctrl-c twice they
+/// want out regardless of whether graceful shutdown is making progress.
+fn spawn_signal_handler(shutdown: Shutdown) {
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = signal::ctrl_c() => {}
+            _ = sigterm_recv() => {}
+        }
+        eprintln!("\n  shutting down (press ctrl-c again to force-exit)...");
+        shutdown.cancel();
+
+        tokio::select! {
+            _ = signal::ctrl_c() => {}
+            _ = sigterm_recv() => {}
+        }
+        eprintln!("  force-exit");
+        std::process::exit(130);
+    });
+}
 
 /// AIMD controller: monitors put-result degradation and adjusts an effective
 /// concurrency target.
@@ -337,13 +415,13 @@ async fn dispatcher(
     handle: HyperDhtHandle,
     queue: Arc<WorkQueue>,
     state: ConcurrencyState,
-    shutdown: Arc<Notify>,
+    shutdown: Shutdown,
 ) {
     loop {
         let pop_fut = queue.pop();
         tokio::pin!(pop_fut);
         let (id, unit, _subs) = tokio::select! {
-            _ = shutdown.notified() => break,
+            _ = shutdown.cancelled() => break,
             r = &mut pop_fut => r,
         };
         let permit = state.acquire().await;
@@ -498,7 +576,7 @@ async fn run_need_watcher(
     queue: Arc<WorkQueue>,
     need_topic_key: [u8; 32],
     op_factory: OperationFactory,
-    shutdown: Arc<Notify>,
+    shutdown: Shutdown,
 ) {
     let mut peers: HashMap<[u8; 32], PeerState> = HashMap::new();
     eprintln!(
@@ -507,7 +585,7 @@ async fn run_need_watcher(
     );
     loop {
         tokio::select! {
-            _ = shutdown.notified() => break,
+            _ = shutdown.cancelled() => break,
             _ = tokio::time::sleep(NEED_POLL_INTERVAL) => {
                 let lookup = match handle.lookup(need_topic_key).await {
                     Ok(r) => r,
@@ -603,7 +681,10 @@ async fn run_need_watcher(
                         // value hash and service again.
                         entry.last_value_hash = Some(value_hash);
                         entry.last_seq = Some(mv.seq);
-                        op.await_done().await;
+                        tokio::select! {
+                            _ = shutdown.cancelled() => return,
+                            _ = op.await_done() => {}
+                        }
                         handle_op.finish().await;
                         eprintln!(
                             "  need-list republish complete: {n_data} data + {n_index} index"
@@ -814,28 +895,30 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let mut reporter = ProgressReporter::from_args(state.clone(), args.no_progress, args.json);
     reporter.on_start();
 
-    // 8. Spawn the dispatcher and run the initial publish through the queue.
+    // 8. Set up shared shutdown signal + signal handler, then spawn the
+    //    dispatcher and run the initial publish through the queue.
+    let shutdown = Shutdown::new();
+    spawn_signal_handler(shutdown.clone());
+
     let queue = WorkQueue::new();
-    let dispatcher_shutdown = Arc::new(Notify::new());
     let dispatcher_handle = tokio::spawn(dispatcher(
         handle.clone(),
         queue.clone(),
         conc.clone(),
-        dispatcher_shutdown.clone(),
+        shutdown.clone(),
     ));
 
     // Stall watchdog: if no put has resolved in 30s, kick AIMD off the floor.
     // Rate-limited to once per 2 min so a genuinely overloaded link can settle
     // at its true ceiling rather than oscillating around the kick target.
-    let watchdog_shutdown = Arc::new(Notify::new());
-    let watchdog_shutdown_inner = watchdog_shutdown.clone();
+    let watchdog_shutdown = shutdown.clone();
     let watchdog_conc = conc.clone();
     let watchdog_handle = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         tick.tick().await;
         loop {
             tokio::select! {
-                _ = watchdog_shutdown_inner.notified() => break,
+                _ = watchdog_shutdown.cancelled() => break,
                 _ = tick.tick() => {
                     if let Some(t) = watchdog_conc
                         .kick_if_stalled(Duration::from_secs(30), Duration::from_secs(120))
@@ -851,121 +934,148 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     // Initial publish: non-root chunks first (data + index layers), then
     // the root last. The "root last" rule is the only ordering constraint
     // in v3: until the root is published, no other pubkey is derivable.
-    let non_root_count = tree.data_chunks.len() + tree.index_chunks.len();
-    let initial_op = Operation::new(state.clone(), non_root_count);
-    enqueue_tree_non_root(&queue, &tree, Lane::Normal, &initial_op).await;
-    initial_op.await_done().await;
-
-    let root_op = Operation::new(state.clone(), 1);
-    enqueue_root(&queue, &tree, Lane::Normal, &root_op).await;
-    root_op.await_done().await;
-
-    // 9. Print pickup key.
-    let pickup_key = to_hex(&tree.root_keypair.public_key);
-    reporter.emit_initial_publish_complete(&pickup_key).await;
-
-    eprintln!("  published to DHT (best-effort)");
-    eprintln!("  pickup key printed to stdout");
-    eprintln!(
-        "  refreshing every {}s, polling needs every {}s, monitoring for acks every 30s...",
-        args.refresh_interval,
-        NEED_POLL_INTERVAL.as_secs()
-    );
-
-    // 10. Spawn need-watcher.
+    //
+    // Everything below the initial publish runs inside a labeled block so
+    // any cancel-aware await can `break 'main 0` straight to cleanup.
     let tree_arc = Arc::new(tree);
-    let need_topic_key = need_topic(&tree_arc.root_keypair.public_key);
-    let watcher_shutdown = Arc::new(Notify::new());
     let op_factory = reporter.operation_factory();
-    let watcher_handle = tokio::spawn(run_need_watcher(
-        handle.clone(),
-        tree_arc.clone(),
-        queue.clone(),
-        need_topic_key,
-        op_factory.clone(),
-        watcher_shutdown.clone(),
-    ));
+    let mut watcher_handle: Option<tokio::task::JoinHandle<()>> = None;
 
-    // 11. Refresh + ack loop.
-    let ack_topic_key = ack_topic(&tree_arc.root_keypair.public_key);
-    let mut seen_acks: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
-    let mut pickup_count: u64 = 0;
-    let ttl_deadline = args
-        .ttl
-        .map(|t| tokio::time::Instant::now() + Duration::from_secs(t));
-    let mut refresh_interval = tokio::time::interval(Duration::from_secs(args.refresh_interval));
-    refresh_interval.tick().await;
-    let mut ack_interval = tokio::time::interval(Duration::from_secs(30));
-    ack_interval.tick().await;
-
-    let exit_code: i32 = loop {
+    let exit_code: i32 = 'main: {
+        let non_root_count = tree_arc.data_chunks.len() + tree_arc.index_chunks.len();
+        let initial_op = Operation::new(state.clone(), non_root_count);
+        enqueue_tree_non_root(&queue, &tree_arc, Lane::Normal, &initial_op).await;
         tokio::select! {
-            _ = signal::ctrl_c() => break 0,
-            _ = sigterm_recv() => break 0,
-            _ = async {
-                if let Some(deadline) = ttl_deadline {
-                    tokio::time::sleep_until(deadline).await;
-                } else {
-                    std::future::pending::<()>().await;
+            biased;
+            _ = shutdown.cancelled() => break 'main 0,
+            _ = initial_op.await_done() => {}
+        }
+
+        let root_op = Operation::new(state.clone(), 1);
+        enqueue_root(&queue, &tree_arc, Lane::Normal, &root_op).await;
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => break 'main 0,
+            _ = root_op.await_done() => {}
+        }
+
+        // 9. Print pickup key.
+        let pickup_key = to_hex(&tree_arc.root_keypair.public_key);
+        reporter.emit_initial_publish_complete(&pickup_key).await;
+
+        eprintln!("  published to DHT (best-effort)");
+        eprintln!("  pickup key printed to stdout");
+        eprintln!(
+            "  refreshing every {}s, polling needs every {}s, monitoring for acks every 30s...",
+            args.refresh_interval,
+            NEED_POLL_INTERVAL.as_secs()
+        );
+
+        // 10. Spawn need-watcher.
+        let need_topic_key = need_topic(&tree_arc.root_keypair.public_key);
+        watcher_handle = Some(tokio::spawn(run_need_watcher(
+            handle.clone(),
+            tree_arc.clone(),
+            queue.clone(),
+            need_topic_key,
+            op_factory.clone(),
+            shutdown.clone(),
+        )));
+
+        // 11. Refresh + ack loop.
+        let ack_topic_key = ack_topic(&tree_arc.root_keypair.public_key);
+        let mut seen_acks: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        let mut pickup_count: u64 = 0;
+        let ttl_deadline = args
+            .ttl
+            .map(|t| tokio::time::Instant::now() + Duration::from_secs(t));
+        let mut refresh_interval =
+            tokio::time::interval(Duration::from_secs(args.refresh_interval));
+        refresh_interval.tick().await;
+        let mut ack_interval = tokio::time::interval(Duration::from_secs(30));
+        ack_interval.tick().await;
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break 'main 0,
+                _ = async {
+                    if let Some(deadline) = ttl_deadline {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => break 'main 0,
+                _ = refresh_interval.tick() => {
+                    eprintln!(
+                        "  refreshing tree ({} index + {} data chunks)...",
+                        tree_arc.index_chunks.len() + 1,
+                        tree_arc.data_chunks.len()
+                    );
+                    let bytes_total: u64 = tree_arc
+                        .data_chunks
+                        .iter()
+                        .map(|c| c.encoded.len() as u64)
+                        .sum();
+                    let idx_total = (tree_arc.index_chunks.len() + 1) as u32;
+                    let data_total = tree_arc.data_chunks.len() as u32;
+                    let total_chunks =
+                        tree_arc.index_chunks.len() + tree_arc.data_chunks.len() + 1;
+                    let handle_op =
+                        op_factory.begin_operation(bytes_total, idx_total, data_total);
+                    let op = Operation::new(handle_op.state(), total_chunks);
+                    // Concurrent refresh ticks coalesce naturally: chunks still
+                    // queued or in flight from a prior tick attach this op as a
+                    // subscriber rather than producing a duplicate put.
+                    enqueue_tree_non_root(&queue, &tree_arc, Lane::Normal, &op).await;
+                    enqueue_root(&queue, &tree_arc, Lane::Normal, &op).await;
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break 'main 0,
+                        _ = op.await_done() => {}
+                    }
+                    handle_op.finish().await;
                 }
-            } => break 0,
-            _ = refresh_interval.tick() => {
-                eprintln!(
-                    "  refreshing tree ({} index + {} data chunks)...",
-                    tree_arc.index_chunks.len() + 1,
-                    tree_arc.data_chunks.len()
-                );
-                let bytes_total: u64 = tree_arc
-                    .data_chunks
-                    .iter()
-                    .map(|c| c.encoded.len() as u64)
-                    .sum();
-                let idx_total = (tree_arc.index_chunks.len() + 1) as u32;
-                let data_total = tree_arc.data_chunks.len() as u32;
-                let total_chunks = tree_arc.index_chunks.len() + tree_arc.data_chunks.len() + 1;
-                let handle_op = op_factory.begin_operation(bytes_total, idx_total, data_total);
-                let op = Operation::new(handle_op.state(), total_chunks);
-                // Concurrent refresh ticks coalesce naturally: chunks still
-                // queued or in flight from a prior tick attach this op as a
-                // subscriber rather than producing a duplicate put.
-                enqueue_tree_non_root(&queue, &tree_arc, Lane::Normal, &op).await;
-                enqueue_root(&queue, &tree_arc, Lane::Normal, &op).await;
-                op.await_done().await;
-                handle_op.finish().await;
-            }
-            _ = ack_interval.tick() => {
-                let mut max_reached = false;
-                if let Ok(results) = handle.lookup(ack_topic_key).await {
-                    'outer: for result in &results {
-                        for peer in &result.peers {
-                            if seen_acks.insert(peer.public_key) {
-                                pickup_count += 1;
-                                reporter.on_ack(pickup_count, &to_hex(&peer.public_key));
-                                eprintln!("  [ack] pickup #{pickup_count} detected");
-                                if let Some(max) = args.max_pickups {
-                                    if pickup_count >= max {
-                                        eprintln!("  max pickups reached, stopping");
-                                        max_reached = true;
-                                        break 'outer;
+                _ = ack_interval.tick() => {
+                    let lookup_fut = handle.lookup(ack_topic_key);
+                    let lookup_res = tokio::select! {
+                        _ = shutdown.cancelled() => break 'main 0,
+                        r = lookup_fut => r,
+                    };
+                    let mut max_reached = false;
+                    if let Ok(results) = lookup_res {
+                        'outer: for result in &results {
+                            for peer in &result.peers {
+                                if seen_acks.insert(peer.public_key) {
+                                    pickup_count += 1;
+                                    reporter.on_ack(pickup_count, &to_hex(&peer.public_key));
+                                    eprintln!("  [ack] pickup #{pickup_count} detected");
+                                    if let Some(max) = args.max_pickups {
+                                        if pickup_count >= max {
+                                            eprintln!("  max pickups reached, stopping");
+                                            max_reached = true;
+                                            break 'outer;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                if max_reached {
-                    break 0;
+                    if max_reached {
+                        break 'main 0;
+                    }
                 }
             }
         }
     };
 
-    // 12. Cleanup.
-    watcher_shutdown.notify_one();
-    let _ = watcher_handle.await;
-    dispatcher_shutdown.notify_one();
+    // 12. Cleanup. A single `cancel()` notifies every subsystem; they all
+    // share the same `Shutdown`. Idempotent — safe if the signal handler
+    // already tripped it.
+    shutdown.cancel();
+    if let Some(h) = watcher_handle {
+        let _ = h.await;
+    }
     let _ = dispatcher_handle.await;
-    watchdog_shutdown.notify_one();
     let _ = watchdog_handle.await;
     eprintln!("  stopped refreshing; records expire in ~20m");
     reporter.finish().await;
