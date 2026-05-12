@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use futures::future::join_all;
+use peeroxide_dht::crypto::hash;
 use peeroxide_dht::hyperdht::HyperDhtHandle;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
@@ -9,12 +10,15 @@ use crate::cmd::chat::crypto;
 use crate::cmd::chat::debug;
 use crate::cmd::chat::display::DisplayMessage;
 use crate::cmd::chat::known_users;
+use crate::cmd::chat::ordering::{chain_sort, ChainGate, DedupRing, PendingMessage, SubmitOutcome};
+use crate::cmd::chat::probe;
 use crate::cmd::chat::wire::{self, FeedRecord, MessageEnvelope, SummaryBlock};
 
 struct KnownFeed {
     id_pubkey: [u8; 32],
     last_seq: u64,
     last_msg_hash: [u8; 32],
+    last_summary_hash_seen: [u8; 32],
     last_active: Instant,
     last_message_time: Instant,
     next_poll: Instant,
@@ -27,6 +31,7 @@ impl KnownFeed {
             id_pubkey: [0u8; 32],
             last_seq: 0,
             last_msg_hash: [0u8; 32],
+            last_summary_hash_seen: [0u8; 32],
             last_active: now,
             last_message_time: now,
             next_poll: now,
@@ -52,6 +57,102 @@ impl KnownFeed {
 const MAX_SUMMARY_DEPTH: usize = 100;
 const FEED_EXPIRY_SECS: u64 = 20 * 60;
 const DISCOVERY_INTERVAL_SECS: u64 = 8;
+const GAP_TIMEOUT: Duration = Duration::from_secs(5);
+const REFETCH_SCHEDULE_MS: [u64; 4] = [0, 500, 1500, 3000];
+
+struct RefetchResult {
+    hash: [u8; 32],
+    owner: [u8; 32],
+    data: Option<Vec<u8>>,
+}
+
+fn spawn_refetch(
+    handle: HyperDhtHandle,
+    hash: [u8; 32],
+    owner: [u8; 32],
+    tx: mpsc::UnboundedSender<RefetchResult>,
+) {
+    tokio::spawn(async move {
+        for delay_ms in REFETCH_SCHEDULE_MS {
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            if let Ok(Some(data)) = handle.immutable_get(hash).await {
+                let _ = tx.send(RefetchResult {
+                    hash,
+                    owner,
+                    data: Some(data),
+                });
+                return;
+            }
+        }
+        let _ = tx.send(RefetchResult {
+            hash,
+            owner,
+            data: None,
+        });
+    });
+}
+
+fn decode_envelope(
+    message_key: &[u8; 32],
+    data: &[u8],
+    owner_pubkey: &[u8; 32],
+) -> Option<MessageEnvelope> {
+    let plaintext = wire::decrypt_message(message_key, data).ok()?;
+    let env = MessageEnvelope::deserialize(&plaintext).ok()?;
+    if !env.verify() || env.id_pubkey != *owner_pubkey {
+        return None;
+    }
+    Some(env)
+}
+
+fn envelope_to_pending(
+    env: MessageEnvelope,
+    msg_hash: [u8; 32],
+    self_id_pubkey: &[u8; 32],
+) -> PendingMessage {
+    let prev_msg_hash = env.prev_msg_hash;
+    let id_pubkey = env.id_pubkey;
+    let is_self = id_pubkey == *self_id_pubkey;
+    PendingMessage {
+        display: DisplayMessage {
+            id_pubkey,
+            screen_name: env.screen_name,
+            content: env.content,
+            timestamp: env.timestamp,
+            is_self,
+            late: false,
+        },
+        msg_hash,
+        prev_msg_hash,
+    }
+}
+
+fn submit_to_gate(
+    gate: &mut ChainGate,
+    msg: PendingMessage,
+    dedup: &mut DedupRing,
+    msg_tx: &mpsc::UnboundedSender<DisplayMessage>,
+    pending_refetches: &mut HashSet<[u8; 32]>,
+    refetch_tx: &mpsc::UnboundedSender<RefetchResult>,
+    handle: &HyperDhtHandle,
+) {
+    let id = msg.display.id_pubkey;
+    if let SubmitOutcome::Buffered {
+        missing_predecessor,
+    } = gate.submit(msg, dedup, msg_tx)
+    {
+        if pending_refetches.insert(missing_predecessor) {
+            spawn_refetch(
+                handle.clone(),
+                missing_predecessor,
+                id,
+                refetch_tx.clone(),
+            );
+        }
+    }
+}
 
 pub async fn run_reader(
     handle: HyperDhtHandle,
@@ -63,8 +164,11 @@ pub async fn run_reader(
     self_id_pubkey: [u8; 32],
 ) {
     let mut known_feeds: HashMap<[u8; 32], KnownFeed> = HashMap::new();
-    let mut seen_msg_hashes: HashSet<[u8; 32]> = HashSet::new();
-    let mut backlog: Vec<DisplayMessage> = Vec::new();
+    let mut dedup = DedupRing::with_default_capacity();
+    let mut backlog: Vec<PendingMessage> = Vec::new();
+    let mut gate = ChainGate::new();
+    let mut pending_refetches: HashSet<[u8; 32]> = HashSet::new();
+    let (refetch_tx, mut refetch_rx) = mpsc::unbounded_channel::<RefetchResult>();
 
     if let Some(pk) = self_feed_pubkey {
         known_feeds.insert(pk, KnownFeed::new());
@@ -146,7 +250,7 @@ pub async fn run_reader(
                     &message_key,
                     &record.msg_hashes,
                     &record.id_pubkey,
-                    &mut seen_msg_hashes,
+                    &mut dedup,
                     &profile_name,
                     &self_id_pubkey,
                 )
@@ -165,19 +269,29 @@ pub async fn run_reader(
                     &message_key,
                     record.summary_hash,
                     &record.id_pubkey,
-                    &mut seen_msg_hashes,
+                    &mut dedup,
                     &mut backlog,
                     &profile_name,
                     &self_id_pubkey,
                 )
                 .await;
+                if let Some(feed_info) = known_feeds.get_mut(&feed_pk) {
+                    feed_info.last_summary_hash_seen = record.summary_hash;
+                }
             }
         }
     }
 
-    backlog.sort_by_key(|m| m.timestamp);
-    for msg in backlog {
-        let _ = msg_tx.send(msg);
+    for msg in chain_sort(backlog) {
+        submit_to_gate(
+            &mut gate,
+            msg,
+            &mut dedup,
+            &msg_tx,
+            &mut pending_refetches,
+            &refetch_tx,
+            &handle,
+        );
     }
 
     let _ = msg_tx.send(DisplayMessage {
@@ -186,6 +300,7 @@ pub async fn run_reader(
         content: String::new(),
         timestamp: 0,
         is_self: false,
+        late: false,
     });
 
     // --- Steady-state: discovery and feed polling run independently ---
@@ -199,6 +314,9 @@ pub async fn run_reader(
         });
     }
 
+    let mut expiry_tick = tokio::time::interval(Duration::from_secs(1));
+    expiry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     // Feed polling loop: wakes on its own adaptive schedule, receives new feeds from discovery
     loop {
         let now = Instant::now();
@@ -207,6 +325,39 @@ pub async fn run_reader(
 
         tokio::select! {
             _ = tokio::time::sleep_until(wake_at) => {}
+            _ = expiry_tick.tick() => {
+                let abandoned = gate.expire(Instant::now(), GAP_TIMEOUT, &mut dedup, &msg_tx);
+                for hash in abandoned {
+                    pending_refetches.remove(&hash);
+                }
+                continue;
+            }
+            Some(result) = refetch_rx.recv() => {
+                pending_refetches.remove(&result.hash);
+                if let Some(data) = result.data {
+                    if hash(&data) == result.hash {
+                        if let Some(env) =
+                            decode_envelope(&message_key, &data, &result.owner)
+                        {
+                            // Do not pre-insert into the dedup ring here — the
+                            // gate will insert on release. Pre-inserting would
+                            // make submit_to_gate reject this very message as
+                            // duplicate.
+                            let pm = envelope_to_pending(env, result.hash, &self_id_pubkey);
+                            submit_to_gate(
+                                &mut gate,
+                                pm,
+                                &mut dedup,
+                                &msg_tx,
+                                &mut pending_refetches,
+                                &refetch_tx,
+                                &handle,
+                            );
+                        }
+                    }
+                }
+                continue;
+            }
             pk = disc_rx.recv() => {
                 if let Some(pk) = pk {
                     known_feeds
@@ -346,7 +497,7 @@ pub async fn run_reader(
                             &message_key,
                             &record.msg_hashes,
                             &owner_pubkey,
-                            &mut seen_msg_hashes,
+                            &mut dedup,
                             &profile_name,
                             &self_id_pubkey,
                         )
@@ -358,26 +509,51 @@ pub async fn run_reader(
                             }
                         }
 
-                        for msg in msgs {
-                            let _ = msg_tx.send(msg);
+                        for msg in msgs.into_iter().rev() {
+                            submit_to_gate(
+                                &mut gate,
+                                msg,
+                                &mut dedup,
+                                &msg_tx,
+                                &mut pending_refetches,
+                                &refetch_tx,
+                                &handle,
+                            );
                         }
 
-                        if first_discovery && record.summary_hash != [0u8; 32] {
+                        let prior_summary_hash = known_feeds
+                            .get(&feed_pk)
+                            .map(|f| f.last_summary_hash_seen)
+                            .unwrap_or([0u8; 32]);
+                        let summary_changed = record.summary_hash != prior_summary_hash
+                            && record.summary_hash != [0u8; 32];
+
+                        if first_discovery || summary_changed {
                             let mut history = Vec::new();
                             fetch_summary_history(
                                 &handle,
                                 &message_key,
                                 record.summary_hash,
                                 &owner_pubkey,
-                                &mut seen_msg_hashes,
+                                &mut dedup,
                                 &mut history,
                                 &profile_name,
                                 &self_id_pubkey,
                             )
                             .await;
-                            history.sort_by_key(|m| m.timestamp);
-                            for msg in history {
-                                let _ = msg_tx.send(msg);
+                            for msg in chain_sort(history) {
+                                submit_to_gate(
+                                    &mut gate,
+                                    msg,
+                                    &mut dedup,
+                                    &msg_tx,
+                                    &mut pending_refetches,
+                                    &refetch_tx,
+                                    &handle,
+                                );
+                            }
+                            if let Some(fi) = known_feeds.get_mut(&feed_pk) {
+                                fi.last_summary_hash_seen = record.summary_hash;
                             }
                         }
                     }
@@ -460,10 +636,10 @@ async fn fetch_and_validate_messages(
     message_key: &[u8; 32],
     msg_hashes: &[[u8; 32]],
     owner_pubkey: &[u8; 32],
-    seen_msg_hashes: &mut HashSet<[u8; 32]>,
+    dedup: &mut DedupRing,
     profile_name: &str,
     self_id_pubkey: &[u8; 32],
-) -> Vec<DisplayMessage> {
+) -> Vec<PendingMessage> {
     let _ = profile_name;
     let mut messages = Vec::new();
 
@@ -471,9 +647,17 @@ async fn fetch_and_validate_messages(
     let unseen: Vec<(usize, [u8; 32])> = msg_hashes
         .iter()
         .enumerate()
-        .filter(|(_, h)| !seen_msg_hashes.contains(*h))
+        .filter(|(_, h)| !dedup.contains(h))
         .map(|(i, h)| (i, *h))
         .collect();
+
+    if probe::is_enabled() {
+        eprintln!(
+            "[probe] fetch_batch msg_hashes_total={} unseen={}",
+            msg_hashes.len(),
+            unseen.len(),
+        );
+    }
 
     if unseen.is_empty() {
         return messages;
@@ -499,7 +683,7 @@ async fn fetch_and_validate_messages(
     // Validate in order (chain validation requires sequential check)
     let mut expected_next_hash: Option<[u8; 32]> = None;
     for (i, msg_hash) in msg_hashes.iter().enumerate() {
-        if seen_msg_hashes.contains(msg_hash) {
+        if dedup.contains(msg_hash) {
             expected_next_hash = None;
             continue;
         }
@@ -533,7 +717,11 @@ async fn fetch_and_validate_messages(
 
                 expected_next_hash = Some(env.prev_msg_hash);
 
-                seen_msg_hashes.insert(*msg_hash);
+                // NB: do not insert into `dedup` here. The shared ring is
+                // populated by `ChainGate::release` so the gate's duplicate
+                // check operates on hashes that have actually been emitted
+                // to display. Inserting here would mask future late/replay
+                // arrivals from the gate's chain logic.
                 debug::log_event(
                     "Message received",
                     "immutable_get",
@@ -547,12 +735,18 @@ async fn fetch_and_validate_messages(
                     ),
                 );
                 let _ = known_users::update_shared(&env.id_pubkey, &env.screen_name);
-                messages.push(DisplayMessage {
-                    id_pubkey: env.id_pubkey,
-                    screen_name: env.screen_name,
-                    content: env.content,
-                    timestamp: env.timestamp,
-                    is_self: env.id_pubkey == *self_id_pubkey,
+                let prev_msg_hash = env.prev_msg_hash;
+                messages.push(PendingMessage {
+                    display: DisplayMessage {
+                        id_pubkey: env.id_pubkey,
+                        screen_name: env.screen_name,
+                        content: env.content,
+                        timestamp: env.timestamp,
+                        is_self: env.id_pubkey == *self_id_pubkey,
+                        late: false,
+                    },
+                    msg_hash: *msg_hash,
+                    prev_msg_hash,
                 });
             }
         }
@@ -566,8 +760,8 @@ async fn fetch_summary_history(
     message_key: &[u8; 32],
     mut summary_hash: [u8; 32],
     owner_pubkey: &[u8; 32],
-    seen_msg_hashes: &mut HashSet<[u8; 32]>,
-    backlog: &mut Vec<DisplayMessage>,
+    dedup: &mut DedupRing,
+    backlog: &mut Vec<PendingMessage>,
     profile_name: &str,
     self_id_pubkey: &[u8; 32],
 ) {
@@ -592,7 +786,7 @@ async fn fetch_summary_history(
             message_key,
             &reversed,
             owner_pubkey,
-            seen_msg_hashes,
+            dedup,
             profile_name,
             self_id_pubkey,
         )

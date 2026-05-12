@@ -1,14 +1,14 @@
 use clap::Parser;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::cmd::chat::crypto;
-use crate::cmd::chat::debug;
 use crate::cmd::chat::display;
 use crate::cmd::chat::known_users::SharedKnownUsers;
 use crate::cmd::chat::feed;
-use crate::cmd::chat::post;
+use crate::cmd::chat::probe;
 use crate::cmd::chat::profile;
+use crate::cmd::chat::publisher::{self, PubJob};
 use crate::cmd::chat::reader;
 use crate::cmd::{build_dht_config, sigterm_recv};
 use crate::config::ResolvedConfig;
@@ -53,6 +53,20 @@ pub struct JoinArgs {
     /// Max feed keypair lifetime before rotation (minutes)
     #[arg(long, default_value = "60")]
     pub feed_lifetime: u64,
+
+    /// Max messages to publish in a single batch.
+    /// Each batch performs one mutable_put + one announce regardless of
+    /// message count, so larger batches amortize DHT round-trips when
+    /// piping a file. Capped well below the 26-hash FeedRecord window.
+    #[arg(long, default_value = "16")]
+    pub batch_size: usize,
+
+    /// Idle time (ms) the publisher waits to accumulate additional
+    /// messages into the current batch before flushing. Interactive
+    /// single messages flush after this delay; piped streams typically
+    /// fill the batch sooner.
+    #[arg(long, default_value = "50")]
+    pub batch_wait_ms: u64,
 }
 
 pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
@@ -122,7 +136,7 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         crypto::ownership_proof(&id_keypair.secret_key, &fkp.public_key, &channel_key)
     });
 
-    let mut feed_state = feed_keypair.as_ref().map(|fkp| {
+    let feed_state = feed_keypair.as_ref().map(|fkp| {
         feed::FeedState::new(
             fkp.clone(),
             id_keypair.clone(),
@@ -159,21 +173,65 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         })
     };
 
-    let mut feed_state_tx: Option<watch::Sender<(Vec<u8>, u64)>> = None;
-    let mut feed_refresh_handle: Option<JoinHandle<()>> = None;
+    // --- Publisher worker + stdin reader (only when posting is enabled) ---
+    let mut pub_tx: Option<mpsc::Sender<PubJob>> = None;
+    let mut publisher_handle: Option<JoinHandle<()>> = None;
+    let mut stdin_handle: Option<JoinHandle<()>> = None;
 
-    if let Some(ref fs) = feed_state {
-        let initial_data = fs.serialize_feed_record();
-        if let Err(e) = handle.mutable_put(&fs.feed_keypair, &initial_data, fs.seq).await {
-            eprintln!("warning: initial feed publish failed: {e}");
-        }
-        let (tx, rx) = watch::channel((initial_data, fs.seq));
-        feed_state_tx = Some(tx);
+    if let Some(fs) = feed_state {
+        let (tx, rx) = mpsc::channel::<PubJob>(64);
+        pub_tx = Some(tx.clone());
 
-        let h = handle.clone();
-        let kp = fs.feed_keypair.clone();
-        feed_refresh_handle = Some(tokio::spawn(async move {
-                                    feed::run_feed_refresh(h, kp, rx).await;
+        let screen_name = prof.screen_name.clone().unwrap_or_default();
+        let handle_pub = handle.clone();
+        let id_kp = id_keypair.clone();
+        let batch_size = args.batch_size;
+        let batch_wait_ms = args.batch_wait_ms;
+        publisher_handle = Some(tokio::spawn(async move {
+            publisher::run_publisher(
+                handle_pub,
+                fs,
+                id_kp,
+                message_key,
+                channel_key,
+                screen_name,
+                rx,
+                batch_size,
+                batch_wait_ms,
+            )
+            .await;
+        }));
+
+        // stdin → publisher channel. send().await applies natural backpressure
+        // when the publisher cannot keep up.
+        stdin_handle = Some(tokio::spawn(async move {
+            let stdin = tokio::io::stdin();
+            let mut lines = BufReader::new(stdin).lines();
+            let mut stdin_counter: u64 = 0;
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(text)) => {
+                        let text = text.trim().to_string();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        stdin_counter += 1;
+                        if probe::is_enabled() {
+                            let preview: String = text.chars().take(40).collect();
+                            eprintln!("[probe] stdin#{stdin_counter} read={preview:?}");
+                        }
+                        if tx.send(PubJob::Message(text)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("error reading stdin: {e}");
+                        break;
+                    }
+                }
+            }
+            eprintln!("*** stdin closed, entering read-only mode");
         }));
     }
 
@@ -198,52 +256,12 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         None
     };
 
-    let stdin = tokio::io::stdin();
-    let mut stdin_reader = BufReader::new(stdin).lines();
-    let mut stdin_closed = false;
     let mut backlog_done = false;
-
-    let rotation_interval = tokio::time::Duration::from_secs(30);
-    let mut rotation_check = tokio::time::interval(rotation_interval);
     let friends_reload_interval = tokio::time::Duration::from_secs(30);
     let mut friends_reload_tick = tokio::time::interval(friends_reload_interval);
 
     loop {
         tokio::select! {
-            line = stdin_reader.next_line(), if !stdin_closed && !read_only => {
-                match line {
-                    Ok(Some(text)) => {
-                        let text = text.trim().to_string();
-                        if text.is_empty() {
-                            continue;
-                        }
-                        if let Some(ref mut fs) = feed_state {
-                            let screen_name = prof.screen_name.clone().unwrap_or_default();
-                            if let Err(e) = post::post_message(
-                                &handle,
-                                fs,
-                                &id_keypair,
-                                &message_key,
-                                &channel_key,
-                                &screen_name,
-                                &text,
-                            ) {
-                                eprintln!("error: failed to post: {e}");
-                            } else if let Some(ref tx) = feed_state_tx {
-                                let _ = tx.send((fs.serialize_feed_record(), fs.seq));
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        stdin_closed = true;
-                        eprintln!("*** stdin closed, entering read-only mode");
-                    }
-                    Err(e) => {
-                        eprintln!("error reading stdin: {e}");
-                        stdin_closed = true;
-                    }
-                }
-            }
             Some(msg) = msg_rx.recv() => {
                 if !backlog_done && msg.content.is_empty() && msg.id_pubkey == [0u8; 32] && msg.timestamp == 0 {
                     backlog_done = true;
@@ -251,79 +269,6 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                     continue;
                 }
                 display_state.render(&msg);
-            }
-            _ = rotation_check.tick(), if feed_state.is_some() => {
-                if let Some(ref mut fs) = feed_state {
-                    if fs.needs_rotation() {
-                        let mut new_fs = fs.rotate();
-
-                        // Target-before-pointer: publish NEW feed first so readers
-                        // can resolve it, THEN update old feed to point at it.
-                        let new_data = new_fs.serialize_feed_record();
-                        match handle.mutable_put(&new_fs.feed_keypair, &new_data, new_fs.seq).await {
-                            Ok(_) => {
-                                debug::log_event(
-                                    "Feed rotation (new)",
-                                    "mutable_put",
-                                    &format!(
-                                        "new_feed_pubkey={}, old_feed_pubkey={}",
-                                        debug::short_key(&new_fs.feed_keypair.public_key),
-                                        debug::short_key(&fs.feed_keypair.public_key),
-                                    ),
-                                );
-
-                                // New feed is live; now update old feed with next_feed_pubkey pointer
-                                let old_record = fs.serialize_feed_record();
-                                fs.seq += 1;
-                                if let Err(e) = handle.mutable_put(&fs.feed_keypair, &old_record, fs.seq).await {
-                                    tracing::warn!("rotation: old feed update failed (non-fatal): {e}");
-                                } else {
-                                    debug::log_event(
-                                        "Feed rotation (old ptr)",
-                                        "mutable_put",
-                                        &format!(
-                                            "old_feed_pubkey={}, seq={}, next_feed={}",
-                                            debug::short_key(&fs.feed_keypair.public_key),
-                                            fs.seq,
-                                            debug::short_key(&new_fs.feed_keypair.public_key),
-                                        ),
-                                    );
-                                }
-
-                                if let Some(h) = feed_refresh_handle.take() {
-                                    h.abort();
-                                }
-
-                                let overlap_h = handle.clone();
-                                let overlap_kp = fs.feed_keypair.clone();
-                                let overlap_data = old_record.clone();
-                                let overlap_seq = fs.seq;
-                                tokio::spawn(async move {
-                                    feed::run_rotation_overlap_refresh(
-                                        overlap_h, overlap_kp, overlap_data, overlap_seq,
-                                    ).await;
-                                });
-
-                                let (tx, rx) = watch::channel((new_data, new_fs.seq));
-                                feed_state_tx = Some(tx);
-
-                                let h = handle.clone();
-                                let kp = new_fs.feed_keypair.clone();
-                                feed_refresh_handle = Some(tokio::spawn(async move {
-            feed::run_feed_refresh(h, kp, rx).await;
-        }));
-
-
-                                std::mem::swap(fs, &mut new_fs);
-                                eprintln!("*** feed keypair rotated");
-                            }
-                            Err(e) => {
-                                eprintln!("warning: feed rotation failed (new feed publish), will retry: {e}");
-                                fs.next_feed_pubkey = [0u8; 32];
-                            }
-                        }
-                    }
-                }
             }
             _ = friends_reload_tick.tick() => {
                 if let Ok(updated_friends) = profile::load_friends(&args.profile) {
@@ -341,10 +286,19 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         }
     }
 
-    reader_handle.abort();
-    if let Some(h) = feed_refresh_handle {
+    // Drop the publisher send half so the publisher's rx.recv() returns None
+    // and the worker exits cleanly.
+    drop(pub_tx);
+
+    if let Some(h) = stdin_handle {
         h.abort();
     }
+    if let Some(h) = publisher_handle {
+        // Give the publisher a chance to finish its in-flight batch before
+        // tearing the DHT down.
+        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), h).await;
+    }
+    reader_handle.abort();
     if let Some(h) = nexus_handle {
         h.abort();
     }

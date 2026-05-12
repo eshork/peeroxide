@@ -12,8 +12,11 @@ pub mod join;
 pub mod known_users;
 pub mod names;
 pub mod nexus;
+pub mod ordering;
 pub mod post;
+pub mod probe;
 pub mod profile;
+pub mod publisher;
 pub mod reader;
 pub mod wire;
 
@@ -29,6 +32,11 @@ pub struct ChatArgs {
     /// Enable debug event logging to stderr
     #[arg(long, global = true)]
     pub debug: bool,
+
+    /// Enable message-flow probes (stdin/post/fetch_batch/release) to stderr.
+    /// Diagnostic only; useful for tracing ordering and duplication bugs.
+    #[arg(long, global = true)]
+    pub probe: bool,
 }
 
 #[derive(Subcommand)]
@@ -115,6 +123,9 @@ pub enum FriendsCommands {
 pub async fn run(args: ChatArgs, cfg: &ResolvedConfig) -> i32 {
     if args.debug {
         debug::enable();
+    }
+    if args.probe {
+        probe::enable();
     }
     match args.command {
         ChatCommands::Join(join_args) => join::run(join_args, cfg).await,

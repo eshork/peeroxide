@@ -11,6 +11,7 @@ pub struct DisplayMessage {
     pub content: String,
     pub timestamp: u64,
     pub is_self: bool,
+    pub late: bool,
 }
 
 pub struct DisplayState {
@@ -57,7 +58,8 @@ impl DisplayState {
             self.last_identity_shown.insert(msg.id_pubkey, now_secs);
         }
 
-        println!("[{timestamp_str}] [{display_name}]: {}", msg.content);
+        let late_marker = if msg.late { "[late] " } else { "" };
+        println!("{late_marker}[{timestamp_str}] [{display_name}]: {}", msg.content);
 
         if !msg.screen_name.is_empty() {
             let prev = self.known_names.get(&msg.id_pubkey);
@@ -173,6 +175,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let name = state.format_display_name(&msg, 0);
         assert_eq!(name, "(alice)");
@@ -189,6 +192,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let name = state.format_display_name(&msg, 0);
         assert!(name.starts_with("<bob@"));
@@ -206,6 +210,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let vendor = names::generate_name_from_seed(&msg.id_pubkey);
         let shortkey = &hex::encode(msg.id_pubkey)[..8];
@@ -227,6 +232,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let name_during_cooldown = state.format_display_name(&msg, 1100);
         assert!(name_during_cooldown.ends_with('!'), "should show ! during 300s cooldown");
@@ -248,6 +254,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let name = state.format_display_name(&msg, 0);
         let shortkey = &hex::encode([0xabu8; 32])[..8];
@@ -272,6 +279,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let vendor = names::generate_name_from_seed(&msg.id_pubkey);
         let name = state.format_display_name(&msg, 0);
@@ -296,6 +304,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let vendor = names::generate_name_from_seed(&msg.id_pubkey);
         let shortkey = &hex::encode(msg.id_pubkey)[..8];
@@ -316,6 +325,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let name = state.format_display_name(&msg, 0);
         let shortkey = &hex::encode([0xabu8; 32])[..8];
@@ -341,6 +351,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
         let name = state.format_display_name(&msg, 0);
         assert!(name.starts_with("(bestie)"), "friend alias should take priority: {}", name);
@@ -357,6 +368,7 @@ mod tests {
             content: "hi".to_string(),
             timestamp: 0,
             is_self: false,
+            late: false,
         };
 
         let vendor = names::generate_name_from_seed(&msg.id_pubkey);

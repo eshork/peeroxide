@@ -507,6 +507,141 @@ async fn test_chat_message_exchange() {
     assert!(result.is_ok(), "test_chat_message_exchange timed out");
 }
 
+// ── Test: burst of rapid messages from one sender arrives in chain order ────────
+
+#[tokio::test]
+#[ignore = "requires multi-node DHT — local cluster cannot propagate announcements for discovery"]
+async fn test_chat_burst_ordering() {
+    const BURST_SIZE: usize = 50;
+
+    let result = tokio::time::timeout(Duration::from_secs(180), async {
+        let (ports, _cluster) = spawn_dht_cluster(3).await;
+        let bs_addr = format!("127.0.0.1:{}", ports[0]);
+
+        let alice_home = setup_profile_home("Alice");
+        let bob_home = setup_profile_home("Bob");
+        let alice_home_str = alice_home.path().to_str().unwrap().to_string();
+        let bob_home_str = bob_home.path().to_str().unwrap().to_string();
+
+        let bs_alice = bs_addr.clone();
+        let mut alice = Command::new(bin_path())
+            .env("HOME", &alice_home_str)
+            .args([
+                "--no-default-config",
+                "chat", "join", "test-chat-burst",
+                "--bootstrap", &bs_alice,
+                "--no-nexus", "--no-friends",
+                "--feed-lifetime", "60",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn Alice");
+
+        let alice_stderr = BufReader::new(alice.stderr.take().unwrap());
+        let alice_live = tokio::task::spawn_blocking(move || {
+            for line in alice_stderr.lines() {
+                if line.unwrap_or_default().contains("— live —") {
+                    return true;
+                }
+            }
+            false
+        });
+        assert!(
+            matches!(
+                tokio::time::timeout(Duration::from_secs(30), alice_live).await,
+                Ok(Ok(true))
+            ),
+            "Alice did not reach live state"
+        );
+
+        let bs_bob = bs_addr.clone();
+        let mut bob = Command::new(bin_path())
+            .env("HOME", &bob_home_str)
+            .args([
+                "--no-default-config",
+                "chat", "join", "test-chat-burst",
+                "--bootstrap", &bs_bob,
+                "--read-only",
+                "--no-nexus", "--no-friends",
+                "--feed-lifetime", "60",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn Bob");
+
+        let bob_stderr = BufReader::new(bob.stderr.take().unwrap());
+        let bob_live = tokio::task::spawn_blocking(move || {
+            for line in bob_stderr.lines() {
+                if line.unwrap_or_default().contains("— live —") {
+                    return true;
+                }
+            }
+            false
+        });
+        assert!(
+            matches!(
+                tokio::time::timeout(Duration::from_secs(30), bob_live).await,
+                Ok(Ok(true))
+            ),
+            "Bob did not reach live state"
+        );
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let alice_stdin = alice.stdin.as_mut().expect("no stdin for Alice");
+        for i in 1..=BURST_SIZE {
+            writeln!(alice_stdin, "burst-line-{i:03}")
+                .expect("failed to write burst line");
+        }
+        alice_stdin.flush().expect("failed to flush Alice stdin");
+
+        let bob_stdout = BufReader::new(bob.stdout.take().unwrap());
+        let collector = tokio::task::spawn_blocking(move || {
+            let mut seen: Vec<usize> = Vec::new();
+            for line in bob_stdout.lines() {
+                let line = line.unwrap_or_default();
+                if let Some(idx) = line
+                    .rsplit_once("burst-line-")
+                    .and_then(|(_, tail)| tail.get(..3))
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    seen.push(idx);
+                    if seen.len() >= BURST_SIZE {
+                        break;
+                    }
+                }
+            }
+            seen
+        });
+
+        let collect_result =
+            tokio::time::timeout(Duration::from_secs(120), collector).await;
+
+        kill_child(&mut alice);
+        kill_child(&mut bob);
+
+        let seen = collect_result
+            .expect("timed out collecting burst lines")
+            .expect("collector thread panicked");
+
+        assert_eq!(
+            seen.len(),
+            BURST_SIZE,
+            "expected {BURST_SIZE} lines, got {}",
+            seen.len()
+        );
+        let expected: Vec<usize> = (1..=BURST_SIZE).collect();
+        assert_eq!(seen, expected, "messages arrived out of order: {seen:?}");
+    })
+    .await;
+
+    assert!(result.is_ok(), "test_chat_burst_ordering timed out");
+}
+
 // ── Test: read-only mode does not post or announce ──────────────────────────────
 
 #[tokio::test]
