@@ -39,10 +39,38 @@ pub struct TerminalGuard {
 impl TerminalGuard {
     /// Enter interactive mode. Installs a panic hook chained on top of the
     /// existing one so that even an unexpected panic restores the terminal.
+    ///
+    /// Before flipping into raw mode this also scrolls the existing visible
+    /// screen content up into the terminal's scrollback buffer, so the user
+    /// doesn't lose their shell prompt + recent command history when the
+    /// status bar / input area paints over the bottom rows. This is a
+    /// best-effort courtesy — terminals that don't honour line scrolling
+    /// into scrollback simply lose the content, which matches the
+    /// pre-existing behaviour.
     pub fn enter() -> std::io::Result<Self> {
+        let mut out = stdout();
+
+        // Push the current visible screen into scrollback by moving to the
+        // bottom row and emitting `rows` newlines. Each newline at the
+        // terminal's bottom row scrolls the viewport up by one and (on
+        // scrollback-capable terminals) preserves the displaced line.
+        //
+        // Done BEFORE raw mode so the tty driver's ONLCR is still in effect
+        // and `\n` produces a proper line feed; with cooked mode the cursor
+        // column is normalised back to 0 by terminals that translate to
+        // CR-LF, which is what we want when leaving the screen clean for
+        // our first paint. Run before any state we'd need to unwind, so a
+        // failure here doesn't leave the user in a partial state.
+        if let Ok((_cols, rows)) = terminal::size() {
+            let _ = crossterm::execute!(out, cursor::MoveTo(0, rows.saturating_sub(1)));
+            for _ in 0..rows {
+                let _ = writeln!(out);
+            }
+            let _ = out.flush();
+        }
+
         terminal::enable_raw_mode()?;
 
-        let mut out = stdout();
         // Best-effort bracketed paste — some terminals don't support it but
         // failing here would be hostile. Errors are swallowed.
         let _ = crossterm::execute!(out, event::EnableBracketedPaste, cursor::Hide);
