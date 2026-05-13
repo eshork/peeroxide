@@ -5,7 +5,7 @@ The `announce` command manages a long-running swarm session, coordinating DHT pr
 ## Initialization Flow
 
 1. **Identity Generation**: A `KeyPair` is either generated randomly or derived from a seed.
-2. **Swarm Setup**: A `SwarmConfig` is constructed with the identity and DHT configuration. Firewall settings are determined by the global config (Open if `public=true`, Consistent otherwise).
+2. **Swarm Setup**: A `SwarmConfig` is constructed with the identity and DHT configuration. The `--public` / `network.public` setting drives bootstrap node selection (see [init/overview.md → Global CLI Flags](../init/overview.md#global-cli-flags)); it does not change firewall semantics.
 3. **Joining Topic**: The node joins the topic using `JoinOpts { client: false }`. This instructs the DHT to act as a server for this topic, making the node discoverable to lookup queries.
 4. **Flushing**: The node waits for the join operation to flush, ensuring at least one announcement has reached the DHT.
 
