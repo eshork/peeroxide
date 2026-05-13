@@ -105,14 +105,23 @@ These tables are currently empty and reserved for future use.
 
 ## Bootstrap Resolution
 
-Peeroxide uses an additive algorithm to determine the final list of bootstrap nodes:
+Peeroxide resolves the bootstrap-node list in two stages: a config/CLI merge, then a public-default adjustment.
 
-1. Start with the combined list from the config file and `--bootstrap` CLI flags.
-2. If `public=true` (via flag or config), add the default public HyperDHT bootstrap nodes.
-3. If the list is still empty, automatically add the default public HyperDHT bootstrap nodes.
-4. If `public=false` (via `--no-public` or config), remove all default public bootstrap nodes from the list.
+**Stage 1 — pick the base list (in `peeroxide-cli/src/config.rs`):**
 
-This ensures that the node is never isolated unless specifically requested by combining `--no-public` with an empty bootstrap list. The `--no-public` flag replaces the legacy `--firewalled` flag behavior.
+- If `--bootstrap <ADDR>` was supplied (one or more times) on the command line, use **only** those CLI bootstraps for the base list. The config file's `network.bootstrap` is **ignored** in this case.
+- Otherwise, use the `network.bootstrap` list from the config file (if any).
+- If neither source supplied bootstraps, the base list starts empty.
+
+**Stage 2 — apply the public-default adjustment (in `peeroxide-cli/src/cmd/mod.rs::resolve_bootstrap`):**
+
+1. If `public=true` (via flag or config), add the default public HyperDHT bootstrap nodes to the base list.
+2. If the list is still empty after step 1, automatically add the default public HyperDHT bootstrap nodes (so a fresh install with no config and no flags still connects).
+3. If `public=false` (via `--no-public` or config), remove all default public bootstrap nodes from the list.
+
+This ensures the node is never isolated unless specifically requested by combining `--no-public` with an empty bootstrap list. The `--no-public` flag replaces the legacy `--firewalled` flag behavior.
+
+Note: this resolution happens at runtime in subcommands that do DHT work (lookup, announce, ping, cp, dd, chat, node). `peeroxide init` uses its own local `--public` and `--bootstrap` flags to populate the generated/updated config file; the merge and public-default adjustment do not run during `init`.
 
 ## Man-page Installation
 
