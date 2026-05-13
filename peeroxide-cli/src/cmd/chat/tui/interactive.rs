@@ -28,7 +28,7 @@
 //! position. This way an inbound message never disturbs what the user is
 //! typing.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::{Stdout, Write, stdout};
 use std::sync::Arc;
 
@@ -258,6 +258,19 @@ async fn render_loop(
     let mut out = stdout();
     let mut slots = SlotWidths::default();
 
+    // In-memory chat-history ring buffer. Every `Message` / `System` line we
+    // write into the scroll region is pushed here too. On `FullRepaint`
+    // (terminal resize / Ctrl-L) we replay the tail of this buffer into the
+    // freshly-laid-out scroll region so the user's visible chat history
+    // survives the resize, instead of being wiped along with stale bar /
+    // input artifacts.
+    //
+    // Bounded to `HISTORY_CAP` lines. A chat session can run for hours; we
+    // only need enough to refill the largest reasonable terminal a few
+    // times. 10_000 is loose-enough to cover even an enormous screen and
+    // cheap in memory (a few MB worst-case).
+    let mut history: VecDeque<String> = VecDeque::with_capacity(HISTORY_CAP);
+
     // Cache the last-rendered status snapshot so the idle timer arm can
     // detect "the rendered bar would now differ" (e.g. the `recv_active`
     // flash just decayed back to false) and trigger a repaint. Without
@@ -274,6 +287,7 @@ async fn render_loop(
                     UiOp::Shutdown => break,
                     UiOp::Message(line) | UiOp::System(line) => {
                         write_into_scroll_region(&mut out, &line, rows, input_height)?;
+                        push_history(&mut history, line);
                         // After a scroll-region write the cursor sits at the
                         // bottom of the region; we still need to repaint the
                         // status bar (in case `Receiving...` count changed)
@@ -307,24 +321,28 @@ async fn render_loop(
                         slots.reset();
                         let editor_snap = editor.read().await.clone();
                         input_height = compute_input_height(&editor_snap, rows);
-                        // Reset the scroll region for the new geometry, then
-                        // clear the entire visible screen and repaint. This
-                        // is necessary on resize because the old status-bar
-                        // and input-area text is at the OLD (row, col)
-                        // positions — when `cols` shrinks, those characters
-                        // remain visible past the new bar's right edge; when
-                        // `rows` changes, the old bar lingers above or below
-                        // the new bar's position. Clearing the visible
-                        // screen wipes those artifacts. Chat history is
-                        // preserved in the terminal's native scrollback
-                        // (above the visible region) and remains reachable
-                        // via mouse wheel / PgUp.
+                        // Re-apply the scroll region for the new geometry,
+                        // then clear the entire visible screen. The clear is
+                        // still necessary because the old status-bar and
+                        // input-area pixels live at their previous (row,
+                        // col) positions — when geometry changes, those
+                        // characters would otherwise linger outside the new
+                        // bar/input rows. Clearing wipes them along with
+                        // the chat region.
+                        //
+                        // To avoid losing the user's visible chat history
+                        // (the original "resize wipes scrollback" bug), we
+                        // replay the tail of the in-memory history buffer
+                        // into the new scroll region after clearing,
+                        // positioned so the newest line sits at the bottom
+                        // row of the region (matching steady-state layout).
                         apply_layout(&mut guard, &mut out, cols, rows, input_height)?;
                         crossterm::queue!(
                             out,
                             cursor::MoveTo(0, 0),
                             Clear(ClearType::All),
                         )?;
+                        replay_history(&mut out, &history, rows, input_height)?;
                         paint_full(
                             &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
                         )?;
@@ -529,6 +547,73 @@ fn write_into_scroll_region(
     Ok(())
 }
 
+/// Maximum number of chat lines kept in the in-memory history buffer.
+/// Lines older than this are evicted FIFO as new ones are pushed.
+///
+/// Sized to comfortably cover any plausible terminal height (a 4K display
+/// at a tiny font is on the order of 250-300 rows) with headroom. Bigger
+/// values don't help — only the tail up to `region_height` is ever
+/// replayed; older history is never visible again once it falls past the
+/// top of the region.
+const HISTORY_CAP: usize = 500;
+
+/// Push a chat line onto the bounded history buffer, evicting the oldest
+/// line when the capacity is reached.
+fn push_history(history: &mut VecDeque<String>, line: String) {
+    if history.len() == HISTORY_CAP {
+        history.pop_front();
+    }
+    history.push_back(line);
+}
+
+/// Replay the tail of the in-memory chat history into the new scroll region.
+/// Called from the `FullRepaint` arm after the screen has been cleared and
+/// the scroll region applied for the new geometry.
+///
+/// Each replayed line is emitted exactly the way fresh chat messages are
+/// written by [`write_into_scroll_region`]: `MoveTo` the bottom row of the
+/// region, write the bytes, then `\r\n`. The terminal handles wrap-on-
+/// overflow and scroll-within-region naturally — the same machinery that
+/// handles in-flight messages — so a long line that no longer fits in the
+/// new `cols` simply wraps to multiple visible rows and the oldest replayed
+/// content scrolls past the top of the region (which is fine: at most
+/// `region_height` rows can ever be visible at once).
+///
+/// We replay exactly `region_height` lines (or all of history, whichever
+/// is smaller). That's the most that could ever be visible at one time;
+/// any additional lines would just scroll off the top and add latency
+/// without changing the final visible state.
+fn replay_history(
+    out: &mut Stdout,
+    history: &VecDeque<String>,
+    rows: u16,
+    input_height: u16,
+) -> std::io::Result<()> {
+    let region_bottom_zero = rows.saturating_sub(input_height + 2);
+    let region_height = (region_bottom_zero + 1) as usize;
+    if history.is_empty() || region_height == 0 {
+        return Ok(());
+    }
+    let replay_count = replay_count(history.len(), region_height);
+    let start = history.len() - replay_count;
+    queue!(out, cursor::Hide, ResetColor)?;
+    for line in history.iter().skip(start) {
+        queue!(out, cursor::MoveTo(0, region_bottom_zero), ResetColor)?;
+        out.write_all(line.as_bytes())?;
+        out.write_all(b"\r\n")?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// Pure helper: how many history entries [`replay_history`] should replay
+/// given the buffer length and the new region height. At most
+/// `region_height` lines can be visible in the region at once, so that's
+/// the natural upper bound; extras would only scroll off the top.
+fn replay_count(history_len: usize, region_height: usize) -> usize {
+    history_len.min(region_height)
+}
+
 // ===== Keyboard task =====
 
 async fn keyboard_loop(
@@ -605,4 +690,60 @@ async fn publish_view(view: &Arc<RwLock<EditorSnapshot>>, editor: &InputEditor) 
     w.lines = lines;
     w.row = row;
     w.col = col;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_count_capped_by_history_len() {
+        // Small history fits entirely.
+        assert_eq!(replay_count(3, 24), 3);
+        assert_eq!(replay_count(0, 24), 0);
+    }
+
+    #[test]
+    fn replay_count_capped_by_region_height() {
+        // Large history is trimmed to region_height — extras would scroll
+        // off the top of the region anyway.
+        assert_eq!(replay_count(1000, 24), 24);
+        assert_eq!(replay_count(HISTORY_CAP, 200), 200);
+    }
+
+    #[test]
+    fn replay_count_handles_zero_region() {
+        assert_eq!(replay_count(1000, 0), 0);
+    }
+
+    #[test]
+    fn replay_count_handles_exact_fit() {
+        assert_eq!(replay_count(50, 50), 50);
+    }
+
+    #[test]
+    fn push_history_evicts_oldest_when_full() {
+        let mut h: VecDeque<String> = VecDeque::with_capacity(HISTORY_CAP);
+        // Fill to capacity.
+        for i in 0..HISTORY_CAP {
+            push_history(&mut h, format!("line{i}"));
+        }
+        assert_eq!(h.len(), HISTORY_CAP);
+        assert_eq!(h.front().unwrap(), "line0");
+        // One more push evicts the oldest.
+        push_history(&mut h, "new".to_string());
+        assert_eq!(h.len(), HISTORY_CAP);
+        assert_eq!(h.front().unwrap(), "line1");
+        assert_eq!(h.back().unwrap(), "new");
+    }
+
+    #[test]
+    fn push_history_grows_below_cap() {
+        let mut h: VecDeque<String> = VecDeque::new();
+        push_history(&mut h, "a".to_string());
+        push_history(&mut h, "b".to_string());
+        push_history(&mut h, "c".to_string());
+        assert_eq!(h.len(), 3);
+        assert_eq!(h.iter().collect::<Vec<_>>(), vec!["a", "b", "c"]);
+    }
 }
