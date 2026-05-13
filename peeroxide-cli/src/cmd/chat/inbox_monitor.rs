@@ -36,6 +36,7 @@ use crate::cmd::chat::crypto;
 use crate::cmd::chat::debug;
 use crate::cmd::chat::inbox::{self, DecodedInvite};
 use crate::cmd::chat::known_users::KnownUser;
+use crate::cmd::chat::name_resolver::NameResolver;
 use crate::cmd::chat::wire::INVITE_TYPE_DM;
 
 /// A decoded invite with its stable session-scope sequence number ("#N" in
@@ -273,12 +274,11 @@ pub fn format_invite_lines(
     let invite = &numbered.invite;
     let number = numbered.number;
     let sender_hex = hex::encode(invite.sender_pubkey);
-    let short = &sender_hex[..8];
-    let sender_name = known_users
-        .iter()
-        .find(|u| u.pubkey == invite.sender_pubkey)
-        .map(|u| u.screen_name.as_str())
-        .unwrap_or(short);
+    // Resolve via the canonical name resolver (no friends list in this
+    // context — invite display only had access to known_users historically).
+    let resolved = NameResolver::from_known_users(known_users).resolve(&invite.sender_pubkey);
+    let sender_name = &resolved.name;
+    let short = &resolved.shortkey;
 
     let mut out = Vec::with_capacity(3);
     if invite.invite_type == INVITE_TYPE_DM {
@@ -399,7 +399,14 @@ mod tests {
         };
         let lines = format_invite_lines(&inv, "default", &[]);
         assert_eq!(lines.len(), 3);
-        assert!(lines[0].starts_with("[INVITE #7] DM from 42424242"));
+        // Unknown sender resolves to a vendor name; the shortkey appears
+        // in parentheses regardless.
+        assert!(
+            lines[0].starts_with("[INVITE #7] DM from "),
+            "got: {}",
+            lines[0]
+        );
+        assert!(lines[0].ends_with("(42424242)"), "got: {}", lines[0]);
         assert_eq!(lines[1], "  \"wanna chat?\"");
         assert!(lines[2].contains("peeroxide chat dm "));
         assert!(lines[2].contains("--profile default"));
@@ -413,7 +420,8 @@ mod tests {
         };
         let lines = format_invite_lines(&inv, "alice", &[]);
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with("[INVITE #3] DM from 11111111"));
+        assert!(lines[0].starts_with("[INVITE #3] DM from "));
+        assert!(lines[0].ends_with("(11111111)"), "got: {}", lines[0]);
         assert!(lines[1].contains("--profile alice"));
     }
 

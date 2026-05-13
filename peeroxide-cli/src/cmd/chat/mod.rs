@@ -11,6 +11,7 @@ pub mod inbox_cmd;
 pub mod inbox_monitor;
 pub mod join;
 pub mod known_users;
+pub mod name_resolver;
 pub mod names;
 pub mod nexus;
 pub mod ordering;

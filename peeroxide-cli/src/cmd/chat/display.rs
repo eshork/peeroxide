@@ -156,6 +156,17 @@ impl DisplayState {
             .unwrap_or(false);
         let bang = if name_cooldown_active { "!" } else { "" };
 
+        // Note: deliberately doesn't go through `NameResolver` — the
+        // message-rendering ladder here differs from the general resolver
+        // semantics in subtle ways. Specifically, the "friend without
+        // alias" case uses the VENDOR name (not the cached known name) in
+        // the parenthesised stable-identifier slot, while the general
+        // resolver gives the cached known name priority. The two
+        // semantics are different on purpose: this path wants a
+        // pubkey-derived stable identifier for the friendship marker,
+        // independent of whatever screen name the friend is currently
+        // using. Friends-aware bar / slash output should compose
+        // `NameResolver` results directly.
         if let Some(friend) = self.friends.get(&msg.id_pubkey) {
             if let Some(ref alias) = friend.alias {
                 if msg.screen_name.is_empty() || *alias == msg.screen_name {
