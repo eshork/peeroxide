@@ -361,9 +361,28 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig, line_mode: bool) -> i32 {
                     Some(UiInput::Message(text)) => {
                         if let Some(tx) = pub_tx.as_ref() {
                             status.inc_send_pending();
-                            if tx.send(PubJob::Message(text)).await.is_err() {
-                                // Publisher dropped — abort send_pending bookkeeping.
-                                status.dec_send_pending();
+                            // The publisher channel is bounded (mpsc(64)); when stdin
+                            // pumps lines faster than the publisher can drain a batch
+                            // (a serial pipeline of immutable_put -> mutable_put ->
+                            // announce takes ~15-20s per batch), tx.send().await would
+                            // park indefinitely. That blocks this select! arm, which
+                            // prevents the outer select!'s ctrl_c arm from polling, so
+                            // the user's Ctrl-C is never observed. Wrap the send in a
+                            // sub-select that watches ctrl_c too, so a backpressured
+                            // publish still yields to the interrupt.
+                            tokio::select! {
+                                biased;
+                                _ = tokio::signal::ctrl_c() => {
+                                    status.dec_send_pending();
+                                    ui.render_system("*** shutting down");
+                                    break;
+                                }
+                                send_res = tx.send(PubJob::Message(text)) => {
+                                    if send_res.is_err() {
+                                        // Publisher dropped — abort bookkeeping.
+                                        status.dec_send_pending();
+                                    }
+                                }
                             }
                         } else {
                             ui.render_system("*** read-only mode; message not sent");
