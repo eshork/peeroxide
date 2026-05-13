@@ -7,21 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-13
+
 ### Added
 
+- `peeroxide chat` — pseudonymous end-to-end-encrypted P2P chat over the DHT. Subcommands: `join`, `dm`, `inbox`, `whoami`, `profiles {list, create, delete}`, `friends {list, add, remove, refresh}`, `nexus`. Features channels with optional `--group` salt for privacy, direct messages, an interactive TUI with a status bar and slash commands, line mode, an inbox monitor that surfaces invites, and profile management with multiple identities. See `docs/src/chat/`.
+- `peeroxide init` — config bootstrap (default mode) and man-page installation (`--man-pages [PATH]`). New flags: `--force`, `--update`, `--public`, `--bootstrap <ADDR>` (repeatable), `--man-pages [PATH]`.
+- Tree-indexed `dd` protocol v2 shipped under wire byte `0x02`. Receiver fetches the index tree breadth-first in parallel. Soft depth cap of 4 supports up to ~27 GB at the default 998-byte chunk size.
 - `dd put` and `dd get` now display a progress bar by default when stderr is a TTY (indicatif-driven). New flags:
   - `--no-progress` — suppress the progress bar
   - `--json` — emit structured `start`/`progress`/`result`/`ack`/`done` events as JSON Lines on stdout (schema documented in `docs/src/dd/operations.md`)
   `dd get --json` requires `--output FILE`; without it, flag parsing fails with a clear error (stdout would otherwise conflict with the JSON event stream).
+- New global `-v` / `--verbose` count flag (warn / info / debug; `RUST_LOG` overrides).
+- New global `--no-public` flag that excludes the default public HyperDHT bootstrap nodes.
+- Per-`mutable_put` timeout of 30 seconds in the `dd` v2 sender. Stall watchdog kicks AIMD concurrency off the floor if no put resolves for 30 seconds.
+- `peeroxide-init(1)` and `peeroxide-chat(1)` man pages.
+- New mdBook chapters: `docs/src/chat/` (overview, user-guide, interactive-tui, wire-format, protocol, reference), `docs/src/init/overview.md`, `docs/src/concepts/dht-primitives.md` (covers `immutable_put`/`mutable_put`/`announce`/`lookup`, rendezvous pattern, TTL, and 1002-byte size budget).
+- `docs/ascii_art.txt` banner asset embedded into `peeroxide --version` via clap `long_version`, into the crate README, and into the mdBook introduction. `-V` continues to print the bare semver for scripts.
 
 ### Changed
 
-- Renamed `deaddrop` command to `dd` (short for "Dead Drop")
-- Renamed `deaddrop leave` subcommand to `dd put`
-- Renamed `deaddrop pickup` subcommand to `dd get`
+- Renamed `deaddrop` command to `dd` (short for "Dead Drop").
+- Renamed `deaddrop leave` subcommand to `dd put`.
+- Renamed `deaddrop pickup` subcommand to `dd get`.
+- `dd put` defaults to v2 protocol; pass `--v1` to force the legacy single-chain protocol.
+- `dd get` auto-dispatches between v1 (`0x01`) and v2 (`0x02`) based on the root record's first byte.
+- Bootstrap resolution: CLI `--bootstrap` overrides the config file's `network.bootstrap` (not additive). After base-list selection, `--public` adds defaults, an empty list auto-fills with defaults, and `--no-public` removes defaults.
 - The legacy per-chunk status output emitted to stderr during the initial publish/fetch phase (`published chunk N/M`, `fetched data N/M`, `reassembled X bytes`, etc.) is replaced by the new progress UI (bar, periodic log, or JSON events). Scripts that parsed this output should migrate to `--json` mode.
   **Preserved:** Refresh, ack (`[ack] pickup #N detected`), "ack sent", "done", "written to PATH", and other lifecycle messages on stderr are not affected and continue to print as before.
 - In `--json` mode, all structured events (including the pickup key for `dd put`) go to stdout (per `docs/AGENTS.md` convention). The pickup key is delivered as `{"type":"result","pickup_key":"..."}` rather than a bare stdout line. JSON consumers should parse `{"type":"result"}` events.
+- Consolidated `peeroxide chat` man pages into a single `peeroxide-chat(1)` covering every subcommand and group. Total man-page count is 9 (one per top-level command).
+- All man pages have refreshed long-about prose, examples, exit status, and see-also entries.
+- Rewritten `docs/src/dd/` chapters covering both v1 and v2.
+
+### Fixed
+
+- Shared sticky `Shutdown` primitive across `dd put`. First SIGINT/SIGTERM cancels gracefully; second exits with code 130.
+- `dd` v2 need-list watcher now publishes only attempted-and-failed chunk ranges, not all missing positions.
+
+### Removed
+
+- `peeroxide config init` — replaced by `peeroxide init`.
+- The legacy `--generate-man <DIR>` flag — replaced by `peeroxide init --man-pages [PATH]`.
+- The legacy `--firewalled` global flag — replaced by `--no-public`.
 
 ## [0.1.0] - 2026-04-29
 
