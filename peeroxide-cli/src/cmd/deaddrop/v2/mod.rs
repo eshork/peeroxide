@@ -5,7 +5,7 @@
 //! is a flat collection of immutable, content-addressed records, each
 //! carrying a per-deaddrop salt for DHT address-space isolation.
 //!
-//! See `peeroxide-cli/DEADDROP_V3.md` (or `DEADDROP_V2.md` once landed)
+//! See `peeroxide-cli/DEADDROP_V2.md` (and `docs/src/dd/`)
 //! for the wire-format specification.
 
 #![allow(dead_code)]

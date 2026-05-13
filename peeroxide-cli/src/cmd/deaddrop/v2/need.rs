@@ -1,6 +1,6 @@
 //! v3 need-list channel.
 //!
-//! Spec: see *Need-List Feedback Channel* in `DEADDROP_V3.md`.
+//! Spec: see *Need-List Feedback Channel* in `DEADDROP_V2.md (and `docs/src/dd/`)`.
 //!
 //! Wire format:
 //!   `[VERSION][count: u16 LE][count × {start: u32 LE, end: u32 LE}]`

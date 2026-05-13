@@ -1,7 +1,7 @@
 //! Wire format serialization/deserialization for all chat protocol record types,
 //! plus XSalsa20Poly1305 encryption/decryption wrappers.
 //!
-//! Record layout specifications follow §7.1–§7.5 of CHAT.md.
+//! Record layout specifications documented in `docs/src/chat/wire-format.md`.
 
 use std::fmt;
 

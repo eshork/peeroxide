@@ -38,7 +38,7 @@ peeroxide chat join <channel> [flags]
 | `--batch-wait-ms <ms>` | `50` | Maximum time to wait for a batch to fill before publishing. |
 | `--stay-after-eof` | | Enter read-only mode on stdin EOF instead of exiting. |
 | `--no-inbox` | | Disable background inbox monitoring. |
-| `--inbox-poll-interval <s>` | `15` | How often to poll the inbox for new invites. |
+| `--inbox-poll-interval <s>` | `15` | How often to poll the inbox for new invites. Values below `1` are clamped to `1`. |
 
 ### Examples
 

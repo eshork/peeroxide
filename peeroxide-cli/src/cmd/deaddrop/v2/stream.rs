@@ -1,6 +1,6 @@
 //! v3 streaming-stdout reorder buffer.
 //!
-//! Spec: see *Output Strategies* in `DEADDROP_V3.md` (stdout case).
+//! Spec: see *Output Strategies* in `DEADDROP_V2.md (and `docs/src/dd/`)` (stdout case).
 //!
 //! The receiver maintains an `emit_pos` cursor indexing the next
 //! data-chunk-in-DFS-order it will emit to stdout. Out-of-order arrivals

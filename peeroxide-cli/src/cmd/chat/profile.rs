@@ -7,9 +7,12 @@
 //! ├── seed         # 32 raw bytes (Ed25519 seed)
 //! ├── name         # UTF-8 screen name (optional)
 //! ├── bio          # UTF-8 bio text (optional)
-//! ├── friends      # tab-separated: pubkey\talias\tcached_name\tcached_bio_line
-//! └── known_users  # append-only: pubkey\tscreen_name
+//! └── friends      # tab-separated: pubkey\talias\tcached_name\tcached_bio_line
 //! ```
+//!
+//! The shared known-users cache lives one level up at
+//! `~/.config/peeroxide/chat/known_users` and is process-wide, not per
+//! profile — see `known_users::shared_known_users_path`.
 
 use std::collections::HashMap;
 use std::fs;

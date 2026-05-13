@@ -1,7 +1,7 @@
 //! Generic inbox polling logic shared by the `chat inbox` CLI command and
 //! the `chat join` inbox monitor.
 //!
-//! Per CHAT.md §8.5: the recipient's inbox topic is keyed_blake2b'd over
+//! Per the chat protocol (see `docs/src/chat/wire-format.md` and `docs/src/chat/protocol.md`): the recipient's inbox topic is keyed_blake2b'd over
 //! `(id_pubkey, epoch_u64_le, bucket_u8)` with a 1-minute epoch and 4
 //! buckets per epoch. Senders announce on a random bucket of the current
 //! epoch; readers scan **current + previous epoch × 4 buckets = 8 lookups**

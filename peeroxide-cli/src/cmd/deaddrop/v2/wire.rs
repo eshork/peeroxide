@@ -1,6 +1,6 @@
 //! v3 wire-format encoders and decoders.
 //!
-//! Spec: see *Frame Formats* section of `DEADDROP_V3.md`.
+//! Spec: see *Frame Formats* section of `DEADDROP_V2.md (and `docs/src/dd/`)`.
 //!
 //! Layouts:
 //!   data chunk:        `[ver: 0x02][salt: u8][payload: ≤998 B]`

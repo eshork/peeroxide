@@ -47,7 +47,7 @@ Technical reference tables for constants, flags, and filesystem layouts in the P
 - `--batch-wait-ms <ms>`: Batch window (default: `50`).
 - `--stay-after-eof`: Enter listener mode on EOF.
 - `--no-inbox`: Disable inbox monitor.
-- `--inbox-poll-interval <s>`: Inbox scan frequency (default: `15`).
+- `--inbox-poll-interval <s>`: Inbox scan frequency (default: `15`). Values below `1` are clamped to `1`.
 
 ### Subcommand: dm
 Same session-flag surface as `join`, **except** `--group` and `--keyfile` are not accepted (the DM channel key is derived deterministically from the two participants' identity public keys). DM also adds:

@@ -1,7 +1,7 @@
 //! v3 sender-side tree construction.
 //!
 //! Bottom-up greedy. Spec: see *Tree Shape (normative)* section of
-//! `DEADDROP_V3.md`. The construction is fully determined by `file_size`;
+//! `DEADDROP_V2.md (and `docs/src/dd/`)`. The construction is fully determined by `file_size`;
 //! senders MUST produce exactly this shape.
 
 #![allow(dead_code)]

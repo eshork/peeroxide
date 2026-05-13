@@ -76,7 +76,7 @@ pub struct JoinArgs {
     pub no_inbox: bool,
 
     /// Inbox polling interval in seconds. Matches the chat inbox CLI
-    /// default; the docs (CHAT.md §8.5) suggest 15-30 s.
+    /// default; the chat protocol docs (`docs/src/chat/protocol.md`) suggest 15-30 s.
     #[arg(long, default_value = "15")]
     pub inbox_poll_interval: u64,
 }

@@ -1,5 +1,5 @@
 //! Line-oriented (non-TTY) chat UI. Preserves the historical
-//! `chat join` stdout contract documented in `CHAT_CLI.md` — one message per
+//! `chat join` stdout contract documented in `docs/src/chat/user-guide.md` — one message per
 //! line in the format `[HH:MM:SS] [name]: content`, system notices on stderr.
 
 use std::collections::HashSet;
