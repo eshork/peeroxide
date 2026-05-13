@@ -43,7 +43,7 @@ When you start a DM with another user, Peeroxide derives a unique `dm_channel_ke
 
 Because there is no server to hold messages while you are offline, Peeroxide uses an "Inbox" mechanism to facilitate discovery.
 
-Your inbox is a set of rotating DHT topics derived from your public key. When someone wants to start a DM or invite you to a private channel, they post an "Invite" record to your current inbox topic.
+Your inbox is a set of rotating DHT topics derived from your public key. When someone wants to start a DM or invite you to a private channel, they generate a one-shot invite-feed keypair, publish an encrypted `InviteRecord` at that feed via `mutable_put`, and then `announce` that feed on your current inbox topic.
 
 Your client periodically monitors these topics. When a new invite appears, it notifies you and provides the necessary keys to join the conversation. This "nudge" mechanism allows peers to find each other even if they aren't currently in the same channel.
 

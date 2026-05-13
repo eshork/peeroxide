@@ -79,7 +79,7 @@ V2 employs an Additive Increase / Multiplicative Decrease (AIMD) controller to m
 - **Stall Watchdog:** Checks every 5s. If no put resolves for 30s, it forces AIMD to a recovery floor.
 - **Sliding-window Timeout:** `get` operations abort only if no chunk decodes for `--timeout` seconds.
 - **Graceful Shutdown:** First Ctrl-C triggers a sticky cancel signal that enqueues cleanups (like empty need-list sentinels). A second double-press force-exits.
-- **Need-list Lifecycle:** Receivers announce missing ranges every 20s. Senders poll the need topic every 5s and prioritize enqueuing the full path (index + data) for those chunks.
+- **Need-list Lifecycle:** Receivers publish the encoded missing-range need-list via `mutable_put` every 20s and announce keepalive on the need topic every 60s. Senders poll the need topic every 5s and prioritize enqueuing the full path (index + data) for any newly-listed chunks.
 
 ## DHT Wire Monitoring
 
