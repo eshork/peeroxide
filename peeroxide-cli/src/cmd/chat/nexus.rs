@@ -47,6 +47,7 @@ pub async fn run(args: NexusArgs, cfg: &ResolvedConfig) -> i32 {
 
     let _ = profile::load_or_create_profile(&args.profile);
 
+    let mut setters_applied = false;
     if let Some(ref name) = args.set_name {
         let dir = profile::profile_dir(&args.profile);
         if let Err(e) = std::fs::write(dir.join("name"), name.trim()) {
@@ -54,9 +55,7 @@ pub async fn run(args: NexusArgs, cfg: &ResolvedConfig) -> i32 {
             return 1;
         }
         println!("Screen name updated to: {}", name.trim());
-        if !args.publish && !args.daemon {
-            return 0;
-        }
+        setters_applied = true;
     }
 
     if let Some(ref bio) = args.set_bio {
@@ -66,9 +65,11 @@ pub async fn run(args: NexusArgs, cfg: &ResolvedConfig) -> i32 {
             return 1;
         }
         println!("Bio updated.");
-        if !args.publish && !args.daemon {
-            return 0;
-        }
+        setters_applied = true;
+    }
+
+    if setters_applied && !args.publish && !args.daemon {
+        return 0;
     }
 
     let prof = match profile::load_profile(&args.profile) {
