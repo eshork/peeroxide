@@ -41,7 +41,7 @@ Technical reference tables for constants, flags, and filesystem layouts in the P
 - `--no-nexus`: Skip nexus refresh/publish.
 - `--no-friends`: Skip friend refresh.
 - `--read-only`: Listen only mode.
-- `--stealth`: Shorthand for `--no-nexus --read-only --no-friends`.
+- `--stealth`: Shorthand for `--no-nexus --read-only --no-friends`. Note this does **not** suppress inbox polling; see [Stealth Mode](./user-guide.md#stealth-mode) in the user guide for the full threat-model breakdown.
 - `--feed-lifetime <min>`: Feed rotation interval (default: `60`).
 - `--batch-size <n>`: Max messages per batch (default: `16`). Values below `1` are clamped to `1`.
 - `--batch-wait-ms <ms>`: Batch window (default: `50`).

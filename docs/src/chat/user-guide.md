@@ -204,6 +204,56 @@ warning: nexus serialize failed: record too large: N bytes exceeds 1000 byte lim
 
 The bio file is **still saved on disk** in this case — only the DHT publish is skipped. Shorten the bio (or screen name) and re-run with `--publish` to recover.
 
+## Stealth Mode
+
+The `--stealth` flag is supported by both `chat join` and `chat dm`. It is a shorthand for `--no-nexus --read-only --no-friends`, but the behavioral and threat-model implications are easier to reason about as a single concept.
+
+### What `--stealth` suppresses
+
+Passing `--stealth` is equivalent to enabling all three of:
+
+- **`--read-only`** — your publisher is disabled entirely. No feed keypair is created, no message records are written via `immutable_put`, no `FeedRecord` is published via `mutable_put`, and no `announce` is sent on the channel or DM rendezvous topics. You become a pure observer of the channel.
+- **`--no-nexus`** — your profile's Nexus record (screen name + bio) is not published. Other peers cannot resolve your identity public key to your screen name via the DHT, and you do not consume a `mutable_put` slot at your identity public key.
+- **`--no-friends`** — the background friend-Nexus refresh task does not run. Your DHT does not issue periodic `mutable_get`s on each friend's identity public key, which would otherwise be observable to DHT nodes near those keys.
+
+### What `--stealth` does NOT suppress
+
+`--stealth` stops the publishing side of the protocol. Several other observable activities continue:
+
+- **Channel discovery is still active.** Reading any channel requires `lookup`s on its discovery topics, followed by `mutable_get`s on each announcer's feed public key. Both operations remain visible to the DHT nodes serving them.
+- **Inbox monitoring is independent of `--stealth`.** A stealth session still polls your profile's inbox topics every `--inbox-poll-interval` seconds (8 lookups per cycle by default — current + previous epoch, 4 buckets each). The wire-level lookup carries only the derived inbox topic, not your public key, so a passive DHT participant who does not already know your identity cannot recover it from these queries alone. However, an observer who **already knows your public key** can independently derive the same inbox topics and recognize the polling pattern, which lets them correlate the polling source IP with your identity. If that matches your threat model, also pass `--no-inbox`.
+- **DM under stealth is receive-only.** The DM channel key is symmetric between the two parties, so you can decrypt incoming messages. But you never `announce` your DM feed, never publish a message, and never send the per-epoch nudge. Your DM peer has no way to know you are listening.
+- **Network-level metadata is unchanged.** Every DHT operation goes out over UDP to peers who see your IP address. The Hyperswarm DHT has no traffic-mixing or onion-routing layer. If IP-level identifiability matters in your threat model — and especially if your public key is already known to an adversary — route peeroxide's traffic through a transport you trust to provide that property: typically a VPN that gives you a different egress IP, mixes your traffic with other clients, and does not retain per-flow logs.
+
+### When `--stealth` is enough
+
+It is sufficient when your only goal is to read a channel without contributing to its announce set or signaling your presence to other channel participants — for example, when you are using a fresh profile whose public key no observer has associated with you, and you want to listen first before deciding whether to post.
+
+### When `--stealth` is not enough
+
+It is **not** sufficient when your public key is already known to an adversary and IP-level correlation matters. In that case the chain `your public key → derived inbox / Nexus / announce topics → DHT lookups from your IP` is exploitable by a sufficiently positioned observer. Combine `--stealth --no-inbox` with a trustworthy anonymizing transport in front of the binary.
+
+### Recipes
+
+- Lurk on a channel without joining its announce set:
+
+  ```bash
+  peeroxide chat join general --stealth
+  ```
+
+- Same, plus suppress inbox polling:
+
+  ```bash
+  peeroxide chat join general --stealth --no-inbox
+  ```
+
+- Lurk under a burner profile so the activity is not tied to your main identity:
+
+  ```bash
+  peeroxide chat profiles create burner
+  peeroxide chat join general --stealth --profile burner
+  ```
+
 ## Interactive Usage
 
 When running in a TTY, `join` and `dm` enter an interactive mode with a status bar and slash commands. See [Interactive TUI](./interactive-tui.md) for details.
