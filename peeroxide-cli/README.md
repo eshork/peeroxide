@@ -44,7 +44,8 @@ peeroxide --public ping
 | `announce` | Announce presence on a topic |
 | `ping` | Diagnose reachability; bootstrap check, NAT classification, or targeted ping |
 | `cp` | Copy files between peers over the swarm |
-| `dd` | Dead Drop: anonymous store-and-forward via the DHT |
+| `dd` | Dead Drop: anonymous store-and-forward via the DHT (v1 + v2 protocols) |
+| `chat` | End-to-end-encrypted P2P chat: channels, DMs, inbox, and TUI |
 
 Run `peeroxide <command> --help` for detailed usage of each command.
 
@@ -62,7 +63,7 @@ If `~/.local/share/man` is not in your `MANPATH`, add it:
 export MANPATH="$HOME/.local/share/man:$MANPATH"
 ```
 
-This produces 8 pages:
+This produces 9 pages:
 
 ```
 peeroxide(1)          — main command and global options
@@ -73,6 +74,7 @@ peeroxide-announce(1) — DHT topic announcement
 peeroxide-ping(1)     — connectivity diagnostics
 peeroxide-cp(1)       — file transfer (send + recv)
 peeroxide-dd(1)       — dead drop messaging (put + get)
+peeroxide-chat(1)     — interactive chat (channels, DMs, inbox)
 ```
 
 ## Configuration
@@ -102,7 +104,9 @@ peeroxide looks for configuration at (in order):
 
 1. Path given by `--config <FILE>`
 2. `$PEEROXIDE_CONFIG` environment variable
-3. `~/.config/peeroxide/config.toml`
+3. `$XDG_CONFIG_HOME/peeroxide/config.toml`
+4. Platform-specific config directory (`dirs::config_dir()`, e.g. `~/Library/Application Support/peeroxide/config.toml` on macOS)
+5. `~/.config/peeroxide/config.toml`
 
 Use `--no-default-config` to skip config file loading entirely.
 
