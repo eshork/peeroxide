@@ -33,9 +33,9 @@ Stores arbitrary bytes signed by an Ed25519 keypair, addressed by `hash(public_k
 | Salt support | Not implemented — there is no salt field; one record per keypair |
 | Wire commands | `MUTABLE_PUT = 6`, `MUTABLE_GET = 7` |
 
-## `announce` / `lookup` — Peer Discovery
+## `announce` / `lookup` — Peer Discovery and Rendezvous
 
-Peer discovery primitives. Store structured peer records (public key + relay addresses) under a topic hash. **Not general-purpose value storage.**
+Originally designed as peer-discovery primitives — store structured peer records (public key + relay addresses) under a topic hash. **In this workspace they are also used as a general-purpose rendezvous mechanism**: the announcer's public key acts as a pointer to a further `mutable_put` slot containing the actual record. See [The Rendezvous Pattern](#the-rendezvous-pattern) below.
 
 - **`announce(target: [u8;32], key_pair, relay_addresses)`** — queries the closest nodes for the topic and sends a signed `AnnounceMessage` containing `HyperPeer { public_key, relay_addresses }`. Multiple peers can announce under the same topic simultaneously.
 - **`lookup(target: [u8;32])`** — queries the closest nodes; they return `LookupRawReply { peers: Vec<HyperPeer>, bump }` — all peers that have announced on that topic (up to 20 per node).
@@ -54,7 +54,28 @@ Peer discovery primitives. Store structured peer records (public key + relay add
 
 - `lookup` / `announce` is multi-writer — many peers announce under one topic.
 - `put` / `get` is single-writer — one value per address.
-- `announce` stores structured peer connection info; `put` stores opaque bytes.
+- `announce` stores a small structured record; `put` stores opaque bytes (up to ~1000 B per record).
+
+### The Rendezvous Pattern
+
+Because `announce` is multi-writer and `lookup` returns all announcers up to the per-node cap, the announcer's 32-byte `public_key` can be treated as a *pointer* rather than as an identity. The convention used inside `peeroxide-cli` is:
+
+1. Sender derives a topic key from some shared agreement (channel key, recipient pubkey, dead-drop root pubkey, …) plus an epoch and bucket.
+2. Sender generates an ephemeral keypair `k`, publishes the actual record (a feed pointer, an invite, a need-list, …) via `mutable_put(k, value, seq)`, and `announce`s `k.public_key` on the topic.
+3. Reader does `lookup(topic)` to discover the set of pubkeys currently active on that topic, then `mutable_get`s each one to retrieve the corresponding record.
+
+This sidesteps `mutable_put`'s single-writer-per-pubkey limitation: a topic can host many simultaneous writers, each with its own `mutable_put` slot. It also lets the TTL of the rendezvous (20 minutes on the announce record) and the TTL of the payload (20 minutes on the mutable record) be managed independently, and lets readers parallelize the work — one `lookup` followed by N parallel `mutable_get`s.
+
+Concrete instances used in this workspace:
+
+| Topic derivation | Announcer publishes a pubkey for | Reader then `mutable_get`s |
+|---|---|---|
+| `chat::crypto::announce_topic(channel_key, epoch, bucket)` | The session's feed keypair | The `FeedRecord` (newest message hashes for that feed) |
+| `chat::crypto::inbox_topic(hash(recipient_pk), epoch, bucket)` | The sender's ephemeral invite-feed keypair | The `InviteRecord` (encrypted DM or channel invite) |
+| `dd::v2::keys::need_topic(root_pk)` | A receiver's ephemeral need-feed keypair | The encoded need-list (missing-range `[start, end)` entries) |
+| `dd::v2::keys::ack_topic(root_pk)` | A receiver's ephemeral ack keypair | (Nothing — the sender just counts unique announcer pubkeys to track pickups) |
+
+In all of these, the `relay_addresses` field of `HyperPeer` is left empty — only the pubkey carries meaning. Epoch+bucket rotation in the chat and inbox cases bounds an observer's ability to do long-term traffic analysis against any single topic.
 
 ## TTL (Time-To-Live)
 
