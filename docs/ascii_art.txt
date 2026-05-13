@@ -4,6 +4,6 @@
 |  __/| |___| |___|  _ <| |_| /  \ | || |_| | |___ 
 |_|   |_____|_____|_| \_\\___/_/\_\___|____/|_____|
 
-ENCRYPTED BY DEFAULT. ANONYMOUS BY DESIGN.
-SPEAK FREELY. LEAVE NO TRACE.
+ENCRYPTED BY DEFAULT. PSEUDONYMOUS BY DESIGN.
+NO SERVERS. NO ACCOUNTS. NO GATEKEEPERS.
 TRUST NO ONE. TALK TO ANYONE.

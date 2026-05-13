@@ -7,8 +7,19 @@ mod cmd;
 mod config;
 mod manpage;
 
+// Shown by `peeroxide --version` (long form). `-V` keeps showing just
+// the bare semver, which is what scripts expect. Clap automatically
+// prefixes `--version` output with the binary name, so starting this
+// const with the version number yields the standard `peeroxide X.Y.Z`
+// header followed by the banner.
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\n\n",
+    include_str!("../../docs/ascii_art.txt"),
+);
+
 #[derive(Parser)]
-#[command(name = "peeroxide", version, about = "P2P networking CLI for the Hyperswarm-compatible network")]
+#[command(name = "peeroxide", version, long_version = LONG_VERSION, about = "P2P networking CLI for the Hyperswarm-compatible network")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

@@ -1,5 +1,17 @@
 # Introduction
 
+```text
+,____  _____ _____ ____   _____  _____ ___  ,______ 
+|  _ \| ____| ____|  _ \ / _ \ \/ /_ _|  _ \| ____|
+| |_) |  _| |  _| | |_) | | | \  / | || | | |  _|  
+|  __/| |___| |___|  _ <| |_| /  \ | || |_| | |___ 
+|_|   |_____|_____|_| \_\\___/_/\_\___|____/|_____|
+
+ENCRYPTED BY DEFAULT. PSEUDONYMOUS BY DESIGN.
+NO SERVERS. NO ACCOUNTS. NO GATEKEEPERS.
+TRUST NO ONE. TALK TO ANYONE.
+```
+
 `peeroxide-cli` is a command-line toolkit for interacting with the peeroxide P2P networking stack. It provides a set of tools for peer discovery, connectivity diagnostics, and decentralized data transfer, all while maintaining full wire-compatibility with the existing Hyperswarm and HyperDHT networks.
 
 The binary is named `peeroxide`.

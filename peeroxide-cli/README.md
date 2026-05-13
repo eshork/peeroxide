@@ -1,5 +1,17 @@
 # peeroxide-cli
 
+```text
+,____  _____ _____ ____   _____  _____ ___  ,______ 
+|  _ \| ____| ____|  _ \ / _ \ \/ /_ _|  _ \| ____|
+| |_) |  _| |  _| | |_) | | | \  / | || | | |  _|  
+|  __/| |___| |___|  _ <| |_| /  \ | || |_| | |___ 
+|_|   |_____|_____|_| \_\\___/_/\_\___|____/|_____|
+
+ENCRYPTED BY DEFAULT. PSEUDONYMOUS BY DESIGN.
+NO SERVERS. NO ACCOUNTS. NO GATEKEEPERS.
+TRUST NO ONE. TALK TO ANYONE.
+```
+
 Command-line interface for the peeroxide P2P networking stack. Wire-compatible with the existing Hyperswarm/HyperDHT network.
 
 ## Install
