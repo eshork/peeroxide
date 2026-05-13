@@ -174,6 +174,36 @@ If `--lookup` is supplied, the command short-circuits to lookup mode. Otherwise,
 | `--daemon` | | Enter a background loop: publish your Nexus every 480s and refresh **all** friends every 600s. |
 | `--lookup <pubkey>` | | Lookup and print the Nexus information for a specific public key. Short-circuits the rest. |
 
+### Screen Name and Bio Files
+
+A profile's screen name and bio live as plain UTF-8 text files inside the profile directory:
+
+```text
+~/.config/peeroxide/chat/profiles/<profile>/name
+~/.config/peeroxide/chat/profiles/<profile>/bio
+```
+
+Both files are optional. If `name` is missing, a deterministic vendor name is generated from the profile's identity public key whenever a screen name is needed. If `bio` is missing or empty, the published Nexus record carries an empty bio.
+
+You can populate them two ways:
+
+- **`peeroxide chat nexus --set-name <text>`** / **`--set-bio <text>`** — writes the file with the supplied text (after trimming leading and trailing whitespace), then optionally publishes if `--publish` / `--daemon` is also given. Both setters can be supplied in one command.
+- **Edit the file directly** with any editor. Multi-line bios are supported; the entire file content (after UTF-8 decoding) becomes the bio. The first line is treated specially by friends' clients — the [friends file](./reference.md#friends-file-schema) caches only the first line of each friend's bio for the `friends list` display, but the full bio is shown when a friend explicitly looks the identity up via `chat nexus --lookup`.
+
+### Size Limit
+
+The screen name and bio are serialized together into a single `NexusRecord` published to the DHT as a `mutable_put` value. The full record (3 framing bytes + `name` UTF-8 bytes + `bio` UTF-8 bytes) must fit within 1000 bytes, which is the `MAX_RECORD_SIZE` constant for chat records.
+
+In practice: with a typical 10–40 byte screen name, the bio budget is roughly **950–990 UTF-8 bytes** (note: bytes, not characters — many non-ASCII characters take 2–4 bytes each).
+
+If the combined size is too large, the publish step fails with:
+
+```text
+warning: nexus serialize failed: record too large: N bytes exceeds 1000 byte limit
+```
+
+The bio file is **still saved on disk** in this case — only the DHT publish is skipped. Shorten the bio (or screen name) and re-run with `--publish` to recover.
+
 ## Interactive Usage
 
 When running in a TTY, `join` and `dm` enter an interactive mode with a status bar and slash commands. See [Interactive TUI](./interactive-tui.md) for details.
