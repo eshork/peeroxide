@@ -78,6 +78,8 @@ When in doubt, add a new function rather than changing an existing one.
 
 Releases are managed by [release-plz](https://release-plz.eplr.dev/). On merge to `main`, release-plz opens a release PR with version bumps and changelog entries. Merging that PR publishes to crates.io automatically. Do not run `cargo publish` manually.
 
+For `peeroxide-cli` specifically, each `peeroxide-cli-v*` tag pushed by release-plz also triggers `.github/workflows/binary-release.yml`, which builds the `peeroxide` binary for four targets (macOS arm64, macOS x86_64, Linux x86_64, Linux aarch64) and attaches `.tar.gz` archives plus `.sha256` sidecars to the GitHub Release. The [Homebrew tap](https://github.com/Rightbracket/homebrew-peeroxide) polls those Release assets on its own schedule and opens same-repo bump PRs — no cross-repo automation runs from this side. Cutting a new `peeroxide-cli-v*` tag is the only step required to ship a new Homebrew release.
+
 ## Licensing
 
 Peeroxide is dual-licensed under MIT and Apache 2.0. By contributing, you agree your contributions will be licensed under the same terms.
