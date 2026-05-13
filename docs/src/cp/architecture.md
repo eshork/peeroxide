@@ -55,6 +55,6 @@ While the underlying UDX protocol handles packetization, `cp` reads and writes d
 - **Sanitization**: Filenames provided by the sender are sanitized to prevent path traversal attacks (e.g., removing `..` or leading slashes).
 
 ### Network Configuration
-The `cp` command respects global peeroxide configuration for bootstrap nodes and firewall settings.
-- **Public Mode**: If `--public` is set, the swarm attempts to use public bootstrap nodes and sets the firewall to open.
-- **Firewalled Mode**: If the node is detected as being behind a NAT, it will attempt hole-punching to establish the connection.
+The `cp` command uses the same runtime bootstrap-resolution as every other DHT-using subcommand (via `build_dht_config(cfg)` in `peeroxide-cli/src/cmd/mod.rs`).
+- **Bootstrap node selection**: CLI `--bootstrap` overrides the config file's `network.bootstrap`. `--public` adds default public bootstrap nodes; an empty list auto-fills with the defaults; `--no-public` removes them. See [init/overview.md → Global CLI Flags](../init/overview.md#global-cli-flags) for the full algorithm.
+- **NAT traversal**: `cp` does not flip the node into "open firewall" mode; if the node is behind a NAT it attempts hole-punching to establish the direct connection.

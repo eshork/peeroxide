@@ -58,4 +58,4 @@ While the underlying UDX protocol handles packetization, `cp` reads and writes d
 
 ### Network Configuration
 
-The `cp` command respects global peeroxide configuration for bootstrap nodes and firewall settings. If `--public` is set, the swarm uses public bootstrap nodes with an open firewall. Otherwise, hole-punching is attempted for NAT traversal.
+The `cp` command uses the same runtime bootstrap-resolution as every other DHT-using subcommand (`build_dht_config(cfg)` in `peeroxide-cli/src/cmd/mod.rs`). Bootstrap node selection is therefore driven by the shared rules documented in [init/overview.md → Global CLI Flags](../init/overview.md#global-cli-flags): CLI `--bootstrap` overrides the config file's `network.bootstrap`; `--public` adds default public bootstrap nodes; an empty list auto-fills with the defaults; `--no-public` removes them. The `--public` flag does **not** change the node's firewall state; NAT traversal for `cp` always relies on hole-punching via the DHT.
