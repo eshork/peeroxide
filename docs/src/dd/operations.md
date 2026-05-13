@@ -1,92 +1,84 @@
-# Dead Drop Output Formats
+# Dead Drop Operations
 
 The `dd` command supports both human-readable terminal output and machine-readable JSON output for integration with other tools.
 
-## Human-Readable Output (Default)
+## Command Line Flags
 
-By default, `dd` prints status messages and progress indicators to `stderr`, while result data (for `get`) or keys (for `put`) are handled based on the output configuration.
+### `dd put` Flags
 
-### Progress Indicators
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<file>` | required | Input file path. Use `-` for stdin. |
+| `--max-speed <S>` | none | Limit transfer speed. Parses `k`/`m` suffixes (base-10, case-insensitive). |
+| `--refresh-interval <secs>` | `600` | Seconds between refresh cycles (must be > 0). |
+| `--ttl <secs>` | none | Stop refreshing after N seconds (must be > 0). |
+| `--max-pickups <N>` | none | Exit after N unique pickup acks (must be > 0). |
+| `--passphrase <S>` | none | Deterministic root seed from `discovery_key(passphrase)`. |
+| `--interactive-passphrase` | none | TTY prompt for passphrase with hidden input. |
+| `--no-progress` | `false` | Suppress progress UI. |
+| `--json` | `false` | Emit JSON-Lines progress on stdout. |
+| `--v1` | `false` | Force legacy v1 protocol. |
 
-When running in a TTY, `dd` displays a dynamic progress bar using `indicatif`. For non-TTY environments, it prints a periodic status line approximately every 2 seconds.
+### `dd get` Flags
 
-- **v2 Protocol**: The bar displays separate counters for the index and data tiers: `filename I[idx/total] D(data/total) [bar] % @ rate ETA`.
-- **v1 Protocol**: Since v1 lacks an index tier, only the data counter is shown: `D(data/total) [bar] % @ rate ETA`.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<key>` | required* | 64-character hex pickup key or passphrase text. |
+| `--passphrase <S>` | none | Derive pickup key from passphrase. |
+| `--interactive-passphrase` | none | TTY prompt for passphrase with hidden input. |
+| `--no-progress` | `false` | Suppress progress UI. |
+| `--output <PATH>` | `stdout` | Write payload to file instead of stdout. |
+| `--json` | `false` | Emit JSON-Lines progress. **Requires** `--output`. |
+| `--timeout <secs>` | `1200` | Sliding no-progress timeout in seconds (must be > 0). |
+| `--no-ack` | `false` | Suppress pickup acknowledgement announce. |
 
-You can suppress all progress output with the `--no-progress` flag. Lifecycle messages, such as DHT refresh status, acknowledgements, and final write confirmations, are preserved on `stderr` regardless of progress flags.
+*\*Key is required unless a passphrase flag is provided.*
 
-### Status Examples
+## Key Derivation and Passphrases
 
-**put status output**
-```text
-DD PUT 5 chunks (4500 bytes)
-  published to DHT (best-effort)
-  pickup key printed to stdout
-  refreshing every 600s, monitoring for acks...
-  [ack] received from e5f6g7h8...
-```
+- **Passphrase Derivation:** When a passphrase is used, the root seed is derived via `discovery_key(passphrase)`.
+- **Interactive Fallback:** The `--interactive-passphrase` flag attempts to open `/dev/tty` for hidden input, falling back to stdin if unavailable.
+- **Key vs Passphrase:** If a positional argument is exactly 64 characters of valid hex, it is treated as a raw 32-byte pickup key. Otherwise, it is treated as passphrase text and hashed via `discovery_key`.
 
-**get status output**
-```text
-DD GET @a1b2c3d4...
-  ack sent (ephemeral identity)
-  written to out.bin
-  done
-```
+## Progress UX
+
+The mode is selected automatically:
+1. `--json` -> JSON Lines on stdout.
+2. `--no-progress` -> Progress disabled.
+3. stderr is TTY -> Interactive bars.
+4. else -> Periodic log line (every 2s).
+
+### Bar Layouts
+
+- **V1 Put:** `↑ filename D(bytes/total) [bar] pct rate ETA`
+- **V2 Put:** `↑ filename I[idx/total] D(bytes/total) [bar] pct rate ETA`
+- **V2 Get (4-bar multi):**
+  - **index:** `I[idx/total] rate`
+  - **data:** `D(bytes/total) [bar] pct rate ETA`
+  - **wire:** `W ↑ rate ↓ rate (x amplification)`
+  - **overall:** `filename bytes/total pct`
+
+*Wire amplification (`wire_total / bytes_done`) is omitted until the first payload byte is received.*
 
 ## Machine-Readable Output (`--json`)
 
-The `--json` flag enables a stream of JSON Lines on **stdout**. Human-readable status messages continue to be sent to **stderr**.
-
-When using `dd get --json`, you must provide a file path via `--output FILE`. This prevents the binary payload from corrupting the JSON stream on `stdout`.
-
-> **Note**: The `progress` event shape was updated from previous documentation to expose per-tier (index/data) counters and rate/ETA fields. The previous schema was not implemented.
+The `--json` flag enables a stream of JSON Lines on **stdout**. Events use `type` as a discriminator and RFC3339 timestamps.
 
 ### Event Schema
 
-Each JSON object contains a `type` field to discriminate between event types.
+| Type | Description |
+|------|-------------|
+| `start` | Operation initiated. Includes `version`, `filename`, `bytes_total`, `indexes_total`, `data_total`. |
+| `progress` | Periodic update. Includes `bytes_done`, `rate_bytes_per_sec`, `eta_seconds`, `elapsed_seconds`. |
+| `result` | Objective achieved. `put` returns `pickup_key` and `chunks`. `get` returns `crc` and `output`. |
+| `ack` | Sender-only. Emitted when a recipient acknowledges receipt. Includes `peer` and `pickup_number`. |
+| `done` | Operation completed. Includes final counters and `elapsed_seconds`. |
 
-#### `start`
-Emitted when the operation begins.
+**V1 Convention:** `indexes_total` and `indexes_done` are always `0` in V1 events.
 
-```json
-{"type":"start","phase":"put","version":2,"filename":"foo.bin","bytes_total":10485760,"indexes_total":4,"indexes_done":0,"data_total":160,"data_done":0,"ts":"2026-05-09T12:00:00Z"}
-```
+## Acknowledgement (Ack) Mechanism
 
-#### `progress`
-Emitted periodically during data transfer. `eta_seconds` is omitted if the rate has not yet stabilized.
+When a `get` operation completes (unless `--no-ack` is set), the receiver announces on the ack topic:
+`ack_topic = discovery_key(root_pk || b"ack")`
 
-```json
-{"type":"progress","phase":"put","version":2,"filename":"foo.bin","bytes_done":5242880,"bytes_total":10485760,"indexes_done":2,"indexes_total":4,"data_done":80,"data_total":160,"rate_bytes_per_sec":1048576.0,"eta_seconds":5.0,"elapsed_seconds":5.0,"ts":"2026-05-09T12:00:05Z"}
-```
-
-#### `result`
-Emitted when the primary objective is completed (data published or retrieved).
-
-**PUT result:**
-```json
-{"type":"result","phase":"put","version":2,"pickup_key":"aabbcc...","bytes":10485760,"chunks":164,"ts":"2026-05-09T12:00:10Z"}
-```
-
-**GET result:**
-```json
-{"type":"result","phase":"get","version":2,"bytes":10485760,"crc":"aabbccdd","output":"out.bin","ts":"2026-05-09T12:00:20Z"}
-```
-
-#### `ack`
-Emitted by the sender when a recipient acknowledges receipt.
-
-```json
-{"type":"ack","pickup_number":1,"peer":"aabbcc...","ts":"2026-05-09T12:00:30Z"}
-```
-
-#### `done`
-Emitted when the entire operation (including cleanup or final waiting) is finished.
-
-```json
-{"type":"done","phase":"put","version":2,"filename":"foo.bin","bytes_done":10485760,"bytes_total":10485760,"indexes_done":4,"indexes_total":4,"data_done":160,"data_total":160,"elapsed_seconds":10.0,"ts":"2026-05-09T12:00:10Z"}
-```
-
-### Protocol Version 1 Convention
-
-For `dd` protocol version 1 (single-linked-list of chunks), `indexes_total` and `indexes_done` are always `0` in all events. There is no index/data tier split in v1; all chunks contribute to `data_total`/`data_done` and `bytes_total`/`bytes_done`.
+The sender polls this topic every 30s and counts unique announcer public keys.

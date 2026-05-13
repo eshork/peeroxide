@@ -1,56 +1,93 @@
 # Dead Drop Architecture
 
-The dead drop protocol enables store-and-forward data delivery using the HyperDHT's mutable storage capabilities. It builds a linked chain of signed chunks, where each chunk is stored on the DHT at a location derived from a deterministic key derivation scheme.
+The `dd` command implements two distinct protocol architectures for storing and retrieving data on the DHT.
 
-## Data Flow
+## Protocol V1: Linear Chain
 
-The following diagram illustrates the interaction between the Sender, the DHT network, and the Receiver.
+The V1 protocol is a simple linked list of mutable DHT records. Each record contains a portion of the file and the public key of the next chunk in the chain.
+
+### V1 Flow
 
 ```mermaid
 sequenceDiagram
     participant S as Sender
-    participant DHT as DHT Network
+    participant DHT as DHT Nodes
     participant R as Receiver
 
-    Note over S: 1. Split data into chunks
-    Note over S: 2. Derive keypairs for each chunk
-    S->>DHT: 3. mutable_put(chunk_0..N)
-    Note over S: 4. Print pickup key (root PK)
+    Note over S: Chunking + Key Derivation
+    S->>DHT: mutable_put(root_pk)
+    S->>DHT: mutable_put(chunk_1_pk)
+    S->>DHT: ...
+    S->>DHT: mutable_put(chunk_N_pk)
 
-    Note over R: 5. Obtain pickup key
-    R->>DHT: 6. mutable_get(root_PK)
-    DHT-->>R: 7. Returns root chunk (metadata + next_PK)
-    loop For each chunk
-        R->>DHT: 8. mutable_get(next_PK)
-        DHT-->>R: 9. Returns next chunk
+    Note over R: Get root_pk
+    R->>DHT: mutable_get(root_pk)
+    DHT-->>R: root record
+    loop Sequential Fetch
+        R->>DHT: mutable_get(next_pk)
+        DHT-->>R: chunk record
     end
-    Note over R: 10. Reassemble & Verify CRC
-    R->>DHT: 11. announce(ack_topic)
-    DHT-->>S: 12. lookup(ack_topic) detected
 ```
 
-## Key Components
+V1 features sequential fetching with exponential retry logic (1s to 30s) per chunk, bounded by the global timeout.
 
-### Mutable DHT Storage
-Unlike immutable storage (used in `cp`), dead drop uses `mutable_put` and `mutable_get`. This allows the sender to refresh records to extend their lifespan on the DHT (which typically expires after 20 minutes). Records are signed by the sender, ensuring that DHT nodes or malicious actors cannot modify the data without invalidating the signature.
+## Protocol V2: Merkel Tree
 
-### Chunking and Chaining
-Data is split into chunks to fit within the DHT's payload limits (max 1000 bytes per chunk).
-- **Root Chunk:** Contains the total chunk count, a CRC-32C checksum of the full payload, and the public key of the next chunk.
-- **Continuation Chunks:** Contain the payload and the public key of the next chunk in the sequence.
-- **Termination:** The final chunk in the chain has its `next_pk` field set to 32 zero bytes.
+V2 uses a hierarchical tree structure to enable massive file support and parallel fetching.
 
-### Key Derivation
-All keypairs for the chunks are derived deterministically from a single `root_seed`.
-- `root_seed`: 32 bytes (randomly generated or derived from a passphrase).
-- `root_kp`: `KeyPair::from_seed(root_seed)`.
-- `chunk_kp[i]`: Derived from `blake2b(root_seed || i_as_u16_le)`.
+### V2 Flow
 
-The **pickup key** is the public key of the root chunk. Since the receiver only has the public key, they can read the data but cannot derive the private keys required to modify or forge chunks.
+```mermaid
+sequenceDiagram
+    participant S as Sender
+    participant DHT as DHT Nodes
+    participant R as Receiver
 
-### Acknowledgement (Ack) Mechanism
-When a receiver successfully gets a dead drop, they "announce" their presence on a specific `ack_topic`.
-- `ack_topic = discovery_key(root_public_key || b"ack")`
-- The sender polls this topic using `lookup`.
-- To maintain anonymity, the receiver uses an ephemeral keypair for the announcement.
+    Note over S: Canonical Tree Build
+    S->>DHT: immutable_put(data_chunks)
+    S->>DHT: mutable_put(index_chunks)
+    S->>DHT: mutable_put(root_pk)
 
+    Note over R: BFS Parallel Fetch
+    R->>DHT: mutable_get(root_pk)
+    DHT-->>R: root (metadata + top slots)
+    
+    rect rgb(240, 240, 240)
+        Note over R: Parallel BFS Loop
+        R->>DHT: mutable_get(index_pk)
+        R->>DHT: immutable_get(data_hash)
+    end
+
+    Note over R: Need-list Cycle
+    R->>DHT: announce(need_topic)
+    R->>DHT: mutable_put(need_topic, ranges)
+    DHT-->>S: watch(need_topic)
+    S->>R: Republish missing chunks
+```
+
+### AIMD Congestion Control
+
+V2 employs an Additive Increase / Multiplicative Decrease (AIMD) controller to manage concurrency:
+- **EWMA-based:** Smoothes sample noise with an alpha of 0.1.
+- **Decision interval:** 20 samples.
+- **Fast-trip:** Shrinks immediately if 10 degraded samples occur within a window.
+- **Shrink:** 0.75x current (minimum 1).
+- **Grow:** +2 permits.
+
+### Robustness Mechanisms
+
+- **Stall Watchdog:** Checks every 5s. If no put resolves for 30s, it forces AIMD to a recovery floor.
+- **Sliding-window Timeout:** `get` operations abort only if no chunk decodes for `--timeout` seconds.
+- **Graceful Shutdown:** First Ctrl-C triggers a sticky cancel signal that enqueues cleanups (like empty need-list sentinels). A second double-press force-exits.
+- **Need-list Lifecycle:** Receivers announce missing ranges every 20s. Senders poll the need topic every 5s and prioritize enqueuing the full path (index + data) for those chunks.
+
+## DHT Wire Monitoring
+
+The `dd` command monitors raw network overhead by reading atomic counters from the underlying DHT handle.
+
+| Method | Return |
+|--------|--------|
+| `wire_stats()` | `(u64, u64)` (sent, received) |
+| `wire_counters()` | `WireCounters` (shared atomic handles) |
+
+These counters allow the progress UI to calculate "wire amplification" — the ratio of total bytes sent/received versus actual payload bytes delivered.
