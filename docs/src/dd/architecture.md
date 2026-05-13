@@ -1,6 +1,6 @@
 # Dead Drop Architecture
 
-The `dd` command implements two distinct protocol architectures for storing and retrieving data on the DHT.
+The `dd` command implements two distinct protocol architectures for storing and retrieving data on the DHT. Both protocols are built on the DHT primitives documented in [DHT Primitives](../concepts/dht-primitives.md) (`mutable_put` / `mutable_get` / `immutable_put` / `immutable_get` / `announce`).
 
 ## Protocol V1: Linear Chain
 

@@ -1,6 +1,6 @@
 # Wire Format
 
-Peeroxide chat uses a structured wire format for all data exchanged over the DHT. All records are encrypted within a common frame.
+Peeroxide chat uses a structured wire format for all data exchanged over the DHT. All records are encrypted within a common frame. The underlying DHT operations (`mutable_put` / `mutable_get` / `immutable_put` / `immutable_get` / `announce` / `lookup`) and their per-record size budget are documented in [DHT Primitives](../concepts/dht-primitives.md).
 
 ## Encryption Frame
 

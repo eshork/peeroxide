@@ -1,6 +1,6 @@
 # Dead Drop Wire Format
 
-The `dd` command supports two versioned wire formats for DHT records. All multi-byte integers are encoded in **little-endian** (LE) byte order.
+The `dd` command supports two versioned wire formats for DHT records. All multi-byte integers are encoded in **little-endian** (LE) byte order. The underlying DHT operations (`mutable_put` / `mutable_get` / `immutable_put` / `immutable_get`) are documented in [DHT Primitives](../concepts/dht-primitives.md).
 
 ## Version 1 Wire Format
 

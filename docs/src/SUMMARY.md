@@ -9,6 +9,7 @@
 # Concepts
 
 - [DHT and Routing](./concepts/dht-and-routing.md)
+- [DHT Primitives](./concepts/dht-primitives.md)
 - [Keys and Identity](./concepts/keys-and-identity.md)
 - [Topics and Discovery](./concepts/topics-and-discovery.md)
 
