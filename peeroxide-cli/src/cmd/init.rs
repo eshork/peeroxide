@@ -20,7 +20,7 @@ pub struct InitArgs {
     #[arg(long, conflicts_with = "force")]
     update: bool,
 
-    /// Mark this node as publicly reachable in the generated config
+    /// Set network.public = true in the generated config (adds default public HyperDHT bootstrap nodes at runtime)
     #[arg(long)]
     public: bool,
 
@@ -270,7 +270,9 @@ fn generate_config_content(public: bool, bootstrap: &[String]) -> String {
          # Place at ~/.config/peeroxide/config.toml or set PEEROXIDE_CONFIG env var\n\
          \n\
          [network]\n\
-         # Whether this node is publicly reachable (not behind NAT/firewall)\n",
+         # public = true tells runtime subcommands to add the default public HyperDHT bootstrap nodes.\n\
+         # When public is unset, runtime subcommands auto-fill the default public bootstrap nodes anyway\n\
+         # if the resolved bootstrap list would otherwise be empty.\n",
     );
 
     if public {
@@ -279,7 +281,7 @@ fn generate_config_content(public: bool, bootstrap: &[String]) -> String {
         content.push_str("# public = false\n");
     }
 
-    content.push_str("\n# Bootstrap node addresses (host:port). If empty and public=true, uses default public bootstrap.\n");
+    content.push_str("\n# Bootstrap node addresses (host:port). CLI --bootstrap overrides this list at runtime.\n# An empty list auto-fills with the default public bootstrap nodes unless --no-public is set.\n");
 
     if bootstrap.is_empty() {
         content.push_str("# bootstrap = [\"bootstrap1.example.com:49737\"]\n");

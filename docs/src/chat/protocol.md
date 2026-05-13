@@ -26,7 +26,13 @@ The publisher uses a bounded queue to batch and write messages to the DHT.
 
 ## Reader Discovery Loop
 
-The reader task discovers new messages through a continuous loop.
+The reader task starts with a one-shot cold-start scan, then settles into a steady-state discovery loop.
+
+### Cold-Start Historical Scan
+On startup, the reader fires concurrent lookups across the **last 20 epochs × 4 buckets = 80 discovery topics** (i.e. a 20-minute backwards window, since each epoch is 60 s). This surfaces feeds that announced before the session started so the client has visible history immediately, instead of waiting up to a full epoch rotation for the steady-state loop to reach them.
+
+### Steady-State Loop
+After the cold-start completes, the continuous loop runs:
 
 1. **Discovery**: Every 8 seconds, the reader performs lookups on the 8 discovery topics (current and previous epoch across 4 buckets).
 2. **Polling**: For every discovered peer, the reader fetches and decrypts their `FeedRecord`.
