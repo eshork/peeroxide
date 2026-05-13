@@ -174,11 +174,20 @@ pub struct UiOptions {
 /// Build the appropriate `ChatUi` implementation based on the runtime
 /// environment and command-line flags.
 ///
-/// Picks `InteractiveUi` when stdout is a TTY and the user hasn't opted out
-/// via `--line-mode` / `PEEROXIDE_LINE_MODE`. Falls back to `LineUi` on any
-/// error setting up the interactive renderer (e.g. an unfriendly terminal).
+/// Picks `InteractiveUi` only when **both** stdout and stdin are TTYs and the
+/// user hasn't opted out via `--line-mode` / `PEEROXIDE_LINE_MODE`. Falls back
+/// to `LineUi` on any error setting up the interactive renderer.
+///
+/// Stdin must also be a TTY because interactive mode reads keystrokes via
+/// `crossterm::event::EventStream`, which polls the controlling terminal —
+/// when stdin is a pipe or redirected file the event reader returns errors
+/// or stalls, so a pipeline like `cat msgs.txt | peeroxide chat join …`
+/// would fail. Auto-detecting non-TTY stdin and falling back to line mode
+/// lets such pipelines just work without needing `--line-mode`.
 pub fn make_ui(opts: UiOptions) -> Box<dyn ChatUi> {
-    let want_interactive = !opts.force_line_mode && std::io::stdout().is_terminal();
+    let stdout_is_tty = std::io::stdout().is_terminal();
+    let stdin_is_tty = std::io::stdin().is_terminal();
+    let want_interactive = !opts.force_line_mode && stdout_is_tty && stdin_is_tty;
     if want_interactive {
         match interactive::InteractiveUi::new(&opts) {
             Ok(ui) => return Box::new(ui),

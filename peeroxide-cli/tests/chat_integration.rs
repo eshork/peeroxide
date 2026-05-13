@@ -768,3 +768,122 @@ async fn test_chat_friends_add_list() {
         "friends list should show alias 'TestBuddy', got: {stdout}"
     );
 }
+
+// ── Test: piped stdin auto-detects line mode without --line-mode ────────────────
+//
+// Regression for the case where `cat msgs | peeroxide chat join …` from a
+// shell would crash because the interactive TUI was selected (stdout was a
+// TTY) but stdin was a pipe — crossterm's `EventStream` cannot read events
+// from a non-TTY stdin.
+//
+// In a cargo test subprocess both stdout and stdin are pipes, so this test
+// can't fully reproduce the "TTY stdout + pipe stdin" shell scenario without
+// pulling in a pty crate. What it DOES verify:
+//
+//   - Spawning the binary with piped stdin and no `--line-mode` flag does
+//     not crash (clean exit status 0).
+//   - Lines piped to stdin are consumed; `/quit` triggers graceful shutdown.
+//
+// That guards against future regressions in the line-mode path itself and in
+// the stdin-handling code. The TTY-stdout-plus-pipe-stdin shell scenario
+// should still be smoke-tested manually after touching `make_ui`.
+#[tokio::test]
+async fn test_chat_join_piped_stdin_auto_line_mode() {
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let (port, _bs) = spawn_bootstrap().await;
+        let bs_addr = format!("127.0.0.1:{port}");
+
+        let home_dir = setup_profile_home("PipedStdinUser");
+        let home = home_dir.path().to_str().unwrap().to_string();
+
+        let bs_clone = bs_addr.clone();
+        let mut child = Command::new(bin_path())
+            .env("HOME", &home)
+            .args([
+                "--no-default-config",
+                "chat",
+                "join",
+                "piped-stdin-test",
+                "--bootstrap",
+                &bs_clone,
+                "--read-only",
+                "--no-nexus",
+                "--no-friends",
+                // Deliberately NO --line-mode — proving auto-detection works.
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn chat join with piped stdin");
+
+        // Wait until the chat is live before feeding stdin so we don't race
+        // the startup. Crucially, the stderr drain must KEEP running for the
+        // lifetime of the child — if we drop the BufReader after spotting
+        // "— live —" the child's next stderr write hits EPIPE and the
+        // binary panics. We use a oneshot to surface the live signal while
+        // a background thread silently drains the remainder.
+        let stderr = child.stderr.take().unwrap();
+        let (live_tx, live_rx) = tokio::sync::oneshot::channel::<bool>();
+        let _stderr_drain = std::thread::spawn(move || {
+            let stderr_reader = BufReader::new(stderr);
+            let mut live_tx = Some(live_tx);
+            for line in stderr_reader.lines() {
+                let line = line.unwrap_or_default();
+                if line.contains("— live —")
+                    && let Some(tx) = live_tx.take()
+                {
+                    let _ = tx.send(true);
+                }
+                // After signalling live, keep reading & discarding so the
+                // child's stderr pipe doesn't fill or close.
+            }
+            if let Some(tx) = live_tx.take() {
+                // Stream ended without seeing "— live —".
+                let _ = tx.send(false);
+            }
+        });
+
+        let saw_live = match tokio::time::timeout(Duration::from_secs(20), live_rx).await {
+            Ok(Ok(b)) => b,
+            _ => false,
+        };
+        assert!(
+            saw_live,
+            "piped-stdin instance did not reach live state — auto line-mode may have failed"
+        );
+
+        // Also drain stdout in the background to keep that pipe healthy too.
+        let stdout_handle = child.stdout.take().unwrap();
+        let _stdout_drain = std::thread::spawn(move || {
+            let r = BufReader::new(stdout_handle);
+            for _line in r.lines().map_while(Result::ok) {}
+        });
+
+        // Feed `/quit` and expect a graceful exit.
+        {
+            let mut stdin = child.stdin.take().expect("child has no stdin");
+            writeln!(stdin, "/quit").expect("failed to write /quit to stdin");
+            stdin.flush().expect("failed to flush stdin");
+            // Drop stdin to signal EOF as well — line-mode's default
+            // behaviour also exits cleanly on stdin EOF.
+        }
+
+        // Wait for graceful exit. If the binary crashed (panic / abort)
+        // we'd see a non-zero status; if it hung we'd time out.
+        let status = tokio::task::spawn_blocking(move || child.wait())
+            .await
+            .expect("join wait task")
+            .expect("child wait");
+        assert!(
+            status.success(),
+            "piped-stdin chat exited non-zero: {status:?}"
+        );
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "test_chat_join_piped_stdin_auto_line_mode timed out — binary likely hung instead of exiting on /quit"
+    );
+}
