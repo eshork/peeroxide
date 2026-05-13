@@ -61,7 +61,7 @@ The inbox monitor handles parallel scanning for new invites.
 2. **Parallel Scan**: It fires 8 concurrent DHT lookups for the 8 inbox topics.
 3. **Resolution**: Peer pubkeys found in the topics are fanned out into parallel `mutable_get` calls to retrieve `InviteRecord`s.
 4. **Verification**: Invites are decrypted using the `invite_key` (derived via ECDH) and verified.
-5. **Nudge**: In DM sessions, a "nudge" (an empty announce on the recipient's inbox topic) is sent at most once per epoch to signal the sender's presence.
+5. **Nudge**: In DM sessions, a "nudge" is sent at most once per epoch to signal the sender's presence. A nudge is an encrypted `InviteRecord` published via `mutable_put` on the sender's invite-feed keypair (with the lure payload truncated to 800 bytes), followed by an `announce` on the recipient's current inbox topic. This matches the regular inbox-invite write path.
 
 ## Graceful Shutdown
 

@@ -96,7 +96,9 @@ Published by the receiver on the need topic to request missing data.
 [0x02][count: 2 LE][entries: count x {start: 4 LE, end: 4 LE}]
 ```
 
-An empty need-list (`count = 0`) serves as a "receiver done" sentinel.
+Each entry is a half-open range `[start, end)` of data-chunk indices in the canonical DFS file order (chunk 0 is the first chunk of the file, chunk 1 is the next, etc.). The sender consults the need-list and republishes every data chunk in any listed range, plus the full index-tree path required to make those data chunks reachable.
+
+When the receiver has no missing chunks, it publishes a "receiver done" sentinel: a raw empty byte string at the need topic. The decoder treats a zero-byte value as the sentinel (it is not the same as the encoded need-list with `count = 0`).
 
 ### Salt Situation
 

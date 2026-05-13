@@ -274,10 +274,8 @@ async fn render_loop(
     // survives the resize, instead of being wiped along with stale bar /
     // input artifacts.
     //
-    // Bounded to `HISTORY_CAP` lines. A chat session can run for hours; we
-    // only need enough to refill the largest reasonable terminal a few
-    // times. 10_000 is loose-enough to cover even an enormous screen and
-    // cheap in memory (a few MB worst-case).
+    // Bounded to `HISTORY_CAP` lines (currently 500). Enough to refill the
+    // largest reasonable terminal a few times; cheap in memory.
     let mut history: VecDeque<String> = VecDeque::with_capacity(HISTORY_CAP);
 
     // Cache the last-rendered status snapshot so the idle timer arm can
