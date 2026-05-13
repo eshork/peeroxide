@@ -1,21 +1,25 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use clap::Parser;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::cmd::chat::crypto;
 use crate::cmd::chat::display;
-use crate::cmd::chat::known_users::SharedKnownUsers;
 use crate::cmd::chat::feed;
-use crate::cmd::chat::probe;
+use crate::cmd::chat::known_users::SharedKnownUsers;
 use crate::cmd::chat::profile;
 use crate::cmd::chat::publisher::{self, PubJob};
 use crate::cmd::chat::reader;
+use crate::cmd::chat::tui::{
+    self, ChatUi, IgnoreSet, NoticeSink, SlashCommand, StatusState, UiInput, UiOptions, commands,
+};
 use crate::cmd::{build_dht_config, sigterm_recv};
 use crate::config::ResolvedConfig;
 
 use libudx::UdxRuntime;
 use peeroxide_dht::hyperdht::{self, KeyPair};
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Parser)]
 pub struct JoinArgs {
@@ -78,7 +82,7 @@ pub struct JoinArgs {
     pub stay_after_eof: bool,
 }
 
-pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
+pub async fn run(args: JoinArgs, cfg: &ResolvedConfig, line_mode: bool) -> i32 {
     let read_only = args.read_only || args.stealth;
     let no_nexus = args.no_nexus || args.stealth;
     let no_friends = args.no_friends || args.stealth;
@@ -119,21 +123,47 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         }
     };
 
+    // --- ChatUi construction ---
+    //
+    // Constructed BEFORE the DHT handshake so that all subsequent startup
+    // notices ("waiting for bootstrap...", "connection established...") flow
+    // through the UI in proper layout instead of landing wherever the cursor
+    // happens to be. The factory inspects stdout's TTY status and the
+    // `line_mode` opt-out flag to pick `LineUi` (today's behaviour) or
+    // `InteractiveUi` (TTY-aware status bar + multi-line input).
+    let ui_opts = UiOptions {
+        force_line_mode: line_mode,
+        channel_name: args.channel.clone(),
+        profile_name: args.profile.clone(),
+    };
+    let mut ui: Box<dyn ChatUi> = tui::make_ui(ui_opts);
+    let status: Arc<StatusState> = ui.status();
+    let ignore: IgnoreSet = ui.ignore_set();
+
+    // Set up the process-wide notice channel. Background helpers (publisher,
+    // reader, post.rs probe traces, nexus refresh, feed rotation) push
+    // system-notice lines through this; the main loop drains the receiver
+    // below and forwards each line through `ui.render_system`.
+    let (notice_tx, mut notice_rx) = NoticeSink::new();
+    tui::install_global_notice_sink(notice_tx.clone());
+
     let (task, handle, _server_rx) = match hyperdht::spawn(&runtime, dht_config).await {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("error: failed to start DHT: {e}");
+            ui.render_system(&format!("error: failed to start DHT: {e}"));
             return 1;
         }
     };
 
     if let Err(e) = handle.bootstrapped().await {
-        eprintln!("error: bootstrap failed: {e}");
+        ui.render_system(&format!("error: bootstrap failed: {e}"));
         return 1;
     }
 
     let table_size = handle.table_size().await.unwrap_or(0);
-    eprintln!("*** connection established with DHT ({table_size} peers in routing table)");
+    ui.render_system(&format!(
+        "*** connection established with DHT ({table_size} peers in routing table)"
+    ));
 
     let feed_keypair = if !read_only {
         Some(KeyPair::generate())
@@ -155,12 +185,17 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         )
     });
 
+    // Set initial DHT peer count snapshot so the bar isn't empty before the
+    // poller's first tick arrives.
+    status.set_dht_peers(table_size);
+
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<display::DisplayMessage>();
 
     let friends = profile::load_friends(&args.profile).unwrap_or_default();
-    let mut display_state = display::DisplayState::new(friends, SharedKnownUsers::load_from_shared());
+    let mut display_state =
+        display::DisplayState::new(friends, SharedKnownUsers::load_from_shared());
 
-    eprintln!("*** joining channel '{}'", args.channel);
+    ui.render_system(&format!("*** joining channel '{}'", args.channel));
 
     let reader_handle = {
         let handle = handle.clone();
@@ -168,6 +203,7 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         let profile_name = args.profile.clone();
         let self_feed_pubkey = feed_keypair.as_ref().map(|fkp| fkp.public_key);
         let self_id = id_keypair.public_key;
+        let status = status.clone();
         tokio::spawn(async move {
             reader::run_reader(
                 handle,
@@ -177,26 +213,32 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                 profile_name,
                 self_feed_pubkey,
                 self_id,
+                status,
             )
             .await;
         })
     };
 
-    // --- Publisher worker + stdin reader (only when posting is enabled) ---
+    // --- Publisher worker (only when posting is enabled) ---
+    //
+    // Note: the historical stdin BufReader task is gone — every input event
+    // (chat messages, slash commands, EOF, Ctrl-C) now arrives through
+    // `ui.next_input()`. Messages with no publisher (read-only mode) are
+    // surfaced to the user as a system notice and silently dropped.
     let mut pub_tx: Option<mpsc::Sender<PubJob>> = None;
     let mut publisher_handle: Option<JoinHandle<()>> = None;
-    let mut stdin_handle: Option<JoinHandle<()>> = None;
-    let mut stdin_eof_rx: Option<tokio::sync::oneshot::Receiver<()>> = None;
 
     if let Some(fs) = feed_state {
         let (tx, rx) = mpsc::channel::<PubJob>(64);
-        pub_tx = Some(tx.clone());
+        pub_tx = Some(tx);
 
         let screen_name = prof.screen_name.clone().unwrap_or_default();
         let handle_pub = handle.clone();
         let id_kp = id_keypair.clone();
         let batch_size = args.batch_size;
         let batch_wait_ms = args.batch_wait_ms;
+        let status_pub = status.clone();
+        let notices_pub = notice_tx.clone();
         publisher_handle = Some(tokio::spawn(async move {
             publisher::run_publisher(
                 handle_pub,
@@ -208,47 +250,10 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
                 rx,
                 batch_size,
                 batch_wait_ms,
+                status_pub,
+                notices_pub,
             )
             .await;
-        }));
-
-        // stdin → publisher channel. send().await applies natural backpressure
-        // when the publisher cannot keep up. The oneshot signals the main loop
-        // on EOF so it can choose whether to exit (default) or remain joined.
-        let (eof_tx, eof_rx) = tokio::sync::oneshot::channel::<()>();
-        stdin_eof_rx = Some(eof_rx);
-        stdin_handle = Some(tokio::spawn(async move {
-            let stdin = tokio::io::stdin();
-            let mut lines = BufReader::new(stdin).lines();
-            let mut stdin_counter: u64 = 0;
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(text)) => {
-                        let text = text.trim().to_string();
-                        if text.is_empty() {
-                            continue;
-                        }
-                        stdin_counter += 1;
-                        if probe::is_enabled() {
-                            let preview: String = text.chars().take(40).collect();
-                            eprintln!("[probe] stdin#{stdin_counter} read={preview:?}");
-                        }
-                        if tx.send(PubJob::Message(text)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        eprintln!("error reading stdin: {e}");
-                        break;
-                    }
-                }
-            }
-            // Drop tx so the publisher's rx.recv() returns None once it has
-            // drained any in-flight job. Notify the main loop of EOF so it
-            // can apply the --stay-after-eof policy.
-            drop(tx);
-            let _ = eof_tx.send(());
         }));
     }
 
@@ -256,8 +261,9 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
         let handle = handle.clone();
         let id_kp = id_keypair.clone();
         let profile_name = args.profile.clone();
+        let notices = notice_tx.clone();
         Some(tokio::spawn(async move {
-            crate::cmd::chat::nexus::run_nexus_refresh(handle, id_kp, profile_name).await;
+            crate::cmd::chat::nexus::run_nexus_refresh(handle, id_kp, profile_name, notices).await;
         }))
     } else {
         None
@@ -266,11 +272,30 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
     let friend_refresh_handle: Option<JoinHandle<()>> = if !no_friends {
         let handle = handle.clone();
         let profile_name = args.profile.clone();
+        let notices = notice_tx.clone();
         Some(tokio::spawn(async move {
-            crate::cmd::chat::nexus::run_friend_refresh(handle, profile_name).await;
+            crate::cmd::chat::nexus::run_friend_refresh(handle, profile_name, notices).await;
         }))
     } else {
         None
+    };
+
+    // Periodically poll the DHT table size into the status bar.
+    let dht_status_handle: JoinHandle<()> = {
+        let handle = handle.clone();
+        let status = status.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Burn the immediate first tick (we already populated the initial
+            // value above).
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let n = handle.table_size().await.unwrap_or(0);
+                status.set_dht_peers(n);
+            }
+        })
     };
 
     let mut backlog_done = false;
@@ -283,48 +308,110 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
     // user's messages un-published. False on Ctrl-C / SIGTERM, where the
     // user has explicitly asked to stop and a short drain timeout suffices.
     let mut graceful_eof_exit = false;
+    let mut want_exit = false;
 
     loop {
         tokio::select! {
+            // Drain background system notices first so they reach the UI in
+            // order with anything that happens in this iteration. The biased
+            // hint isn't strictly needed (each arm is independent) but
+            // putting it first keeps the read order predictable for the
+            // reader of this code.
+            Some(line) = notice_rx.recv() => {
+                ui.render_system(&line);
+            }
             Some(msg) = msg_rx.recv() => {
                 if !backlog_done && msg.content.is_empty() && msg.id_pubkey == [0u8; 32] && msg.timestamp == 0 {
                     backlog_done = true;
-                    eprintln!("*** — live —");
+                    ui.render_system("*** — live —");
                     continue;
                 }
-                display_state.render(&msg);
+                // Skip messages from ignored users. Read-lock is cheap; the
+                // hot path here is "set is empty" which is constant-time.
+                let ignored = {
+                    let g = ignore.read().await;
+                    !g.is_empty() && g.contains(&msg.id_pubkey)
+                };
+                if ignored {
+                    continue;
+                }
+                let out = display_state.render_to(&msg);
+                for notice in &out.system_notices {
+                    ui.render_system(notice);
+                }
+                ui.render_message(&msg);
+                // Note: render_message uses the formatted line we already
+                // constructed in `out.message_line`, but `ChatUi::render_message`
+                // takes the structured `DisplayMessage` so each UI impl can
+                // pick its own formatting (line mode prints the line as-is;
+                // the interactive UI can colour, prepend cursor moves, etc.).
+                // We discard `out.message_line` here intentionally — both
+                // implementations re-derive it via `render_message_line` /
+                // their own formatting. The state mutations in `render_to`
+                // are still important (cooldown tracking).
+                let _ = out;
             }
             _ = friends_reload_tick.tick() => {
                 if let Ok(updated_friends) = profile::load_friends(&args.profile) {
                     display_state.reload_friends(updated_friends);
                 }
             }
-            // Fires exactly once when the stdin task reports EOF. The guard
-            // disables the arm after first delivery so the oneshot (which
-            // returns Pending forever after consumption) is not re-polled.
-            () = async {
-                if let Some(rx) = stdin_eof_rx.as_mut() {
-                    let _ = rx.await;
-                } else {
-                    std::future::pending::<()>().await;
+            input = ui.next_input() => {
+                match input {
+                    Some(UiInput::Message(text)) => {
+                        if let Some(tx) = pub_tx.as_ref() {
+                            status.inc_send_pending();
+                            if tx.send(PubJob::Message(text)).await.is_err() {
+                                // Publisher dropped — abort send_pending bookkeeping.
+                                status.dec_send_pending();
+                            }
+                        } else {
+                            ui.render_system("*** read-only mode; message not sent");
+                        }
+                    }
+                    Some(UiInput::Command(cmd)) => {
+                        if dispatch_slash(
+                            cmd,
+                            &args.profile,
+                            ui.as_ref(),
+                            &ignore,
+                        ).await {
+                            // dispatch_slash returns true for /quit etc.
+                            ui.render_system("*** shutting down");
+                            break;
+                        }
+                    }
+                    Some(UiInput::Eof) => {
+                        if !eof_handled {
+                            eof_handled = true;
+                            if args.stay_after_eof {
+                                ui.render_system("*** stdin closed, entering read-only mode");
+                                // continue running; reader + publisher (idle) stay alive
+                            } else {
+                                graceful_eof_exit = true;
+                                want_exit = true;
+                            }
+                        }
+                    }
+                    Some(UiInput::Interrupt) => {
+                        ui.render_system("*** shutting down");
+                        break;
+                    }
+                    None => {
+                        // UI shut down on its own — treat as interrupt.
+                        break;
+                    }
                 }
-            }, if !eof_handled && stdin_eof_rx.is_some() => {
-                eof_handled = true;
-                stdin_eof_rx = None;
-                if args.stay_after_eof {
-                    eprintln!("*** stdin closed, entering read-only mode");
-                    // continue running; reader + publisher (idle) stay alive
-                } else {
-                    graceful_eof_exit = true;
+                if want_exit {
                     break;
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("\n*** shutting down");
+                ui.render_system("*** shutting down");
                 break;
             }
             _ = sigterm_recv() => {
-                eprintln!("\n*** shutting down (SIGTERM)");
+                ui.render_system("*** shutting down (SIGTERM)");
                 break;
             }
         }
@@ -335,21 +422,18 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
     // and any queued jobs.
     drop(pub_tx);
 
-    if let Some(h) = stdin_handle {
-        h.abort();
-    }
     if let Some(h) = publisher_handle {
         if graceful_eof_exit {
             // EOF-driven exit — the user piped a file and expects every line
             // to land on the wire. Wait for the queue to drain naturally.
             // A second Ctrl-C aborts in case of a stuck DHT.
-            eprintln!("*** flushing publish queue (Ctrl-C to abort)…");
+            ui.render_system("*** flushing publish queue (Ctrl-C to abort)…");
             tokio::select! {
                 _ = h => {
-                    eprintln!("*** publish queue flushed");
+                    ui.render_system("*** publish queue flushed");
                 }
                 _ = tokio::signal::ctrl_c() => {
-                    eprintln!("\n*** abort: outgoing messages may not have reached the network");
+                    ui.render_system("*** abort: outgoing messages may not have reached the network");
                 }
             }
         } else {
@@ -365,8 +449,107 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig) -> i32 {
     if let Some(h) = friend_refresh_handle {
         h.abort();
     }
+    dht_status_handle.abort();
+
+    // Restore terminal before final destroy so any error messages from the
+    // shutdown sequence land in a clean cooked-mode terminal.
+    ui.shutdown().await;
 
     let _ = handle.destroy().await;
     let _ = task.await;
     0
+}
+
+/// Apply a slash command. Returns `true` if the session should exit.
+async fn dispatch_slash(
+    cmd: SlashCommand,
+    profile_name: &str,
+    ui: &dyn ChatUi,
+    ignore: &IgnoreSet,
+) -> bool {
+    use crate::cmd::chat::resolve_recipient as resolve_pubkey;
+    match cmd {
+        SlashCommand::Quit => return true,
+        SlashCommand::Help => {
+            ui.render_system(commands::help_text());
+        }
+        SlashCommand::IgnoreList => {
+            let g = ignore.read().await;
+            if g.is_empty() {
+                ui.render_system("*** ignore list is empty");
+            } else {
+                let mut lines = vec!["*** ignoring:".to_string()];
+                for pk in g.iter() {
+                    let short = &hex::encode(pk)[..8];
+                    lines.push(format!("    {short}"));
+                }
+                ui.render_system(&lines.join("\n"));
+            }
+        }
+        SlashCommand::Ignore(arg) => match resolve_pubkey(profile_name, &arg) {
+            Ok(pk) => {
+                ignore.write().await.insert(pk);
+                ui.render_system(&format!("*** ignoring {}", &hex::encode(pk)[..8]));
+            }
+            Err(e) => ui.render_system(&format!("*** /ignore: {e}")),
+        },
+        SlashCommand::Unignore(arg) => match resolve_pubkey(profile_name, &arg) {
+            Ok(pk) => {
+                let removed = ignore.write().await.remove(&pk);
+                if removed {
+                    ui.render_system(&format!("*** unignored {}", &hex::encode(pk)[..8]));
+                } else {
+                    ui.render_system("*** not in ignore list");
+                }
+            }
+            Err(e) => ui.render_system(&format!("*** /unignore: {e}")),
+        },
+        SlashCommand::FriendList => match profile::load_friends(profile_name) {
+            Ok(friends) if friends.is_empty() => ui.render_system("*** no friends"),
+            Ok(friends) => {
+                let mut lines = vec!["*** friends:".to_string()];
+                for f in &friends {
+                    let short = &hex::encode(f.pubkey)[..8];
+                    let alias = f.alias.as_deref().unwrap_or("");
+                    if alias.is_empty() {
+                        lines.push(format!("    {short}"));
+                    } else {
+                        lines.push(format!("    {short}  {alias}"));
+                    }
+                }
+                ui.render_system(&lines.join("\n"));
+            }
+            Err(e) => ui.render_system(&format!("*** /friend: {e}")),
+        },
+        SlashCommand::Friend(arg) => match resolve_pubkey(profile_name, &arg) {
+            Ok(pk) => {
+                let friend = profile::Friend {
+                    pubkey: pk,
+                    alias: None,
+                    cached_name: None,
+                    cached_bio_line: None,
+                };
+                match profile::save_friend(profile_name, &friend) {
+                    Ok(()) => ui.render_system(&format!("*** added friend {}", &hex::encode(pk)[..8])),
+                    Err(e) => ui.render_system(&format!("*** /friend: {e}")),
+                }
+            }
+            Err(e) => ui.render_system(&format!("*** /friend: {e}")),
+        },
+        SlashCommand::Unfriend(arg) => match resolve_pubkey(profile_name, &arg) {
+            Ok(pk) => match profile::remove_friend(profile_name, &pk) {
+                Ok(()) => ui.render_system(&format!("*** removed friend {}", &hex::encode(pk)[..8])),
+                Err(e) => ui.render_system(&format!("*** /unfriend: {e}")),
+            },
+            Err(e) => ui.render_system(&format!("*** /unfriend: {e}")),
+        },
+        SlashCommand::Unknown(s) => {
+            ui.render_system(&format!("*** unknown command: /{s}"));
+            ui.render_system(commands::help_text());
+        }
+        SlashCommand::Empty => {
+            ui.render_system(commands::help_text());
+        }
+    }
+    false
 }

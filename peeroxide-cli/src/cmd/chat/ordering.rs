@@ -285,6 +285,14 @@ impl ChainGate {
         }
         out
     }
+
+    /// Total number of messages currently buffered awaiting a missing
+    /// predecessor, across all per-(id, feed) chains. Used by the status bar
+    /// as the `Receiving... (N)` count — non-zero indicates the receiver is
+    /// holding back messages until the chain completes.
+    pub fn pending_count(&self) -> usize {
+        self.pending.values().map(|per_chain| per_chain.len()).sum()
+    }
 }
 
 /// Sort a batch of messages so each `(id_pubkey, feed_pubkey)` chain plays
@@ -640,6 +648,31 @@ mod tests {
 
         let got = collect(&mut rx);
         assert_eq!(got, vec!["msg-1", "msg-2", "msg-10", "msg-11"]);
+    }
+
+    #[test]
+    fn pending_count_reflects_buffered_messages() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut g = ChainGate::new();
+        let mut d = DedupRing::new(1000);
+        assert_eq!(g.pending_count(), 0);
+
+        // anchor + immediate release → no buffer growth
+        let _ = g.submit(msg(1, 1, 0, 1), &mut d, &tx);
+        assert_eq!(g.pending_count(), 0);
+
+        // submit out-of-order msg → buffers
+        let _ = g.submit(msg(1, 3, 2, 3), &mut d, &tx);
+        assert_eq!(g.pending_count(), 1);
+        let _ = g.submit(msg(1, 4, 3, 4), &mut d, &tx);
+        assert_eq!(g.pending_count(), 2);
+
+        // submit the missing predecessor → drains both
+        let _ = g.submit(msg(1, 2, 1, 2), &mut d, &tx);
+        assert_eq!(g.pending_count(), 0);
+        // sanity: order is correct
+        let got = collect(&mut rx);
+        assert_eq!(got, vec!["msg-1", "msg-2", "msg-3", "msg-4"]);
     }
 
     #[test]

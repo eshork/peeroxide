@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use futures::future::join_all;
 use peeroxide_dht::crypto::hash;
@@ -12,7 +13,55 @@ use crate::cmd::chat::display::DisplayMessage;
 use crate::cmd::chat::known_users;
 use crate::cmd::chat::ordering::{chain_sort, ChainGate, DedupRing, PendingMessage, SubmitOutcome};
 use crate::cmd::chat::probe;
+use crate::cmd::chat::tui::{DhtActivityGuard, RecvFetchGuard, StatusState};
 use crate::cmd::chat::wire::{self, FeedRecord, MessageEnvelope, SummaryBlock};
+
+/// Wrap a `HyperDhtHandle::immutable_get` (a message-blob or summary-block
+/// fetch). Holds **both** guards:
+///
+/// - `DhtActivityGuard` lights the activity dot
+/// - `RecvFetchGuard` increments the user-facing `Receiving (N)` counter
+///
+/// These are downloads of actual content the reader has *committed* to
+/// fetch — either listed in a FeedRecord's `msg_hashes`, walked from a
+/// summary chain, or refetched as a missing predecessor.
+async fn tracked_immutable_get(
+    handle: &HyperDhtHandle,
+    hash: [u8; 32],
+    status: &Arc<StatusState>,
+) -> Result<Option<Vec<u8>>, peeroxide_dht::hyperdht::HyperDhtError> {
+    let _dht = DhtActivityGuard::new(status.clone());
+    let _recv = RecvFetchGuard::new(status.clone());
+    handle.immutable_get(hash).await
+}
+
+/// Wrap a `HyperDhtHandle::mutable_get` (FeedRecord fetch). Holds only the
+/// activity-dot guard — this is a background "check for new content" scan,
+/// not yet a confirmed inbound message, so it does **not** light the
+/// "Receiving" indicator. If the fetched FeedRecord exposes new
+/// `msg_hashes`, the subsequent `tracked_immutable_get`s will surface as
+/// "Receiving".
+async fn tracked_mutable_get(
+    handle: &HyperDhtHandle,
+    pubkey: &[u8; 32],
+    seq: u64,
+    status: &Arc<StatusState>,
+) -> Result<Option<peeroxide_dht::hyperdht::MutableGetResult>, peeroxide_dht::hyperdht::HyperDhtError>
+{
+    let _dht = DhtActivityGuard::new(status.clone());
+    handle.mutable_get(pubkey, seq).await
+}
+
+/// Wrap a `HyperDhtHandle::lookup` (announce-topic scan for peers). Only
+/// bumps the activity dot; lookups are pure discovery, not content fetches.
+async fn tracked_lookup(
+    handle: &HyperDhtHandle,
+    topic: [u8; 32],
+    status: &Arc<StatusState>,
+) -> Result<Vec<peeroxide_dht::hyperdht::LookupResult>, peeroxide_dht::hyperdht::HyperDhtError> {
+    let _dht = DhtActivityGuard::new(status.clone());
+    handle.lookup(topic).await
+}
 
 struct KnownFeed {
     id_pubkey: [u8; 32],
@@ -73,13 +122,14 @@ fn spawn_refetch(
     owner: [u8; 32],
     feed_pubkey: [u8; 32],
     tx: mpsc::UnboundedSender<RefetchResult>,
+    status: Arc<StatusState>,
 ) {
     tokio::spawn(async move {
         for delay_ms in REFETCH_SCHEDULE_MS {
             if delay_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
-            if let Ok(Some(data)) = handle.immutable_get(hash).await {
+            if let Ok(Some(data)) = tracked_immutable_get(&handle, hash, &status).await {
                 let _ = tx.send(RefetchResult {
                     hash,
                     owner,
@@ -135,6 +185,7 @@ fn envelope_to_pending(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn submit_to_gate(
     gate: &mut ChainGate,
     msg: PendingMessage,
@@ -143,6 +194,7 @@ fn submit_to_gate(
     pending_refetches: &mut HashSet<[u8; 32]>,
     refetch_tx: &mpsc::UnboundedSender<RefetchResult>,
     handle: &HyperDhtHandle,
+    status: &Arc<StatusState>,
 ) {
     let id = msg.display.id_pubkey;
     let feed_pubkey = msg.feed_pubkey;
@@ -157,11 +209,13 @@ fn submit_to_gate(
                 id,
                 feed_pubkey,
                 refetch_tx.clone(),
+                status.clone(),
             );
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_reader(
     handle: HyperDhtHandle,
     channel_key: [u8; 32],
@@ -170,6 +224,7 @@ pub async fn run_reader(
     profile_name: String,
     self_feed_pubkey: Option<[u8; 32]>,
     self_id_pubkey: [u8; 32],
+    status: Arc<StatusState>,
 ) {
     let mut known_feeds: HashMap<[u8; 32], KnownFeed> = HashMap::new();
     let mut dedup = DedupRing::with_default_capacity();
@@ -191,7 +246,8 @@ pub async fn run_reader(
         .map(|(epoch, bucket)| {
             let h = handle.clone();
             let topic = crypto::announce_topic(&channel_key, epoch, bucket);
-            async move { (epoch, bucket, h.lookup(topic).await) }
+            let status = status.clone();
+            async move { (epoch, bucket, tracked_lookup(&h, topic, &status).await) }
         })
         .collect();
 
@@ -220,7 +276,8 @@ pub async fn run_reader(
         .map(|pk| {
             let h = handle.clone();
             let pk = *pk;
-            async move { (pk, h.mutable_get(&pk, 0).await) }
+            let status = status.clone();
+            async move { (pk, tracked_mutable_get(&h, &pk, 0, &status).await) }
         })
         .collect();
 
@@ -262,6 +319,7 @@ pub async fn run_reader(
                     &mut dedup,
                     &profile_name,
                     &self_id_pubkey,
+                    &status,
                 )
                 .await;
 
@@ -283,6 +341,7 @@ pub async fn run_reader(
                     &mut backlog,
                     &profile_name,
                     &self_id_pubkey,
+                    &status,
                 )
                 .await;
                 if let Some(feed_info) = known_feeds.get_mut(&feed_pk) {
@@ -301,8 +360,14 @@ pub async fn run_reader(
             &mut pending_refetches,
             &refetch_tx,
             &handle,
+            &status,
         );
     }
+
+    // Initial status snapshot now that cold-start has populated state.
+    // `recv_pending` is the live in-flight `immutable_get` count managed by
+    // `tracked_immutable_get`/`RecvFetchGuard`; we don't touch it here.
+    status.set_feed_count(known_feeds.len());
 
     let _ = msg_tx.send(DisplayMessage {
         id_pubkey: [0u8; 32],
@@ -319,8 +384,9 @@ pub async fn run_reader(
     let (disc_tx, mut disc_rx) = mpsc::unbounded_channel::<[u8; 32]>();
     {
         let handle = handle.clone();
+        let status = status.clone();
         tokio::spawn(async move {
-            run_discovery(handle, channel_key, disc_tx).await;
+            run_discovery(handle, channel_key, disc_tx, status).await;
         });
     }
 
@@ -367,6 +433,7 @@ pub async fn run_reader(
                                 &mut pending_refetches,
                                 &refetch_tx,
                                 &handle,
+                                &status,
                             );
                         }
                     }
@@ -387,6 +454,7 @@ pub async fn run_reader(
                         .and_modify(|f| f.last_active = Instant::now())
                         .or_insert_with(KnownFeed::new);
                 }
+                status.set_feed_count(known_feeds.len());
                 continue;
             }
         }
@@ -430,7 +498,8 @@ pub async fn run_reader(
                 let h = handle.clone();
                 let pk = *pk;
                 let seq = *cached_seq;
-                async move { (pk, h.mutable_get(&pk, seq).await) }
+                let status = status.clone();
+                async move { (pk, tracked_mutable_get(&h, &pk, seq, &status).await) }
             })
             .collect();
 
@@ -516,6 +585,7 @@ pub async fn run_reader(
                             &mut dedup,
                             &profile_name,
                             &self_id_pubkey,
+                            &status,
                         )
                         .await;
 
@@ -534,6 +604,7 @@ pub async fn run_reader(
                                 &mut pending_refetches,
                                 &refetch_tx,
                                 &handle,
+                                &status,
                             );
                         }
 
@@ -556,6 +627,7 @@ pub async fn run_reader(
                                 &mut history,
                                 &profile_name,
                                 &self_id_pubkey,
+                                &status,
                             )
                             .await;
                             for msg in chain_sort(history) {
@@ -567,6 +639,7 @@ pub async fn run_reader(
                                     &mut pending_refetches,
                                     &refetch_tx,
                                     &handle,
+                                    &status,
                                 );
                             }
                             if let Some(fi) = known_feeds.get_mut(&feed_pk) {
@@ -580,6 +653,11 @@ pub async fn run_reader(
                 }
             }
         }
+
+        // End-of-iteration: refresh the feed count for the bar.
+        // `recv_pending` is tracked live by `tracked_immutable_get` /
+        // `RecvFetchGuard` around each DHT round-trip.
+        status.set_feed_count(known_feeds.len());
     }
 }
 
@@ -589,6 +667,7 @@ async fn run_discovery(
     handle: HyperDhtHandle,
     channel_key: [u8; 32],
     disc_tx: mpsc::UnboundedSender<[u8; 32]>,
+    status: Arc<StatusState>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(DISCOVERY_INTERVAL_SECS));
 
@@ -605,7 +684,8 @@ async fn run_discovery(
             .map(|(epoch, bucket)| {
                 let h = handle.clone();
                 let topic = crypto::announce_topic(&channel_key, epoch, bucket);
-                async move { (epoch, bucket, h.lookup(topic).await) }
+                let status = status.clone();
+                async move { (epoch, bucket, tracked_lookup(&h, topic, &status).await) }
             })
             .collect();
 
@@ -658,6 +738,7 @@ async fn fetch_and_validate_messages(
     dedup: &mut DedupRing,
     profile_name: &str,
     self_id_pubkey: &[u8; 32],
+    status: &Arc<StatusState>,
 ) -> Vec<PendingMessage> {
     let _ = profile_name;
     let mut messages = Vec::new();
@@ -671,11 +752,11 @@ async fn fetch_and_validate_messages(
         .collect();
 
     if probe::is_enabled() {
-        eprintln!(
+        crate::cmd::chat::tui::emit_notice(format!(
             "[probe] fetch_batch msg_hashes_total={} unseen={}",
             msg_hashes.len(),
             unseen.len(),
-        );
+        ));
     }
 
     if unseen.is_empty() {
@@ -688,7 +769,11 @@ async fn fetch_and_validate_messages(
             let h = handle.clone();
             let hash = *hash;
             let idx = *i;
-            async move { (idx, hash, h.immutable_get(hash).await) }
+            let status = status.clone();
+            async move {
+                let result = tracked_immutable_get(&h, hash, &status).await;
+                (idx, hash, result)
+            }
         })
         .collect();
 
@@ -785,11 +870,12 @@ async fn fetch_summary_history(
     backlog: &mut Vec<PendingMessage>,
     profile_name: &str,
     self_id_pubkey: &[u8; 32],
+    status: &Arc<StatusState>,
 ) {
     let mut depth = 0;
     while summary_hash != [0u8; 32] && depth < MAX_SUMMARY_DEPTH {
         depth += 1;
-        let data = match handle.immutable_get(summary_hash).await {
+        let data = match tracked_immutable_get(handle, summary_hash, status).await {
             Ok(Some(d)) => d,
             _ => break,
         };
@@ -811,6 +897,7 @@ async fn fetch_summary_history(
             dedup,
             profile_name,
             self_id_pubkey,
+            status,
         )
         .await;
         backlog.extend(msgs);

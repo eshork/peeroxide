@@ -16,6 +16,7 @@
 //! gap-timeout releases when the immutable_get of a missing predecessor
 //! could not be satisfied within the 5s window.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Duration;
 
@@ -30,6 +31,7 @@ use crate::cmd::chat::debug;
 use crate::cmd::chat::feed::{self, FeedState};
 use crate::cmd::chat::post::{prepare_one, Prepared};
 use crate::cmd::chat::probe;
+use crate::cmd::chat::tui::{NoticeSink, StatusState};
 
 /// Jobs the publisher accepts on its inbound queue.
 pub enum PubJob {
@@ -67,6 +69,8 @@ pub async fn run_publisher(
     mut rx: mpsc::Receiver<PubJob>,
     batch_size: usize,
     batch_wait_ms: u64,
+    status: Arc<StatusState>,
+    notices: NoticeSink,
 ) {
     // Sanitize to non-pathological values.
     let batch_size = batch_size.max(1);
@@ -78,7 +82,7 @@ pub async fn run_publisher(
         .mutable_put(&feed_state.feed_keypair, &initial_data, feed_state.seq)
         .await
     {
-        eprintln!("warning: initial feed publish failed: {e}");
+        notices.send(format!("warning: initial feed publish failed: {e}"));
     }
 
     let (refresh_tx, refresh_rx) =
@@ -109,6 +113,7 @@ pub async fn run_publisher(
                         &mut feed_state,
                         &mut refresh_tx,
                         &mut refresh_handle,
+                        &notices,
                     )
                     .await;
                 }
@@ -145,6 +150,8 @@ pub async fn run_publisher(
                     &screen_name,
                     &refresh_tx,
                     texts,
+                    &status,
+                    &notices,
                 )
                 .await;
             }
@@ -170,7 +177,15 @@ async fn publish_batch(
     screen_name: &str,
     refresh_tx: &watch::Sender<(Vec<u8>, u64)>,
     texts: Vec<String>,
+    status: &StatusState,
+    notices: &NoticeSink,
 ) {
+    // We will decrement `send_pending` by `text_count` at the tail of this
+    // function regardless of partial network failure — the user enqueued
+    // `text_count` messages and the batch is "done" once we've returned,
+    // even if some immutable_puts failed. The next batch will re-advertise
+    // via the FeedRecord chain (handled by the existing retry logic below).
+    let text_count = texts.len();
     let batch_n = BATCH_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) + 1;
 
     // --- Phase 1: synchronous chain construction ---
@@ -189,12 +204,17 @@ async fn publish_batch(
                 }
             }
             Err(e) => {
-                eprintln!("error: failed to prepare message: {e}");
+                notices.send(format!("error: failed to prepare message: {e}"));
             }
         }
     }
 
     if encrypted_blobs.is_empty() {
+        // Nothing to publish (every prepare_one errored) — still acknowledge
+        // the texts so send_pending doesn't pin forever.
+        for _ in 0..text_count {
+            status.dec_send_pending();
+        }
         return;
     }
 
@@ -208,11 +228,11 @@ async fn publish_batch(
     let topic = crypto::announce_topic(channel_key, epoch, bucket);
 
     if probe::is_enabled() {
-        eprintln!(
+        notices.send(format!(
             "[probe] batch#{batch_n} messages={} summary_blocks={} seq={seq}",
             encrypted_blobs.len(),
             summary_blobs.len(),
-        );
+        ));
     }
 
     // --- Phase 2: all immutable_puts in parallel; await all ---
@@ -230,21 +250,21 @@ async fn publish_batch(
         match r {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
-                eprintln!("warning: immutable_put failed: {e}");
+                notices.send(format!("warning: immutable_put failed: {e}"));
                 put_failed += 1;
             }
             Err(e) => {
-                eprintln!("warning: immutable_put task panicked: {e}");
+                notices.send(format!("warning: immutable_put task panicked: {e}"));
                 put_failed += 1;
             }
         }
     }
     if probe::is_enabled() {
-        eprintln!(
+        notices.send(format!(
             "[probe] batch#{batch_n} immutable_put_done elapsed_ms={} failed={}",
             put_start.elapsed().as_millis(),
             put_failed,
-        );
+        ));
     }
 
     // --- Phase 3: mutable_put with retry; only advertise after immutables ---
@@ -266,25 +286,25 @@ async fn publish_batch(
             }
             Err(e) => {
                 if let Some(delay_ms) = MUTABLE_PUT_RETRY_MS.get(mput_attempts - 1) {
-                    eprintln!(
+                    notices.send(format!(
                         "warning: mutable_put failed (attempt {mput_attempts}/{}): {e}; retrying in {delay_ms}ms",
                         MUTABLE_PUT_RETRY_MS.len() + 1,
-                    );
+                    ));
                     tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
                 } else {
-                    eprintln!(
+                    notices.send(format!(
                         "warning: mutable_put failed after {mput_attempts} attempts: {e}; batch's FeedRecord left unadvertised, next batch will re-advertise via chain"
-                    );
+                    ));
                     break false;
                 }
             }
         }
     };
     if probe::is_enabled() {
-        eprintln!(
+        notices.send(format!(
             "[probe] batch#{batch_n} mutable_put_done elapsed_ms={} attempts={mput_attempts} ok={mput_ok}",
             mput_start.elapsed().as_millis(),
-        );
+        ));
     }
 
     // Tell the feed-refresh task the new (data, seq) pair regardless of put
@@ -305,10 +325,16 @@ async fn publish_batch(
         ),
     );
     if probe::is_enabled() {
-        eprintln!(
+        notices.send(format!(
             "[probe] batch#{batch_n} announce_done elapsed_ms={}",
             ann_start.elapsed().as_millis(),
-        );
+        ));
+    }
+
+    // Acknowledge all enqueued messages — they're now either on the DHT or
+    // their FeedRecord update is pending retry on the next batch.
+    for _ in 0..text_count {
+        status.dec_send_pending();
     }
 }
 
@@ -319,6 +345,7 @@ async fn rotate_feed(
     feed_state: &mut FeedState,
     refresh_tx: &mut watch::Sender<(Vec<u8>, u64)>,
     refresh_handle: &mut JoinHandle<()>,
+    notices: &NoticeSink,
 ) {
     let mut new_fs = feed_state.rotate();
 
@@ -327,7 +354,9 @@ async fn rotate_feed(
     let new_seq = new_fs.seq;
 
     if let Err(e) = handle.mutable_put(&new_kp, &new_data, new_seq).await {
-        eprintln!("warning: feed rotation failed (new feed publish), will retry: {e}");
+        notices.send(format!(
+            "warning: feed rotation failed (new feed publish), will retry: {e}"
+        ));
         // Roll back the pointer set during rotate() so we retry cleanly next tick.
         feed_state.next_feed_pubkey = [0u8; 32];
         return;
@@ -385,5 +414,5 @@ async fn rotate_feed(
 
     // Swap in the new state.
     std::mem::swap(feed_state, &mut new_fs);
-    eprintln!("*** feed keypair rotated");
+    notices.send("*** feed keypair rotated");
 }

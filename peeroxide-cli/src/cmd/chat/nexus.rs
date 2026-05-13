@@ -5,6 +5,7 @@ use peeroxide_dht::hyperdht::{HyperDhtHandle, KeyPair};
 use crate::cmd::chat::debug;
 use crate::cmd::chat::known_users;
 use crate::cmd::chat::profile;
+use crate::cmd::chat::tui::NoticeSink;
 use crate::cmd::chat::wire::NexusRecord;
 use crate::cmd::{build_dht_config, sigterm_recv};
 use crate::config::ResolvedConfig;
@@ -103,7 +104,7 @@ pub async fn run(args: NexusArgs, cfg: &ResolvedConfig) -> i32 {
     }
 
     if args.publish {
-        publish_nexus_once(&handle, &id_keypair, &args.profile).await;
+        publish_nexus_once(&handle, &id_keypair, &args.profile, None).await;
         let _ = handle.destroy().await;
         let _ = task.await;
         return 0;
@@ -119,7 +120,7 @@ pub async fn run(args: NexusArgs, cfg: &ResolvedConfig) -> i32 {
         loop {
             tokio::select! {
                 _ = publish_timer.tick() => {
-                    publish_nexus_once(&handle, &id_keypair, &profile_name).await;
+                    publish_nexus_once(&handle, &id_keypair, &profile_name, None).await;
                 }
                 _ = friend_timer.tick() => {
                     refresh_friends(&handle, &profile_name).await;
@@ -138,17 +139,22 @@ pub async fn run(args: NexusArgs, cfg: &ResolvedConfig) -> i32 {
         return 0;
     }
 
-    publish_nexus_once(&handle, &id_keypair, &args.profile).await;
+    publish_nexus_once(&handle, &id_keypair, &args.profile, None).await;
     let _ = handle.destroy().await;
     let _ = task.await;
     0
 }
 
-async fn publish_nexus_once(handle: &HyperDhtHandle, id_keypair: &KeyPair, profile_name: &str) {
+async fn publish_nexus_once(
+    handle: &HyperDhtHandle,
+    id_keypair: &KeyPair,
+    profile_name: &str,
+    notices: Option<&NoticeSink>,
+) {
     let prof = match profile::load_profile(profile_name) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("warning: failed to load profile for nexus: {e}");
+            emit_notice(notices, format!("warning: failed to load profile for nexus: {e}"));
             return;
         }
     };
@@ -161,7 +167,7 @@ async fn publish_nexus_once(handle: &HyperDhtHandle, id_keypair: &KeyPair, profi
     let data = match record.serialize() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("warning: nexus serialize failed: {e}");
+            emit_notice(notices, format!("warning: nexus serialize failed: {e}"));
             return;
         }
     };
@@ -173,7 +179,7 @@ async fn publish_nexus_once(handle: &HyperDhtHandle, id_keypair: &KeyPair, profi
 
     match handle.mutable_put(id_keypair, &data, seq).await {
         Ok(_) => {
-            eprintln!("  nexus published (seq={seq})");
+            emit_notice(notices, format!("  nexus published (seq={seq})"));
             debug::log_event(
                 "Nexus publish",
                 "mutable_put",
@@ -186,18 +192,33 @@ async fn publish_nexus_once(handle: &HyperDhtHandle, id_keypair: &KeyPair, profi
             );
         }
         Err(e) => {
-            eprintln!("warning: nexus publish failed: {e}");
+            emit_notice(notices, format!("warning: nexus publish failed: {e}"));
         }
     }
 }
 
-pub async fn run_nexus_refresh(handle: HyperDhtHandle, id_keypair: KeyPair, profile_name: String) {
+/// Send `line` through the notice sink if one is provided, otherwise fall
+/// back to `eprintln!`. The fallback covers callers like the standalone
+/// `nexus daemon` subcommand that don't have an interactive UI in play.
+fn emit_notice(notices: Option<&NoticeSink>, line: String) {
+    match notices {
+        Some(s) => s.send(line),
+        None => eprintln!("{line}"),
+    }
+}
+
+pub async fn run_nexus_refresh(
+    handle: HyperDhtHandle,
+    id_keypair: KeyPair,
+    profile_name: String,
+    notices: NoticeSink,
+) {
     let refresh_interval = tokio::time::Duration::from_secs(480);
     let mut interval = tokio::time::interval(refresh_interval);
 
     loop {
         interval.tick().await;
-        publish_nexus_once(&handle, &id_keypair, &profile_name).await;
+        publish_nexus_once(&handle, &id_keypair, &profile_name, Some(&notices)).await;
     }
 }
 
@@ -267,7 +288,15 @@ async fn run_lookup(pubkey_hex: &str, cfg: &ResolvedConfig) -> i32 {
     0
 }
 
-pub async fn run_friend_refresh(handle: HyperDhtHandle, profile_name: String) {
+pub async fn run_friend_refresh(
+    handle: HyperDhtHandle,
+    profile_name: String,
+    _notices: NoticeSink,
+) {
+    // `_notices` is reserved for future friend-refresh notifications. Today
+    // `refresh_one_friend` is silent on success and only logs via
+    // `debug::log_event` (which respects --debug). If we later want to
+    // surface, e.g. "*** alice changed name", the sink is ready.
     let refresh_interval = tokio::time::Duration::from_secs(600);
     let mut interval = tokio::time::interval(refresh_interval);
     let mut friend_index: usize = 0;

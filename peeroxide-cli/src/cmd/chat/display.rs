@@ -22,6 +22,48 @@ pub struct DisplayState {
     known_users: SharedKnownUsers,
 }
 
+/// Output of [`DisplayState::render_to`] — a formatted message line plus any
+/// associated system notices (identity reveal, name change). The caller is
+/// responsible for actually printing these to the user; this separation lets
+/// the line-mode UI route them to stdout/stderr and the interactive TUI route
+/// them through the renderer.
+#[derive(Debug, Clone)]
+pub struct RenderedOutput {
+    /// The formatted message line, e.g. `[12:34:56] [alice]: hello`. May be
+    /// prefixed with `[late] ` if the message was delivered out-of-order.
+    pub message_line: String,
+    /// Zero or more system notices (each rendered as a separate line) that
+    /// accompany this message: `*** vendor@short is fullkey`, name-change
+    /// announcements, etc.
+    pub system_notices: Vec<String>,
+}
+
+/// Render a [`DisplayMessage`] without any [`DisplayState`] context.
+///
+/// Used by `LineUi` when it doesn't have access to the live `DisplayState`
+/// (e.g. when called outside the main join loop). Produces a best-effort
+/// formatted line — no friend aliases, no identity notices, no cooldown
+/// marker. The main loop should always go through [`DisplayState::render_to`]
+/// for full formatting; this helper exists for fall-back paths.
+pub fn render_message_line(msg: &DisplayMessage) -> RenderedOutput {
+    let timestamp_str = format_timestamp(msg.timestamp);
+    let shortkey = &hex::encode(msg.id_pubkey)[..8];
+    let vendor_name = names::generate_name_from_seed(&msg.id_pubkey);
+    let display_name = if !msg.screen_name.is_empty() {
+        format!("<{}@{}>", msg.screen_name, shortkey)
+    } else {
+        format!("<{vendor_name}@{shortkey}>")
+    };
+    let late_marker = if msg.late { "[late] " } else { "" };
+    RenderedOutput {
+        message_line: format!(
+            "{late_marker}[{timestamp_str}] [{display_name}]: {}",
+            msg.content
+        ),
+        system_notices: Vec::new(),
+    }
+}
+
 impl DisplayState {
     pub fn new(friends: Vec<Friend>, known_users: SharedKnownUsers) -> Self {
         let friends_map: HashMap<[u8; 32], Friend> =
@@ -41,7 +83,22 @@ impl DisplayState {
         self.friends = friends.into_iter().map(|f| (f.pubkey, f)).collect();
     }
 
+    /// Render `msg` and print directly to stdout/stderr. Convenience wrapper
+    /// around [`render_to`]; preserved for callers that don't yet route
+    /// through a `ChatUi`. New callers should prefer [`render_to`] so the
+    /// output can be directed appropriately (e.g. into the TUI scroll region).
     pub fn render(&mut self, msg: &DisplayMessage) {
+        let out = self.render_to(msg);
+        for notice in &out.system_notices {
+            eprintln!("{notice}");
+        }
+        println!("{}", out.message_line);
+    }
+
+    /// Render `msg` and return the formatted output, mutating internal state
+    /// (last-identity-shown, known-names, name-change-cooldown) along the way.
+    /// The caller is responsible for emitting the resulting strings.
+    pub fn render_to(&mut self, msg: &DisplayMessage) -> RenderedOutput {
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -50,31 +107,41 @@ impl DisplayState {
         let timestamp_str = format_timestamp(msg.timestamp);
         let display_name = self.format_display_name(msg, now_secs);
 
+        let mut notices = Vec::new();
+
         if self.should_show_identity(msg, now_secs) {
             let shortkey = &hex::encode(msg.id_pubkey)[..8];
             let fullkey = hex::encode(msg.id_pubkey);
             let vendor_name = names::generate_name_from_seed(&msg.id_pubkey);
-            eprintln!("*** {vendor_name}@{shortkey} is {fullkey}");
+            notices.push(format!("*** {vendor_name}@{shortkey} is {fullkey}"));
             self.last_identity_shown.insert(msg.id_pubkey, now_secs);
         }
 
         let late_marker = if msg.late { "[late] " } else { "" };
-        println!("{late_marker}[{timestamp_str}] [{display_name}]: {}", msg.content);
+        let message_line = format!(
+            "{late_marker}[{timestamp_str}] [{display_name}]: {}",
+            msg.content
+        );
 
         if !msg.screen_name.is_empty() {
             let prev = self.known_names.get(&msg.id_pubkey);
             if let Some(old_name) = prev {
                 if old_name.as_str() != msg.screen_name {
                     let shortkey = &hex::encode(msg.id_pubkey)[..8];
-                    eprintln!(
+                    notices.push(format!(
                         "*** {}@{} changed screen name: \"{}\" → \"{}\"",
                         old_name, shortkey, old_name, msg.screen_name
-                    );
+                    ));
                     self.name_change_at.insert(msg.id_pubkey, now_secs);
                 }
             }
             self.known_names
                 .insert(msg.id_pubkey, msg.screen_name.clone());
+        }
+
+        RenderedOutput {
+            message_line,
+            system_notices: notices,
         }
     }
 

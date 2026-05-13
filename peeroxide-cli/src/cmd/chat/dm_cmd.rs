@@ -186,8 +186,22 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
         let profile_name = args.profile.clone();
         let self_feed_pubkey = feed_keypair.as_ref().map(|fkp| fkp.public_key);
         let self_id = id_keypair.public_key;
+        // DM is out of scope for TUI mode in this change. A throwaway
+        // StatusState satisfies run_reader's signature; the bar is never
+        // observed in line-only mode.
+        let status = crate::cmd::chat::tui::StatusState::new(format!("DM:{short_recipient}"));
         tokio::spawn(async move {
-            reader::run_reader(handle, channel_key, message_key, msg_tx, profile_name, self_feed_pubkey, self_id).await;
+            reader::run_reader(
+                handle,
+                channel_key,
+                message_key,
+                msg_tx,
+                profile_name,
+                self_feed_pubkey,
+                self_id,
+                status,
+            )
+            .await;
         })
     };
 
@@ -211,7 +225,9 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
         let id_kp = id_keypair.clone();
         let profile_name = args.profile.clone();
         Some(tokio::spawn(async move {
-            crate::cmd::chat::nexus::run_nexus_refresh(handle, id_kp, profile_name).await;
+            // DM uses a throwaway NoticeSink (DM is out of scope for the TUI).
+            let (sink, _rx) = crate::cmd::chat::tui::NoticeSink::new();
+            crate::cmd::chat::nexus::run_nexus_refresh(handle, id_kp, profile_name, sink).await;
         }))
     } else {
         None
@@ -221,7 +237,11 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
         let handle = handle.clone();
         let profile_name = args.profile.clone();
         Some(tokio::spawn(async move {
-            crate::cmd::chat::nexus::run_friend_refresh(handle, profile_name).await;
+            // DM is line-mode only; use a throwaway NoticeSink whose
+            // receiver we drop. Sends become silent — fine because line-mode
+            // DM still uses direct eprintln paths.
+            let (sink, _rx) = crate::cmd::chat::tui::NoticeSink::new();
+            crate::cmd::chat::nexus::run_friend_refresh(handle, profile_name, sink).await;
         }))
     } else {
         None

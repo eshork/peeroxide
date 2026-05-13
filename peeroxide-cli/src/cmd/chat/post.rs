@@ -45,7 +45,7 @@ pub fn prepare_one(
     let post_n = POST_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
     if probe::is_enabled() {
         let preview: String = content.chars().take(40).collect();
-        eprintln!("[probe] post#{post_n} content={preview:?}");
+        crate::cmd::chat::tui::emit_notice(format!("[probe] post#{post_n} content={preview:?}"));
     }
 
     let envelope = MessageEnvelope::sign(
@@ -73,11 +73,11 @@ pub fn prepare_one(
     let msg_hash = hash(&encrypted);
     let prev_msg_hash = feed_state.prev_msg_hash;
     if probe::is_enabled() {
-        eprintln!(
+        crate::cmd::chat::tui::emit_notice(format!(
             "[probe] post#{post_n} msg_hash={} prev={}",
             debug::short_key(&msg_hash),
             debug::short_key(&prev_msg_hash),
-        );
+        ));
     }
 
     debug::log_event(
@@ -194,14 +194,18 @@ pub fn post_message(
             async {
                 if let Some(data) = summary_data {
                     if let Err(e) = h.immutable_put(&data).await {
-                        eprintln!("warning: summary immutable_put failed: {e}");
+                        crate::cmd::chat::tui::emit_notice(format!(
+                            "warning: summary immutable_put failed: {e}"
+                        ));
                     }
                 }
             }
         );
 
         if let Err(e) = msg_put {
-            eprintln!("warning: message immutable_put failed: {e}");
+            crate::cmd::chat::tui::emit_notice(format!(
+                "warning: message immutable_put failed: {e}"
+            ));
             return;
         }
 
@@ -237,7 +241,9 @@ pub fn post_message(
         );
 
         if let Err(e) = put_res {
-            eprintln!("warning: feed mutable_put failed: {e}");
+            crate::cmd::chat::tui::emit_notice(format!(
+                "warning: feed mutable_put failed: {e}"
+            ));
         }
     });
 

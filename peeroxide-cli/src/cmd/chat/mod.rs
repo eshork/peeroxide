@@ -18,6 +18,7 @@ pub mod probe;
 pub mod profile;
 pub mod publisher;
 pub mod reader;
+pub mod tui;
 pub mod wire;
 
 use clap::{Parser, Subcommand};
@@ -37,6 +38,13 @@ pub struct ChatArgs {
     /// Diagnostic only; useful for tracing ordering and duplication bugs.
     #[arg(long, global = true)]
     pub probe: bool,
+
+    /// Disable the interactive TTY mode and use line-oriented stdin/stdout
+    /// even when stdout is a terminal. Auto-enabled when stdout is not a TTY
+    /// (e.g. piped or redirected). The env var PEEROXIDE_LINE_MODE=1 has the
+    /// same effect.
+    #[arg(long, global = true)]
+    pub line_mode: bool,
 }
 
 #[derive(Subcommand)]
@@ -127,8 +135,12 @@ pub async fn run(args: ChatArgs, cfg: &ResolvedConfig) -> i32 {
     if args.probe {
         probe::enable();
     }
+    let line_mode = args.line_mode
+        || std::env::var("PEEROXIDE_LINE_MODE")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false);
     match args.command {
-        ChatCommands::Join(join_args) => join::run(join_args, cfg).await,
+        ChatCommands::Join(join_args) => join::run(join_args, cfg, line_mode).await,
         ChatCommands::Dm(dm_args) => dm_cmd::run(dm_args, cfg).await,
         ChatCommands::Inbox(inbox_args) => inbox_cmd::run(inbox_args, cfg).await,
         ChatCommands::Whoami(args) => run_whoami(args),
