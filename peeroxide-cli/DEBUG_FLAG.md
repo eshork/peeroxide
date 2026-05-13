@@ -1,3 +1,7 @@
+# Chat `--debug` Flag — Working Note
+
+> **Status**: working / historical design note. The `--debug` flag is implemented; this file is proposed for removal — see the PR description's Working Files table. For the current `--debug` behavior, see [`docs/src/chat/user-guide.md`](../docs/src/chat/user-guide.md) and [`docs/src/chat/reference.md`](../docs/src/chat/reference.md).
+
 We need to add a `--debug` flag to the chat commands that enables logging of specific high value events for debugging purposes.
 This would include high level network events with correlation IDs for tracing, such as:
 - Nexus record updates (with pubkey and changed field)

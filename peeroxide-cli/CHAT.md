@@ -1,5 +1,7 @@
 # peeroxide-chat: Design Notes
 
+> **Status**: working / historical design document used while building the chat subsystem. **Not user-facing documentation.** This file is proposed for removal — see the PR description's Working Files table. The canonical, current chat documentation (covering the shipped wire format, key derivation, protocol, TUI, CLI, and reference constants) lives in [`docs/src/chat/`](../docs/src/chat/).
+
 > Working design document for an anonymous, verifiable P2P chat system built
 > entirely on top of the existing peeroxide DHT stack — no protocol changes,
 > no custom relay work, no cooperation required from arbitrary peers.

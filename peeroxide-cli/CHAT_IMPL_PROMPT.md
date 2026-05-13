@@ -1,5 +1,7 @@
 # peeroxide-chat Implementation Prompt
 
+> **Status**: working / historical implementation prompt used while building the chat subsystem. **Not user-facing documentation.** This file is proposed for removal — see the PR description's Working Files table. The canonical user-facing documentation lives in [`docs/src/chat/`](../docs/src/chat/).
+
 ## Context
 
 Implement the `peeroxide chat` subcommand — an anonymous, verifiable P2P chat system built entirely on existing peeroxide DHT primitives (no protocol changes, no C dependencies). The full protocol spec is in `peeroxide-cli/CHAT.md` and the CLI design is in `peeroxide-cli/CHAT_CLI.md`. Read both thoroughly before starting.

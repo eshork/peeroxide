@@ -19,8 +19,9 @@ Profiles allow you to manage multiple identities on one machine. Each profile in
 - A permanent secret seed.
 - An optional screen name.
 - An optional biography.
-- A list of friends (per profile).
-- The shared known-users name cache (`~/.config/peeroxide/chat/known_users`) — process-wide, not per profile.
+- A friends list.
+
+Separately, a shared known-users name cache lives at `~/.config/peeroxide/chat/known_users`. It is process-wide (not per profile) and acts as a soft directory mapping public keys to the most-recently-seen screen name for each peer you have encountered.
 
 ## Channels
 

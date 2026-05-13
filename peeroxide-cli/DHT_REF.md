@@ -1,3 +1,6 @@
+# DHT Operation Reference — Working Note
+
+> **Status**: working / historical internal cheat-sheet used while designing the chat subsystem. **Not user-facing documentation.** This file is proposed for removal — see the PR description's Working Files table. The canonical concept-level DHT documentation lives in [`docs/src/concepts/`](../docs/src/concepts/) and the chat-specific protocol pages live in [`docs/src/chat/`](../docs/src/chat/).
 
 ## Appendix A: DHT Operation Reference
 
