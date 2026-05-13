@@ -146,7 +146,7 @@ If no subcommand is given, `friends list` runs.
 | `list` | `--profile <name>` (default `default`) | Show all friends in the profile. |
 | `add <key>` | `--alias <name>` (optional), `--profile <name>` (default `default`) | Add a new friend. Key resolution follows the same rules as DM recipients. If `--alias` is omitted, the alias auto-fills from the known-users cache or a vendor name. |
 | `remove <key>` | `--profile <name>` (default `default`) | Remove a friend from the profile's list. |
-| `refresh` | — | One-shot DHT update for all friends' profile information. |
+| `refresh` | — | One-shot DHT update for friends' profile information. Does **not** accept a `--profile` flag — operates on the `default` profile only. |
 
 ## Personal Page: nexus
 

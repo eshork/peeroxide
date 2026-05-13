@@ -70,7 +70,7 @@ Same session-flag surface as `join`, **except** `--group` and `--keyfile` are no
 - `friends list [--profile <name>]`: also the implicit default if no subcommand is given.
 - `friends add <key> [--alias <name>] [--profile <name>]`: alias auto-fills from the known-users cache (or vendor name) when omitted.
 - `friends remove <key> [--profile <name>]`.
-- `friends refresh`: one-shot DHT refresh of all friends.
+- `friends refresh`: one-shot DHT refresh; does **not** accept `--profile` and operates on the `default` profile only.
 
 ### Subcommand: nexus
 - `--profile <name>`, `--set-name <name>`, `--set-bio <text>`, `--publish`, `--lookup <pubkey-hex>`, `--daemon`.

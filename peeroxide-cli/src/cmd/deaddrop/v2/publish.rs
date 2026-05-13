@@ -27,9 +27,9 @@ use super::queue::{ChunkId, Lane, Operation, WorkQueue};
 use super::tree::data_chunk_count;
 use super::wire::DATA_PAYLOAD_MAX;
 
-/// Maximum tree depth the sender will produce by default. Override via
-/// `--allow-deep` flag (TODO: add to PutArgs in a follow-up). Beyond this,
-/// the sender refuses to build the tree.
+/// Maximum tree depth the sender will produce by default. Beyond this,
+/// the sender refuses to build the tree. Depth 4 supports up to
+/// 27,705,630 data chunks (~27 GB).
 pub const SOFT_DEPTH_CAP: u32 = 4;
 
 /// How often the sender polls for need-list publishers from receivers.
@@ -788,7 +788,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
     let depth = super::tree::canonical_depth(n);
     if depth > SOFT_DEPTH_CAP {
         eprintln!(
-            "error: file requires tree depth {depth} (soft cap is {SOFT_DEPTH_CAP}); pass --allow-deep to override"
+            "error: file requires tree depth {depth}, which exceeds the soft cap of {SOFT_DEPTH_CAP} (~27 GB at the current 998-byte chunk size); refusing to build"
         );
         return 1;
     }
