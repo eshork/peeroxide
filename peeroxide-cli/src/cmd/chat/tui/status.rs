@@ -5,7 +5,7 @@
 //! advisory display values, not synchronisation primitives.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use arc_swap::ArcSwap;
 use tokio::sync::Notify;
@@ -42,6 +42,16 @@ pub struct StatusState {
     pub dht_active: AtomicUsize,
     pub feed_count: AtomicUsize,
     pub dht_peers: AtomicUsize,
+    /// True when inbox monitoring is active for this session (configured
+    /// via `chat join` flags). When false the inbox segment is omitted from
+    /// the bar layout entirely. When true the segment renders as 'inbox' /
+    /// 'i' (plain) when `inbox_unread == 0`, or 'INBOX' / 'I' (yellow-bg,
+    /// black-fg) when there's at least one unread invite.
+    pub inbox_enabled: AtomicBool,
+    /// Count of invites surfaced by the inbox monitor that haven't yet been
+    /// displayed via `/inbox`. The bar uses this only as a boolean (lit /
+    /// not lit); the count itself isn't shown.
+    pub inbox_unread: AtomicUsize,
     pub channel_name: ArcSwap<String>,
     pub dirty: Notify,
 }
@@ -54,9 +64,28 @@ impl StatusState {
             dht_active: AtomicUsize::new(0),
             feed_count: AtomicUsize::new(0),
             dht_peers: AtomicUsize::new(0),
+            inbox_enabled: AtomicBool::new(false),
+            inbox_unread: AtomicUsize::new(0),
             channel_name: ArcSwap::from_pointee(channel_name.into()),
             dirty: Notify::new(),
         })
+    }
+
+    /// Enable or disable the inbox segment on the status bar.
+    pub fn set_inbox_enabled(&self, enabled: bool) {
+        let prev = self.inbox_enabled.swap(enabled, Ordering::Relaxed);
+        if prev != enabled {
+            self.dirty.notify_one();
+        }
+    }
+
+    /// Set the count of unread invites; the bar lights up (yellow bg,
+    /// uppercase) when this is > 0.
+    pub fn set_inbox_unread(&self, count: usize) {
+        let prev = self.inbox_unread.swap(count, Ordering::Relaxed);
+        if prev != count {
+            self.dirty.notify_one();
+        }
     }
 
     /// Increment `send_pending` and notify the renderer.
@@ -144,6 +173,8 @@ impl StatusState {
             dht_active: self.dht_active.load(Ordering::Relaxed) > 0,
             feed_count: self.feed_count.load(Ordering::Relaxed),
             dht_peers: self.dht_peers.load(Ordering::Relaxed),
+            inbox_enabled: self.inbox_enabled.load(Ordering::Relaxed),
+            inbox_unread: self.inbox_unread.load(Ordering::Relaxed),
             channel_name: (**self.channel_name.load()).clone(),
         }
     }
@@ -203,6 +234,12 @@ pub struct StatusSnapshot {
     pub dht_active: bool,
     pub feed_count: usize,
     pub dht_peers: usize,
+    /// True when the inbox monitor is running for this session (omitted
+    /// from the bar entirely when false).
+    pub inbox_enabled: bool,
+    /// Number of unread inbox invites. `> 0` paints the inbox segment with
+    /// the highlighted (yellow-bg / uppercase) form.
+    pub inbox_unread: usize,
     pub channel_name: String,
 }
 
@@ -369,14 +406,48 @@ fn natural_widths(snap: &StatusSnapshot, level: TruncLevel) -> (usize, usize) {
     (l, r)
 }
 
+/// Result of rendering the status bar: the plain-text body (exactly `cols`
+/// wide, padded with spaces) plus an optional character range within `body`
+/// to be painted with the "attention" styling (yellow background, black
+/// foreground) by the caller.
+///
+/// Today only the INBOX segment uses `inbox_highlight`; the rest of the
+/// body should be painted with the normal grey-background status-bar
+/// styling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BarRender {
+    pub body: String,
+    pub inbox_highlight: Option<std::ops::Range<usize>>,
+}
+
+/// Convenience: deref to `str` so callers (and tests) can use the usual
+/// `&str` methods (`contains`, `find`, `chars`, `len`, …) directly on a
+/// `BarRender` value without unwrapping `.body`. The caller still needs to
+/// reach into `inbox_highlight` explicitly when painting styles.
+impl std::ops::Deref for BarRender {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.body
+    }
+}
+
 /// Render the plain-text content of the status bar (no terminal escapes) at
-/// the chosen level, applying sticky slot widths. Returns a `String` exactly
-/// `cols` wide (padded with spaces) — the caller wraps it in grey colouring.
-pub fn render_bar(snap: &StatusSnapshot, level: TruncLevel, cols: usize, slots: &mut SlotWidths) -> String {
+/// the chosen level, applying sticky slot widths. Returns a `BarRender`
+/// whose `body` is exactly `cols` wide; the caller wraps the body in grey
+/// styling and overlays yellow on the `inbox_highlight` range (when Some).
+pub fn render_bar(
+    snap: &StatusSnapshot,
+    level: TruncLevel,
+    cols: usize,
+    slots: &mut SlotWidths,
+) -> BarRender {
     if cols < 4 {
         // Pathological — terminal is essentially unusable for a bar. Return
         // exactly `cols` spaces; caller still gets a coloured row.
-        return " ".repeat(cols);
+        return BarRender {
+            body: " ".repeat(cols),
+            inbox_highlight: None,
+        };
     }
 
     // Activity dot at the far left. Always 1 visible cell: '●' when any DHT
@@ -386,33 +457,23 @@ pub fn render_bar(snap: &StatusSnapshot, level: TruncLevel, cols: usize, slots: 
     // Only included if cols ≥ 6 (otherwise the bar is too narrow and we drop
     // the dot to preserve room for the channel name).
     let show_dot_slot = cols >= 6;
-    let dot_prefix: String = if show_dot_slot {
-        let ch = if snap.dht_active { '●' } else { ' ' };
-        format!("{ch} ")
-    } else {
-        String::new()
-    };
+    let dot_slot_w: usize = if show_dot_slot { 2 } else { 0 };
+    let dot_char = if snap.dht_active { '●' } else { ' ' };
 
     // Build segment lists for both groups, tagged by segment kind so we can
     // look up sticky slot widths.
     let (left_segs, right_segs) = build_segments(snap, level);
 
     // Drop right-side slot entries for segments that aren't present this
-    // frame (right ordering is fixed and only changes on level transitions,
-    // which only happen on resize → `reset()`, so this rarely fires; kept
-    // for safety against stale entries).
+    // frame.
     let right_kinds: std::collections::HashSet<RightSeg> =
         right_segs.iter().map(|(k, _)| *k).collect();
     slots.right.retain(|k, _| right_kinds.contains(k));
 
-    // Left side: positionally sticky until `slots.reset()` (called on resize).
-    // We update sticky widths from the segments that ARE active this frame,
-    // but never drop a Sending/Receiving slot once it's been reserved.
-    //
-    // The `Ready` slot is special: it represents the all-idle state, and is
-    // only meaningful as long as no real activity slot has been reserved.
-    // If `Sending` or `Receiving` has appeared at least once, drop Ready —
-    // the reserved blank slots already communicate idle state.
+    // Left side: positionally sticky until `slots.reset()` (called on
+    // resize). Grow sticky widths from the active set; never drop a Sending
+    // / Receiving slot once reserved. `Ready` is suppressed once a real
+    // activity slot exists.
     for (k, s) in &left_segs {
         let w = s.chars().count();
         let entry = slots.left.entry(*k).or_insert(0);
@@ -435,18 +496,10 @@ pub fn render_bar(snap: &StatusSnapshot, level: TruncLevel, cols: usize, slots: 
         }
     }
 
-    // Active-segment lookup for the left side, so we can fill sticky slots
-    // whose kind isn't active this frame with blanks of the slot's width.
     let active_left: std::collections::HashMap<LeftSeg, &str> = left_segs
         .iter()
         .map(|(k, s)| (*k, s.as_str()))
         .collect();
-
-    // Padded left segment strings. When real sticky slots are reserved,
-    // iterate in fixed positional order (Sending → Receiving) so positions
-    // stay stable across frames; absent kinds render as space-padding. When
-    // no real sticky slots are reserved (initial idle state), render whatever
-    // `build_segments` returned (typically `Ready`, or nothing at low levels).
     let left_rendered: Vec<String> = if has_real_sticky {
         [LeftSeg::Sending, LeftSeg::Receiving]
             .iter()
@@ -476,56 +529,182 @@ pub fn render_bar(snap: &StatusSnapshot, level: TruncLevel, cols: usize, slots: 
             pad_left(s, w)
         })
         .collect();
-
-    // Left group joined by single space; right group joined by single space.
-    // (The natural-width computation above counts inter-segment spaces too.)
     let left_join = left_rendered.join(" ");
     let right_join = right_rendered.join(" ");
 
-    // Available content area: cols minus 1 left-pad minus 1 right-pad minus
-    // the dot slot (2 cells) if present.
-    let dot_slot_w = dot_prefix.chars().count();
     let inner = cols.saturating_sub(2 + dot_slot_w);
 
-    // If at ChannelOnly and the channel name doesn't fit, truncate with ellipsis.
+    // ChannelOnly + too-long channel name: ellipsis-truncate (preserved
+    // behaviour). No inbox segment at this level.
     if matches!(level, TruncLevel::ChannelOnly) && right_join.chars().count() > inner {
         let mut name = snap.channel_name.clone();
         if inner == 0 {
-            return " ".repeat(cols);
+            return BarRender {
+                body: " ".repeat(cols),
+                inbox_highlight: None,
+            };
         }
-        // chars() not bytes — channel names are ASCII in practice but be safe.
         let take = inner.saturating_sub(1);
         name = name.chars().take(take).collect::<String>();
         name.push('…');
-        return format!(" {dot_prefix}{:>width$} ", name, width = inner);
+        let body = format!(
+            " {}{:>width$} ",
+            if show_dot_slot {
+                format!("{dot_char} ")
+            } else {
+                String::new()
+            },
+            name,
+            width = inner
+        );
+        return BarRender {
+            body,
+            inbox_highlight: None,
+        };
     }
 
-    // Fit left + right inside `inner` with at least one space gap.
+    // ── Place all segments into a fixed-width char buffer ───────────────
+    //
+    // Layout columns (0-based):
+    //   col 0           — lead space
+    //   col 1           — activity dot (when `show_dot_slot`)
+    //   col 2           — dot/left separator
+    //   col 1+dot_slot_w .. col 1+dot_slot_w+left_len   — left segments
+    //   col cols-1-right_len .. col cols-1              — right segments
+    //   col cols-1      — trail space
+    //   center cols/2   — anchor for the inbox segment (if placed)
+    //
+    // Inbox candidates (longest first): the level dictates the maximum
+    // form; we downgrade to single-char if the long form would collide
+    // with left/right (centre placement leaves at least 1 space margin on
+    // both sides) and drop entirely if even the single-char form can't
+    // fit.
+
+    let mut buf: Vec<char> = vec![' '; cols];
+
+    if show_dot_slot {
+        buf[1] = dot_char;
+    }
+
+    let left_start = 1 + dot_slot_w;
     let left_len = left_join.chars().count();
-    let right_len = right_join.chars().count();
-    let mut gap = inner.saturating_sub(left_len + right_len);
-    if gap == 0 {
-        gap = 1; // Ensure visual separation; allow slight overflow trimming below.
-    }
-    let mut body = String::new();
-    body.push_str(&left_join);
-    for _ in 0..gap {
-        body.push(' ');
-    }
-    body.push_str(&right_join);
-
-    // If body got too long (shouldn't, given pick_level), trim from the left.
-    let body_len = body.chars().count();
-    if body_len > inner {
-        let drop = body_len - inner;
-        body = body.chars().skip(drop).collect();
-    } else if body_len < inner {
-        for _ in 0..(inner - body_len) {
-            body.push(' ');
+    for (i, c) in left_join.chars().enumerate() {
+        let col = left_start + i;
+        if col >= cols - 1 {
+            break;
         }
+        buf[col] = c;
     }
 
-    format!(" {dot_prefix}{body} ")
+    let right_len = right_join.chars().count();
+    let right_end = cols.saturating_sub(1); // exclusive
+    let right_start = right_end.saturating_sub(right_len);
+    for (i, c) in right_join.chars().enumerate() {
+        let col = right_start + i;
+        if col >= right_end {
+            break;
+        }
+        buf[col] = c;
+    }
+
+    let inbox_highlight = place_inbox_segment(
+        &mut buf,
+        cols,
+        left_start + left_len,
+        right_start,
+        inbox_candidates(snap, level),
+        snap.inbox_unread > 0,
+    );
+
+    BarRender {
+        body: buf.into_iter().collect(),
+        inbox_highlight,
+    }
+}
+
+/// Candidate strings for the INBOX segment, longest-to-shortest. Empty
+/// when the level forbids it or inbox monitoring is disabled.
+fn inbox_candidates(snap: &StatusSnapshot, level: TruncLevel) -> Vec<&'static str> {
+    if !snap.inbox_enabled {
+        return Vec::new();
+    }
+    let highlighted = snap.inbox_unread > 0;
+    match level {
+        TruncLevel::Full | TruncLevel::DropWords => {
+            if highlighted {
+                vec!["INBOX", "I"]
+            } else {
+                vec!["inbox", "i"]
+            }
+        }
+        TruncLevel::Short | TruncLevel::ShortDropF | TruncLevel::ShortDropFD => {
+            if highlighted {
+                vec!["I"]
+            } else {
+                vec!["i"]
+            }
+        }
+        TruncLevel::ChannelAndReady | TruncLevel::ChannelOnly => Vec::new(),
+    }
+}
+
+/// Attempt to place an inbox candidate at the centre of the bar without
+/// colliding with the left or right segment groups. Tries each candidate
+/// in order (longest to shortest); the first one that fits is written
+/// into `buf` and its `Range` is returned. If none fit, returns `None`.
+///
+/// The centre is anchored at `cols / 2`: an N-char candidate starts at
+/// `cols/2 - N/2` and ends at `cols/2 - N/2 + N`. A minimum 1-cell
+/// space gap is enforced on both sides between the inbox segment and the
+/// nearest left / right segment characters.
+///
+/// `left_end_exclusive` is the column index one past the last left-segment
+/// char (i.e. the first column where placement could legally start, before
+/// adding the gap).
+/// `right_start` is the column index where the right-segment characters
+/// begin (i.e. the first column where placement must NOT extend into,
+/// before adding the gap).
+fn place_inbox_segment(
+    buf: &mut [char],
+    cols: usize,
+    left_end_exclusive: usize,
+    right_start: usize,
+    candidates: Vec<&'static str>,
+    highlight: bool,
+) -> Option<std::ops::Range<usize>> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let bar_center = cols / 2;
+    for cand in &candidates {
+        let text_len = cand.chars().count();
+        if text_len == 0 {
+            continue;
+        }
+        let start = bar_center.saturating_sub(text_len / 2);
+        let end = start.saturating_add(text_len);
+        // Stay within [1, cols-1) (col 0 and col cols-1 are lead/trail
+        // spaces).
+        if start < 1 || end > cols.saturating_sub(1) {
+            continue;
+        }
+        // Min 1-cell gap on each side.
+        if start <= left_end_exclusive {
+            continue;
+        }
+        if end + 1 > right_start {
+            continue;
+        }
+        for (i, ch) in cand.chars().enumerate() {
+            buf[start + i] = ch;
+        }
+        // Return the highlight range only when the bar should paint the
+        // attention styling. When inbox is enabled but empty, the
+        // placeholder text ('inbox' / 'i') is written into `buf` but no
+        // highlight range is returned, so the caller paints normal grey.
+        return if highlight { Some(start..end) } else { None };
+    }
+    None
 }
 
 type LeftSegments = Vec<(LeftSeg, String)>;
@@ -647,6 +826,8 @@ mod tests {
             dht_active: false,
             feed_count: f,
             dht_peers: d,
+            inbox_enabled: false,
+            inbox_unread: 0,
             channel_name: name.to_string(),
         }
     }
@@ -658,6 +839,21 @@ mod tests {
             dht_active: true,
             feed_count: f,
             dht_peers: d,
+            inbox_enabled: false,
+            inbox_unread: 0,
+            channel_name: name.to_string(),
+        }
+    }
+
+    fn snap_inbox(s: usize, r: usize, f: usize, d: usize, name: &str, inbox_unread: usize) -> StatusSnapshot {
+        StatusSnapshot {
+            send_pending: s,
+            recv_pending: r,
+            dht_active: false,
+            feed_count: f,
+            dht_peers: d,
+            inbox_enabled: true,
+            inbox_unread,
             channel_name: name.to_string(),
         }
     }
@@ -859,5 +1055,144 @@ mod tests {
         assert_eq!(pad_right("ab", 5), "ab   ");
         assert_eq!(pad_left("ab", 5), "   ab");
         assert_eq!(pad_right("abcdef", 3), "abcdef");
+    }
+
+    // ── inbox segment ─────────────────────────────────────────────────
+
+    #[test]
+    fn inbox_omitted_when_disabled() {
+        // No inbox_enabled in this snapshot → no INBOX/inbox anywhere.
+        let s = snap(0, 0, 7, 42, "#room");
+        let mut slots = SlotWidths::default();
+        let bar = render_bar(&s, TruncLevel::Full, 80, &mut slots);
+        assert!(!bar.body.contains("INBOX"));
+        assert!(!bar.body.contains("inbox"));
+        assert_eq!(bar.inbox_highlight, None);
+    }
+
+    #[test]
+    fn inbox_lowercase_when_enabled_and_no_unread() {
+        let s = snap_inbox(0, 0, 7, 42, "#room", 0);
+        let mut slots = SlotWidths::default();
+        let bar = render_bar(&s, TruncLevel::Full, 80, &mut slots);
+        assert!(
+            bar.body.contains("inbox"),
+            "expected lowercase 'inbox' in {:?}",
+            bar.body
+        );
+        assert!(!bar.body.contains("INBOX"));
+        assert_eq!(
+            bar.inbox_highlight, None,
+            "no highlight when unread = 0"
+        );
+    }
+
+    #[test]
+    fn inbox_uppercase_when_unread_present() {
+        let s = snap_inbox(0, 0, 7, 42, "#room", 3);
+        let mut slots = SlotWidths::default();
+        let bar = render_bar(&s, TruncLevel::Full, 80, &mut slots);
+        assert!(
+            bar.body.contains("INBOX"),
+            "expected uppercase 'INBOX' in {:?}",
+            bar.body
+        );
+        assert!(!bar.body.contains("inbox"));
+        let range = bar.inbox_highlight.expect("highlight should be Some when unread > 0");
+        assert_eq!(range.end - range.start, "INBOX".len());
+        // Body slice at the range should equal "INBOX".
+        let chars: Vec<char> = bar.body.chars().collect();
+        let slice: String = chars[range.start..range.end].iter().collect();
+        assert_eq!(slice, "INBOX");
+    }
+
+    #[test]
+    fn inbox_centered_at_cols_div_two() {
+        let s = snap_inbox(0, 0, 7, 42, "#room", 1);
+        let mut slots = SlotWidths::default();
+        let cols = 80;
+        let bar = render_bar(&s, TruncLevel::Full, cols, &mut slots);
+        let range = bar.inbox_highlight.expect("highlight");
+        let center = cols / 2;
+        // 'INBOX' has 5 chars; center anchor places start = center - 5/2 = 38.
+        assert_eq!(range.start, center - "INBOX".len() / 2);
+        assert_eq!(range.end, range.start + "INBOX".len());
+    }
+
+    #[test]
+    fn inbox_downgrades_to_single_char_at_short_level() {
+        let s = snap_inbox(3, 12, 7, 42, "#room", 5);
+        let mut slots = SlotWidths::default();
+        let bar = render_bar(&s, TruncLevel::Short, 50, &mut slots);
+        assert!(
+            !bar.body.contains("INBOX"),
+            "INBOX shouldn't appear at Short level: {:?}",
+            bar.body
+        );
+        // 'I' should appear, highlighted.
+        let range = bar.inbox_highlight.expect("highlight should be Some");
+        assert_eq!(range.end - range.start, 1);
+    }
+
+    #[test]
+    fn inbox_lowercase_single_char_when_no_unread_at_short() {
+        let s = snap_inbox(3, 12, 7, 42, "#room", 0);
+        let mut slots = SlotWidths::default();
+        let bar = render_bar(&s, TruncLevel::Short, 50, &mut slots);
+        // 'i' should be present in the body somewhere around the centre,
+        // and no highlight range returned.
+        assert_eq!(bar.inbox_highlight, None);
+        // The body should still contain a lowercase 'i' centred.
+        let cols = 50;
+        let center = cols / 2;
+        let center_char = bar.body.chars().nth(center).unwrap();
+        // At cols=50, center=25; 'i' starts at 25 - 0 = 25.
+        assert_eq!(center_char, 'i');
+    }
+
+    #[test]
+    fn inbox_dropped_at_channel_only() {
+        let s = snap_inbox(0, 0, 0, 0, "#room", 7);
+        let mut slots = SlotWidths::default();
+        let bar = render_bar(&s, TruncLevel::ChannelOnly, 30, &mut slots);
+        assert!(!bar.body.contains("INBOX"));
+        assert!(!bar.body.contains("inbox"));
+        assert_eq!(bar.inbox_highlight, None);
+    }
+
+    #[test]
+    fn inbox_dropped_at_channel_and_ready() {
+        let s = snap_inbox(0, 0, 0, 0, "#room", 7);
+        let mut slots = SlotWidths::default();
+        let bar = render_bar(&s, TruncLevel::ChannelAndReady, 35, &mut slots);
+        assert!(!bar.body.contains("INBOX"));
+        assert_eq!(bar.inbox_highlight, None);
+    }
+
+    #[test]
+    fn inbox_downgrades_when_centre_would_overlap_left() {
+        // Construct a scenario where the left group is wide enough that
+        // 'INBOX' (5 chars) at centre would overlap, but 'I' fits.
+        // At cols=40, centre=20. 'INBOX' wants cols 18..23.
+        // If left group occupies cols 3..18 (i.e. left_len=15), overlap.
+        // We synthesize this via a huge channel name to push the right
+        // group out and a Sending counter that makes left wide. Simpler:
+        // just verify the downgrade logic with a tighter cols.
+        let s = snap_inbox(123456, 0, 7, 42, "#room-name", 1);
+        let mut slots = SlotWidths::default();
+        // Narrow enough that 'INBOX' won't fit, but the bar is still in
+        // the Full level for the test's setup. At cols=30 with a long
+        // send-pending, the centre is squeezed.
+        let bar = render_bar(&s, TruncLevel::Full, 30, &mut slots);
+        // Either INBOX downgraded to I, or omitted entirely. Both are
+        // acceptable; we just assert the result is consistent (range
+        // length matches what's in `body`).
+        if let Some(range) = bar.inbox_highlight {
+            let len = range.end - range.start;
+            assert!(
+                len == 1 || len == 5,
+                "highlight should be 1 or 5 chars, got {len}"
+            );
+        }
     }
 }

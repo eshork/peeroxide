@@ -26,6 +26,8 @@ pub enum SlashCommand {
     Friend(String),
     /// `/unfriend <name>` — remove from friends.
     Unfriend(String),
+    /// `/inbox` — dump unread invites to the chat region as system notices.
+    Inbox,
     /// `/foo` — unknown command. Stored verbatim (without leading `/`) so the
     /// dispatcher can print a useful message.
     Unknown(String),
@@ -83,6 +85,7 @@ pub fn parse(line: &str) -> Option<SlashCommand> {
                 SlashCommand::Unfriend(arg.to_string())
             }
         }
+        "inbox" => SlashCommand::Inbox,
         other => SlashCommand::Unknown(other.to_string()),
     };
     Some(cmd)
@@ -90,7 +93,7 @@ pub fn parse(line: &str) -> Option<SlashCommand> {
 
 /// One-line help text listing every command.
 pub fn help_text() -> &'static str {
-    "available commands: /help, /quit (alias /exit), /ignore [name], /unignore <name>, /friend [name], /unfriend <name>"
+    "available commands: /help, /quit (alias /exit), /ignore [name], /unignore <name>, /friend [name], /unfriend <name>, /inbox"
 }
 
 #[cfg(test)]
@@ -149,6 +152,14 @@ mod tests {
             parse("/unfriend alice"),
             Some(SlashCommand::Unfriend("alice".to_string()))
         );
+    }
+
+    #[test]
+    fn inbox_no_args() {
+        assert_eq!(parse("/inbox"), Some(SlashCommand::Inbox));
+        assert_eq!(parse("  /inbox  "), Some(SlashCommand::Inbox));
+        // Args after /inbox are currently ignored — only the verb is meaningful.
+        assert_eq!(parse("/inbox extra"), Some(SlashCommand::Inbox));
     }
 
     #[test]

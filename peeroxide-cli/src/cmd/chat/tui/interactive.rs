@@ -527,18 +527,64 @@ fn paint_status_bar(
         )?;
         out.write_all(body.as_bytes())?;
     } else {
-        // Normal status bar (grey).
+        // Normal status bar (grey background) with optional yellow-bg
+        // overlay on the INBOX segment.
         let snap = status.snapshot();
         let level = status::pick_level(&snap, cols as usize);
         let bar = status::render_bar(&snap, level, cols as usize, slots);
-        queue!(
-            out,
-            SetBackgroundColor(Color::Grey),
-            SetForegroundColor(Color::Black),
-        )?;
-        out.write_all(bar.as_bytes())?;
+        paint_bar_body(out, &bar)?;
     }
     queue!(out, ResetColor)?;
+    Ok(())
+}
+
+/// Write a `BarRender` to stdout: grey background everywhere, except the
+/// optional `inbox_highlight` byte range which is painted with the yellow
+/// background + black foreground "attention" styling.
+fn paint_bar_body(out: &mut Stdout, bar: &status::BarRender) -> std::io::Result<()> {
+    let body = &bar.body;
+    queue!(
+        out,
+        SetBackgroundColor(Color::Grey),
+        SetForegroundColor(Color::Black),
+    )?;
+    match &bar.inbox_highlight {
+        None => {
+            out.write_all(body.as_bytes())?;
+        }
+        Some(range) => {
+            // body is ASCII for the bar's structural chars; INBOX/inbox/I/i
+            // are ASCII too. Char index == byte index in this context — we
+            // verify by walking and slicing on char boundaries to be safe
+            // against any non-ASCII (e.g. the '●' dot or '…' ellipsis).
+            let mut byte_start = None;
+            let mut byte_end = None;
+            for (char_idx, (b_idx, _)) in body.char_indices().enumerate() {
+                if char_idx == range.start {
+                    byte_start = Some(b_idx);
+                }
+                if char_idx == range.end {
+                    byte_end = Some(b_idx);
+                    break;
+                }
+            }
+            let bs = byte_start.unwrap_or(0);
+            let be = byte_end.unwrap_or(body.len());
+            out.write_all(&body.as_bytes()[..bs])?;
+            queue!(
+                out,
+                SetBackgroundColor(Color::Yellow),
+                SetForegroundColor(Color::Black),
+            )?;
+            out.write_all(&body.as_bytes()[bs..be])?;
+            queue!(
+                out,
+                SetBackgroundColor(Color::Grey),
+                SetForegroundColor(Color::Black),
+            )?;
+            out.write_all(&body.as_bytes()[be..])?;
+        }
+    }
     Ok(())
 }
 

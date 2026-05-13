@@ -80,6 +80,19 @@ pub struct JoinArgs {
     /// finishes when the file does).
     #[arg(long)]
     pub stay_after_eof: bool,
+
+    /// Disable the background inbox monitor. By default `chat join` polls
+    /// the same inbox topics as `chat inbox` so an INBOX indicator can
+    /// surface on the status bar; `/inbox` then dumps the unread invites
+    /// to the chat region. When disabled, the inbox segment is omitted
+    /// from the bar entirely and `/inbox` is a no-op.
+    #[arg(long)]
+    pub no_inbox: bool,
+
+    /// Inbox polling interval in seconds. Matches the chat inbox CLI
+    /// default; the docs (CHAT.md §8.5) suggest 15-30 s.
+    #[arg(long, default_value = "15")]
+    pub inbox_poll_interval: u64,
 }
 
 pub async fn run(args: JoinArgs, cfg: &ResolvedConfig, line_mode: bool) -> i32 {
@@ -298,6 +311,51 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig, line_mode: bool) -> i32 {
         })
     };
 
+    // Inbox monitor — polls inbox topics on the same cadence as the
+    // `chat inbox` CLI command. When enabled (default), the status bar
+    // shows an `inbox` / `INBOX` indicator (yellow when there are unread
+    // invites) and `/inbox` dumps the unread invites to the chat region.
+    //
+    // `InboxMonitor` uses interior mutability behind a brief-lock
+    // std::sync::Mutex so the monitor's polling loop never blocks the
+    // /inbox handler: the lock is released across the DHT scan and only
+    // reacquired briefly to merge results.
+    let inbox_state: Option<Arc<crate::cmd::chat::inbox_monitor::InboxMonitor>> =
+        if !args.no_inbox {
+            let cached_users = crate::cmd::chat::known_users::load_shared_users().unwrap_or_default();
+            Some(Arc::new(
+                crate::cmd::chat::inbox_monitor::InboxMonitor::new(cached_users),
+            ))
+        } else {
+            None
+        };
+    status.set_inbox_enabled(inbox_state.is_some());
+
+    let inbox_handle: Option<JoinHandle<()>> = inbox_state.as_ref().map(|m| {
+        let handle = handle.clone();
+        let id_kp = id_keypair.clone();
+        let status = status.clone();
+        let monitor = m.clone();
+        let interval_secs = args.inbox_poll_interval.max(1);
+        tokio::spawn(async move {
+            let mut tick =
+                tokio::time::interval(Duration::from_secs(interval_secs));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Burn the immediate first tick — first real poll happens
+            // after the interval expires so we don't pile a sync burst on
+            // top of session startup.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                // No outer lock held across the DHT scan; poll_once does
+                // its own brief-lock snapshot + lock-free DHT + brief-lock
+                // merge internally.
+                let _ = monitor.poll_once(&handle, &id_kp).await;
+                status.set_inbox_unread(monitor.unread_count());
+            }
+        })
+    });
+
     let mut backlog_done = false;
     let friends_reload_interval = tokio::time::Duration::from_secs(30);
     let mut friends_reload_tick = tokio::time::interval(friends_reload_interval);
@@ -394,6 +452,8 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig, line_mode: bool) -> i32 {
                             &args.profile,
                             ui.as_ref(),
                             &ignore,
+                            &status,
+                            inbox_state.as_ref(),
                         ).await {
                             // dispatch_slash returns true for /quit etc.
                             ui.render_system("*** shutting down");
@@ -468,6 +528,9 @@ pub async fn run(args: JoinArgs, cfg: &ResolvedConfig, line_mode: bool) -> i32 {
     if let Some(h) = friend_refresh_handle {
         h.abort();
     }
+    if let Some(h) = inbox_handle {
+        h.abort();
+    }
     dht_status_handle.abort();
 
     // Restore terminal before final destroy so any error messages from the
@@ -485,6 +548,8 @@ async fn dispatch_slash(
     profile_name: &str,
     ui: &dyn ChatUi,
     ignore: &IgnoreSet,
+    status: &StatusState,
+    inbox_state: Option<&Arc<crate::cmd::chat::inbox_monitor::InboxMonitor>>,
 ) -> bool {
     use crate::cmd::chat::resolve_recipient as resolve_pubkey;
     match cmd {
@@ -561,6 +626,33 @@ async fn dispatch_slash(
                 Err(e) => ui.render_system(&format!("*** /unfriend: {e}")),
             },
             Err(e) => ui.render_system(&format!("*** /unfriend: {e}")),
+        },
+        SlashCommand::Inbox => match inbox_state {
+            None => ui.render_system(
+                "*** inbox monitoring disabled (started with --no-inbox); restart without that flag to enable",
+            ),
+            Some(monitor) => {
+                // Both calls take brief internal locks — never block on a
+                // DHT scan.
+                let drained = monitor.take_unread();
+                let known = monitor.known_users().to_vec();
+                status.set_inbox_unread(0);
+                if drained.is_empty() {
+                    ui.render_system("*** inbox: no new invites");
+                } else {
+                    let n = drained.len();
+                    ui.render_system(&format!("*** inbox: {n} new invite(s)"));
+                    for inv in &drained {
+                        for line in crate::cmd::chat::inbox_monitor::format_invite_lines(
+                            inv,
+                            profile_name,
+                            &known,
+                        ) {
+                            ui.render_system(&line);
+                        }
+                    }
+                }
+            }
         },
         SlashCommand::Unknown(s) => {
             ui.render_system(&format!("*** unknown command: /{s}"));

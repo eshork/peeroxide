@@ -160,6 +160,27 @@ pub struct DecodedInvite {
     pub payload: Vec<u8>,
 }
 
+impl std::fmt::Debug for DecodedInvite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodedInvite")
+            .field("sender_pubkey", &hex::encode(self.sender_pubkey))
+            .field("invite_type", &format_args!("0x{:02x}", self.invite_type))
+            .field("payload_len", &self.payload.len())
+            .finish()
+    }
+}
+
+impl Clone for DecodedInvite {
+    fn clone(&self) -> Self {
+        Self {
+            sender_pubkey: self.sender_pubkey,
+            next_feed_pubkey: self.next_feed_pubkey,
+            invite_type: self.invite_type,
+            payload: self.payload.clone(),
+        }
+    }
+}
+
 pub fn decrypt_and_verify_invite(
     encrypted_data: &[u8],
     invite_feed_pubkey: &[u8; 32],
