@@ -125,25 +125,26 @@ impl<'a> NameResolver<'a> {
     pub fn resolve(&self, pubkey: &[u8; 32]) -> ResolvedName {
         let shortkey = hex::encode(pubkey)[..8].to_string();
 
-        if let Some(friend) = self.friends.iter().find(|f| f.pubkey == *pubkey)
-            && let Some(alias) = friend.alias.as_ref()
-            && !alias.is_empty()
-        {
-            return ResolvedName {
-                name: alias.clone(),
-                shortkey,
-                source: NameSource::FriendAlias,
-            };
+        if let Some(friend) = self.friends.iter().find(|f| f.pubkey == *pubkey) {
+            if let Some(alias) = friend.alias.as_ref() {
+                if !alias.is_empty() {
+                    return ResolvedName {
+                        name: alias.clone(),
+                        shortkey,
+                        source: NameSource::FriendAlias,
+                    };
+                }
+            }
         }
 
-        if let Some(user) = self.known_users.iter().find(|u| u.pubkey == *pubkey)
-            && !user.screen_name.is_empty()
-        {
-            return ResolvedName {
-                name: user.screen_name.clone(),
-                shortkey,
-                source: NameSource::KnownScreenName,
-            };
+        if let Some(user) = self.known_users.iter().find(|u| u.pubkey == *pubkey) {
+            if !user.screen_name.is_empty() {
+                return ResolvedName {
+                    name: user.screen_name.clone(),
+                    shortkey,
+                    source: NameSource::KnownScreenName,
+                };
+            }
         }
 
         ResolvedName {

@@ -830,10 +830,10 @@ async fn test_chat_join_piped_stdin_auto_line_mode() {
             let mut live_tx = Some(live_tx);
             for line in stderr_reader.lines() {
                 let line = line.unwrap_or_default();
-                if line.contains("— live —")
-                    && let Some(tx) = live_tx.take()
-                {
-                    let _ = tx.send(true);
+                if line.contains("— live —") {
+                    if let Some(tx) = live_tx.take() {
+                        let _ = tx.send(true);
+                    }
                 }
                 // After signalling live, keep reading & discarding so the
                 // child's stderr pipe doesn't fill or close.

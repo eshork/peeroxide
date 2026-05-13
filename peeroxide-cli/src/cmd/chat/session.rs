@@ -201,20 +201,21 @@ pub async fn run(config: SessionConfig, cfg: &ResolvedConfig) -> i32 {
     };
     if let (Some(dm_extras), Some(inv_kp), Some(fs)) =
         (dm.as_ref(), invite_feed_keypair.as_ref(), feed_state.as_ref())
-        && let Some(msg_text) = dm_extras.initial_message.as_ref()
     {
-        if let Err(e) = inbox::send_dm_invite(
-            &handle,
-            inv_kp,
-            &id_keypair,
-            &dm_extras.recipient_pubkey,
-            &channel_key,
-            &fs.feed_keypair.public_key,
-            msg_text,
-        )
-        .await
-        {
-            ui.render_system(&format!("warning: invite send failed: {e}"));
+        if let Some(msg_text) = dm_extras.initial_message.as_ref() {
+            if let Err(e) = inbox::send_dm_invite(
+                &handle,
+                inv_kp,
+                &id_keypair,
+                &dm_extras.recipient_pubkey,
+                &channel_key,
+                &fs.feed_keypair.public_key,
+                msg_text,
+            )
+            .await
+            {
+                ui.render_system(&format!("warning: invite send failed: {e}"));
+            }
         }
     }
 

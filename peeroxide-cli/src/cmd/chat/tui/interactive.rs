@@ -385,9 +385,11 @@ async fn render_loop(
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
                 // Auto-expire the transient overlay if its deadline has
                 // passed. Triggers a repaint of the normal bar.
-                if let Some((_, expires_at)) = transient_overlay
-                    && std::time::Instant::now() >= expires_at
-                {
+                let overlay_expired = matches!(
+                    transient_overlay,
+                    Some((_, expires_at)) if std::time::Instant::now() >= expires_at
+                );
+                if overlay_expired {
                     transient_overlay = None;
                     let editor_snap = editor.read().await.clone();
                     paint_status_and_input(
