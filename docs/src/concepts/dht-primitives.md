@@ -58,24 +58,37 @@ Originally designed as peer-discovery primitives — store structured peer recor
 
 ### The Rendezvous Pattern
 
-Because `announce` is multi-writer and `lookup` returns all announcers up to the per-node cap, the announcer's 32-byte `public_key` can be treated as a *pointer* rather than as an identity. The convention used inside `peeroxide-cli` is:
+An announce "topic" is just a 32-byte address. There's no constraint that it correspond to a real peer-discoverable resource — it can be:
 
-1. Sender derives a topic key from some shared agreement (channel key, recipient pubkey, dead-drop root pubkey, …) plus an epoch and bucket.
-2. Sender generates an ephemeral keypair `k`, publishes the actual record (a feed pointer, an invite, a need-list, …) via `mutable_put(k, value, seq)`, and `announce`s `k.public_key` on the topic.
-3. Reader does `lookup(topic)` to discover the set of pubkeys currently active on that topic, then `mutable_get`s each one to retrieve the corresponding record.
+- a hash of an application-meaningful key,
+- a deterministic derivation from any shared input (a string, a public key, a secret, a counter, …) via BLAKE2b-256 or any other 32-byte hash,
+- or even a random value, if both writer and reader can agree on it out-of-band.
 
-This sidesteps `mutable_put`'s single-writer-per-pubkey limitation: a topic can host many simultaneous writers, each with its own `mutable_put` slot. It also lets the TTL of the rendezvous (20 minutes on the announce record) and the TTL of the payload (20 minutes on the mutable record) be managed independently, and lets readers parallelize the work — one `lookup` followed by N parallel `mutable_get`s.
+This makes `announce` / `lookup` a generic rendezvous primitive: anyone who can independently arrive at the same 32-byte topic can find every other announcer at it. And because the only structured field the protocol actually requires the announcer to publish is a 32-byte `public_key`, that pubkey can be treated as a **pointer** — typically to a `mutable_put` slot owned by that same ephemeral keypair — rather than as a literal peer identity.
 
-Concrete instances used in this workspace:
+The generic three-step pattern is:
 
-| Topic derivation | Announcer publishes a pubkey for | Reader then `mutable_get`s |
-|---|---|---|
-| `chat::crypto::announce_topic(channel_key, epoch, bucket)` | The session's feed keypair | The `FeedRecord` (newest message hashes for that feed) |
-| `chat::crypto::inbox_topic(hash(recipient_pk), epoch, bucket)` | The sender's ephemeral invite-feed keypair | The `InviteRecord` (encrypted DM or channel invite) |
-| `dd::v2::keys::need_topic(root_pk)` | A receiver's ephemeral need-feed keypair | The encoded need-list (missing-range `[start, end)` entries) |
-| `dd::v2::keys::ack_topic(root_pk)` | A receiver's ephemeral ack keypair | (Nothing — the sender just counts unique announcer pubkeys to track pickups) |
+1. **Derive a topic** — any agreed-upon function `f(...) -> [u8;32]`. Writer and reader must arrive at the same value.
+2. **Writer** — generate an ephemeral keypair `k`, publish the actual record at `mutable_put(k, value, seq)`, and `announce` `k.public_key` on the topic. The `relay_addresses` field carries no meaning and is typically left empty.
+3. **Reader** — `lookup` the topic, then `mutable_get` each returned pubkey to retrieve the actual records in parallel.
 
-In all of these, the `relay_addresses` field of `HyperPeer` is left empty — only the pubkey carries meaning. Epoch+bucket rotation in the chat and inbox cases bounds an observer's ability to do long-term traffic analysis against any single topic.
+This sidesteps `mutable_put`'s one-record-per-pubkey limitation: a single topic can host many simultaneous writers, each with its own independent `mutable_put` slot. The TTLs on the rendezvous record and on the payload record are also independent, so a writer can refresh them on different cadences.
+
+### Increasing Footprint with Epochs and Buckets
+
+The per-node cap is **20 announcers per topic per node**. Two complementary techniques extend that footprint by embedding deterministic salt into the topic derivation:
+
+- **Epochs** — incorporate a quantized timestamp (for example, `floor(unix_secs / 60)`). The topic rotates over time automatically; writer and reader both use the current epoch when deriving the topic, and readers typically scan a small backward window so announcers near a boundary aren't missed. Epoch rotation also bounds how long an observer can correlate a single topic.
+- **Buckets** — incorporate a small integer `0..N`. Writers hash to one of N possible topics (deterministically or at random); readers scan all N in parallel to find every announcer.
+
+Combining the two yields `epoch_window × bucket_count` distinct topics for the same logical rendezvous — e.g. a 2-epoch window with 4 buckets gives an effective capacity of `8 × 20 = 160` announcers per node, all discoverable in 8 parallel lookups.
+
+### Concrete uses in this workspace
+
+The chat and dd v2 subsystems each lean on this pattern. Their exact topic-derivation rules, epoch/bucket counts, and write/read flows are documented alongside the rest of their wire formats and protocols:
+
+- chat — see [Wire Format](../chat/wire-format.md) and [Protocol](../chat/protocol.md).
+- dead drop v2 — see [Architecture](../dd/architecture.md) and [Wire Format](../dd/format.md).
 
 ## TTL (Time-To-Live)
 
