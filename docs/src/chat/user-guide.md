@@ -95,9 +95,9 @@ peeroxide chat inbox [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `--profile <name>` | `default` | Use a specific profile. |
-| `--poll-interval <secs>` | `15` | Interval between inbox scans. |
-| `--no-nexus` | | Skip nexus publication. |
-| `--no-friends` | | Skip friend refresh. |
+| `--poll-interval <secs>` | `15` | Interval between inbox scans. Values below `1` are clamped to `1`. |
+| `--no-nexus` | | Accepted for flag-surface parity with `chat join` / `chat dm`, but has no effect on `chat inbox` (which does not run a nexus publisher). |
+| `--no-friends` | | Accepted for flag-surface parity with `chat join` / `chat dm`, but has no effect on `chat inbox` (which does not run a friend refresh task). |
 
 ## Profile Management: whoami and profiles
 

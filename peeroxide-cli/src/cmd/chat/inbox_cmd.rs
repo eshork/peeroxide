@@ -68,7 +68,8 @@ pub async fn run(args: InboxArgs, cfg: &ResolvedConfig) -> i32 {
     let cached_users = known_users::load_shared_users().unwrap_or_default();
     let monitor = InboxMonitor::new(cached_users);
 
-    let poll_interval = tokio::time::Duration::from_secs(args.poll_interval);
+    let poll_interval_secs = args.poll_interval.max(1);
+    let poll_interval = tokio::time::Duration::from_secs(poll_interval_secs);
     let mut interval = tokio::time::interval(poll_interval);
 
     loop {

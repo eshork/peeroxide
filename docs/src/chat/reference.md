@@ -55,8 +55,8 @@ Same session-flag surface as `join`, **except** `--group` and `--keyfile` are no
 
 ### Subcommand: inbox
 - `--profile <name>`: Profile to use (default: `default`).
-- `--poll-interval <secs>`: Polling interval (default: `15`).
-- `--no-nexus`, `--no-friends`: Skip those background refresh tasks.
+- `--poll-interval <secs>`: Polling interval (default: `15`). Values below `1` are clamped to `1`.
+- `--no-nexus`, `--no-friends`: Accepted for flag-surface parity with `chat join` / `chat dm` but are no-ops here (the inbox CLI does not run nexus / friend background tasks).
 
 ### Subcommand: whoami
 - `--profile <name>`: Profile to inspect (default: `default`).
