@@ -44,12 +44,20 @@ jobs:
       - name: Build native binary
         run: cargo build --release --locked --bin peeroxide -p peeroxide-cli
       - name: Generate man pages
-        # `peeroxide init --man-pages <DIR>` writes roff files into
-        # `<DIR>/man1/<name>.1`, so we pass `man/` here and the binary
-        # creates `man/man1/*.1`.
+        # Capability-detect the man-page command so this workflow can build
+        # both legacy 0.1.0 (`peeroxide --generate-man <DIR>`, flat output)
+        # and modern 0.2.0+ (`peeroxide init --man-pages <DIR>`, which itself
+        # appends `/man1` to the path) without per-version edits.
         run: |
-          mkdir -p man
-          ./target/release/peeroxide init --man-pages man
+          mkdir -p man/man1
+          if ./target/release/peeroxide init --man-pages man 2>/dev/null && [ -f man/man1/peeroxide.1 ]; then
+            echo "Generated via 'init --man-pages' (0.2.0+)"
+          elif ./target/release/peeroxide --generate-man man/man1 2>/dev/null && [ -f man/man1/peeroxide.1 ]; then
+            echo "Generated via '--generate-man' (legacy 0.1.0)"
+          else
+            echo "ERROR: no working man-page generator at this version" >&2
+            exit 1
+          fi
           ls -la man/man1/
       - name: Upload man pages
         uses: actions/upload-artifact@v4
