@@ -1,0 +1,180 @@
+name: Binary Release
+
+# Builds the `peeroxide` CLI binary for four targets on each
+# `peeroxide-cli-v*` tag and attaches the resulting `.tar.gz` + `.sha256`
+# archives to the corresponding GitHub Release (which release-plz creates
+# from `.github/workflows/release.yml`).
+#
+# The Homebrew tap at Rightbracket/homebrew-peeroxide polls these Release
+# assets on its own schedule and opens same-repo bump PRs. This workflow
+# does not touch the tap; it only publishes assets here.
+#
+# Authentication: default GITHUB_TOKEN only. No PATs.
+
+on:
+  push:
+    tags:
+      - 'peeroxide-cli-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish (e.g. peeroxide-cli-v0.2.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binary-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  manpages:
+    name: Generate man pages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: manpages
+      - name: Build native binary
+        run: cargo build --release --locked --bin peeroxide -p peeroxide-cli
+      - name: Generate man pages
+        # Capability-detect the man-page command so this workflow can build
+        # both legacy 0.1.0 (`peeroxide --generate-man <DIR>`, flat output)
+        # and modern 0.2.0+ (`peeroxide init --man-pages <DIR>`, which itself
+        # appends `/man1` to the path) without per-version edits.
+        run: |
+          mkdir -p man/man1
+          if ./target/release/peeroxide init --man-pages man 2>/dev/null && [ -f man/man1/peeroxide.1 ]; then
+            echo "Generated via 'init --man-pages' (0.2.0+)"
+          elif ./target/release/peeroxide --generate-man man/man1 2>/dev/null && [ -f man/man1/peeroxide.1 ]; then
+            echo "Generated via '--generate-man' (legacy 0.1.0)"
+          else
+            echo "ERROR: no working man-page generator at this version" >&2
+            exit 1
+          fi
+          ls -la man/man1/
+      - name: Upload man pages
+        uses: actions/upload-artifact@v4
+        with:
+          name: manpages
+          path: man/
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: manpages
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --locked --bin peeroxide -p peeroxide-cli --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --locked --bin peeroxide -p peeroxide-cli --target ${{ matrix.target }}
+
+      - name: Download man pages
+        uses: actions/download-artifact@v4
+        with:
+          name: manpages
+          path: _man
+
+      - name: Stage artifact
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#peeroxide-cli-v}"
+          STAGE="peeroxide-${VERSION}-${TARGET}"
+          mkdir -p "${STAGE}/man/man1"
+          cp "target/${TARGET}/release/peeroxide" "${STAGE}/"
+          chmod 0755 "${STAGE}/peeroxide"
+          cp LICENSE-MIT LICENSE-APACHE README.md "${STAGE}/"
+          cp _man/man1/*.1 "${STAGE}/man/man1/"
+          tar -czf "${STAGE}.tar.gz" "${STAGE}"
+          shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          echo "Staged ${STAGE}.tar.gz:"
+          tar -tzf "${STAGE}.tar.gz"
+          echo "Checksum:"
+          cat "${STAGE}.tar.gz.sha256"
+          echo "STAGE_NAME=${STAGE}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAGE_NAME }}
+          path: |
+            ${{ env.STAGE_NAME }}.tar.gz
+            ${{ env.STAGE_NAME }}.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Attach to Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: 'peeroxide-*'
+          merge-multiple: true
+
+      - name: List staged files
+        run: |
+          ls -la dist/
+          test "$(ls dist/*.tar.gz       | wc -l)" -eq 4
+          test "$(ls dist/*.tar.gz.sha256 | wc -l)" -eq 4
+
+      - name: Attach assets to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          fail_on_unmatched_files: true
