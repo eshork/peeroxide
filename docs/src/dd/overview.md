@@ -20,7 +20,7 @@ The `dd` command supports two protocol versions:
 | Version | Characteristics | Selection |
 |---------|-----------------|-----------|
 | **V1** | Simple linked-list of mutable records. Limited to 64MB. Sequential fetches. | Explicit via `--v1` on `put`. Auto-detected on `get`. |
-| **V2** | Merkel-tree indexed. Massive capacity. Parallel fetching with need-lists and AIMD congestion control. | Default on `put`. Auto-detected on `get`. |
+| **V2** | Merkle-tree indexed. Massive capacity. Parallel fetching with need-lists and AIMD congestion control. | Default on `put`. Auto-detected on `get`. |
 
 ### Dispatch Rules
 

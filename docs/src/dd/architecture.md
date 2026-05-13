@@ -31,7 +31,7 @@ sequenceDiagram
 
 V1 features sequential fetching with exponential retry logic (1s to 30s) per chunk, bounded by the global timeout.
 
-## Protocol V2: Merkel Tree
+## Protocol V2: Merkle Tree
 
 V2 uses a hierarchical tree structure to enable massive file support and parallel fetching.
 
