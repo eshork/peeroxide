@@ -4,6 +4,8 @@ The `dd` command supports both human-readable terminal output and machine-readab
 
 ## Command Line Flags
 
+In addition to the dd-specific flags shown below, both `dd put` and `dd get` accept the inherited top-level global flags: `--config <FILE>`, `--no-default-config`, `--public`, `--no-public`, `--bootstrap <ADDR>` (repeatable), and `-v` / `--verbose`. These control config file loading, DHT bootstrap node selection, and tracing verbosity; see [init/overview.md → Global CLI Flags](../init/overview.md#global-cli-flags) for the bootstrap-resolution algorithm.
+
 ### `dd put` Flags
 
 | Flag | Default | Description |
