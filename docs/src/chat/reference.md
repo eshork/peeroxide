@@ -73,7 +73,7 @@ Same session-flag surface as `join`, **except** `--group` and `--keyfile` are no
 - `friends refresh`: one-shot DHT refresh; does **not** accept `--profile` and operates on the `default` profile only.
 
 ### Subcommand: nexus
-- `--profile <name>`, `--set-name <name>`, `--set-bio <text>`, `--publish`, `--lookup <pubkey-hex>`, `--daemon`.
+- `--profile <name>`, `--set-name <name>`, `--set-bio <text>`, `--publish`, `--lookup <pubkey-hex>`, `--daemon` (publish every 480 s, refresh **all** friends every 600 s).
 - `--lookup` short-circuits to lookup mode.
 - When at least one of `--set-name` / `--set-bio` is supplied and neither `--publish` nor `--daemon` is set, the setters are written to the profile and the command exits without publishing.
 - When no flags (or only `--profile`) are supplied, the command still performs a single Nexus publish.

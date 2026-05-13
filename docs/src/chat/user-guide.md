@@ -159,7 +159,7 @@ peeroxide chat nexus [flags]
 If `--lookup` is supplied, the command short-circuits to lookup mode. Otherwise, `--set-name` and `--set-bio` are written to the profile first (both are applied in one run). After the setters, behavior is:
 
 - `--publish`: perform a one-shot Nexus publish and exit.
-- `--daemon`: enter the background loop (publish every 480 s, refresh one friend every 600 s).
+- `--daemon`: enter the background loop (publish every 480 s, refresh **all** friends every 600 s).
 - No `--publish` / `--daemon`, but at least one setter was supplied: exit without publishing.
 - No flags at all (or only `--profile`): perform a one-shot Nexus publish and exit.
 
@@ -171,7 +171,7 @@ If `--lookup` is supplied, the command short-circuits to lookup mode. Otherwise,
 | `--set-name <name>` | | Update your screen name (writes the profile's `name` file before publishing). |
 | `--set-bio <text>` | | Update your biography (writes the profile's `bio` file before publishing). |
 | `--publish` | | Publish your Nexus record to the DHT once. |
-| `--daemon` | | Enter a background loop: publish your Nexus every 480s and refresh one friend every 600s. |
+| `--daemon` | | Enter a background loop: publish your Nexus every 480s and refresh **all** friends every 600s. |
 | `--lookup <pubkey>` | | Lookup and print the Nexus information for a specific public key. Short-circuits the rest. |
 
 ## Interactive Usage
@@ -190,7 +190,8 @@ If a message arrives significantly after its timestamp, it is prefixed with `[la
 Display names are resolved with the following precedence:
 1. Friend alias (e.g., `(Bob)`).
 2. Friend's vendor name + screen name (e.g., `(Vendor) <Alice@a1b2c3d4>`).
-3. Non-friend screen name (e.g., `<Alice@a1b2c3d4>`).
-4. Fallback vendor name (e.g., `<Fancy-Tiger@a1b2c3d4>`).
+3. Non-friend with a wire `screen_name` on the message (e.g., `<Alice@a1b2c3d4>`).
+4. Non-friend without a wire `screen_name` but present in the shared `known_users` cache (e.g., `<Cached-Name@a1b2c3d4>`).
+5. Vendor fallback (e.g., `<Fancy-Tiger@a1b2c3d4>`).
 
 A `!` suffix on a name indicates the user is currently in a 300-second cooldown period after a name change.
