@@ -1,9 +1,17 @@
 name: Binary Release
 
-# Builds the `peeroxide` CLI binary for four targets on each
-# `peeroxide-cli-v*` tag and attaches the resulting `.tar.gz` + `.sha256`
-# archives to the corresponding GitHub Release (which release-plz creates
-# from `.github/workflows/release.yml`).
+# Builds the `peeroxide` CLI binary on each `peeroxide-cli-v*` tag and
+# attaches per-platform `.tar.gz` + `.sha256` archives to the GitHub
+# Release that release-plz creates from `.github/workflows/release.yml`.
+#
+# Targets:
+#   - universal-apple-darwin  (lipo'd aarch64 + x86_64; MACOSX_DEPLOYMENT_TARGET=10.15 on the Intel slice)
+#   - x86_64-unknown-linux-gnu (native build)
+#   - aarch64-unknown-linux-gnu (built via `cross`)
+#
+# macOS is built on a single macos-15 runner (arm64 host) to keep queue
+# times low; the x86_64 slice cross-compiles using the SDK shipped with
+# Xcode, then `lipo` merges the two into a single fat binary.
 #
 # The Homebrew tap at Rightbracket/homebrew-peeroxide polls these Release
 # assets on its own schedule and opens same-repo bump PRs. This workflow
@@ -66,25 +74,96 @@ jobs:
           path: man/
           if-no-files-found: error
 
-  build:
+  macos:
+    name: Build universal-apple-darwin
+    needs: manpages
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-universal
+
+      - name: Build aarch64-apple-darwin
+        # Apple Silicon slice. SDK default minimum (macOS 11) is the floor
+        # for arm64 since Apple Silicon never existed on older systems.
+        run: cargo build --release --locked --bin peeroxide -p peeroxide-cli --target aarch64-apple-darwin
+
+      - name: Build x86_64-apple-darwin
+        # Intel slice with a lenient deployment target. 10.15 (Catalina) is
+        # the last widely-supported Intel macOS; older Macs can fall back to
+        # `cargo install`. The env var only applies to the Intel slice; the
+        # arm64 slice keeps its own (newer) minimum, recorded independently
+        # in its LC_BUILD_VERSION.
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+        run: cargo build --release --locked --bin peeroxide -p peeroxide-cli --target x86_64-apple-darwin
+
+      - name: Create universal binary
+        run: |
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/peeroxide \
+            target/x86_64-apple-darwin/release/peeroxide \
+            -output target/universal-apple-darwin/release/peeroxide
+          lipo -info target/universal-apple-darwin/release/peeroxide
+          file    target/universal-apple-darwin/release/peeroxide
+
+      - name: Download man pages
+        uses: actions/download-artifact@v4
+        with:
+          name: manpages
+          path: _man
+
+      - name: Stage artifact
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          TARGET: universal-apple-darwin
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#peeroxide-cli-v}"
+          STAGE="peeroxide-${VERSION}-${TARGET}"
+          mkdir -p "${STAGE}/man/man1"
+          cp "target/${TARGET}/release/peeroxide" "${STAGE}/"
+          chmod 0755 "${STAGE}/peeroxide"
+          cp LICENSE-MIT LICENSE-APACHE README.md "${STAGE}/"
+          cp _man/man1/*.1 "${STAGE}/man/man1/"
+          tar -czf "${STAGE}.tar.gz" "${STAGE}"
+          shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          echo "Staged ${STAGE}.tar.gz:"
+          tar -tzf "${STAGE}.tar.gz"
+          echo "Checksum:"
+          cat "${STAGE}.tar.gz.sha256"
+          echo "STAGE_NAME=${STAGE}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAGE_NAME }}
+          path: |
+            ${{ env.STAGE_NAME }}.tar.gz
+            ${{ env.STAGE_NAME }}.tar.gz.sha256
+          if-no-files-found: error
+
+  linux:
     name: Build ${{ matrix.target }}
     needs: manpages
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            runner: macos-14
-            cross: false
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            cross: false
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
             cross: false
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
             cross: true
     steps:
       - uses: actions/checkout@v4
@@ -152,7 +231,7 @@ jobs:
 
   publish:
     name: Attach to Release
-    needs: build
+    needs: [macos, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -165,10 +244,12 @@ jobs:
           merge-multiple: true
 
       - name: List staged files
+        # Three archives: universal-apple-darwin, x86_64-unknown-linux-gnu,
+        # aarch64-unknown-linux-gnu — each with a `.sha256` sidecar.
         run: |
           ls -la dist/
-          test "$(ls dist/*.tar.gz       | wc -l)" -eq 4
-          test "$(ls dist/*.tar.gz.sha256 | wc -l)" -eq 4
+          test "$(ls dist/*.tar.gz       | wc -l)" -eq 3
+          test "$(ls dist/*.tar.gz.sha256 | wc -l)" -eq 3
 
       - name: Attach assets to Release
         uses: softprops/action-gh-release@v2
