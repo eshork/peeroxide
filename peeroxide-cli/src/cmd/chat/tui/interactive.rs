@@ -61,6 +61,15 @@ enum UiOp {
     InputRedraw,
     /// Full repaint (terminal resize, Ctrl-L).
     FullRepaint,
+    /// Show a transient overlay text on the status-bar row for `duration`.
+    /// While active the overlay replaces the normal bar with yellow-on-black
+    /// styling. Used by the keyboard task to surface the "press Ctrl-C
+    /// again…" prompt without disturbing the chat scrollback. A new overlay
+    /// while one is already active simply replaces it (new deadline).
+    ShowTransientOverlay { text: String, duration: std::time::Duration },
+    /// Clear any active transient overlay (e.g. user typed something so the
+    /// armed Ctrl-C window should be cancelled).
+    ClearTransientOverlay,
     /// Renderer should exit.
     Shutdown,
 }
@@ -143,7 +152,7 @@ impl InteractiveUi {
                 col: 0,
             };
             let _ = paint_status_and_input(
-                &mut out, &status, cols, rows, input_height, &snap, &mut slots,
+                &mut out, &status, cols, rows, input_height, &snap, &mut slots, None,
             );
         }
 
@@ -278,6 +287,11 @@ async fn render_loop(
     // forces a paint.
     let mut last_rendered: Option<status::StatusSnapshot> = None;
 
+    // Transient overlay painted in place of the status bar (e.g. the
+    // "press Ctrl-C again…" prompt). Cleared automatically once
+    // `expires_at` has elapsed (the idle tick checks every ~100ms).
+    let mut transient_overlay: Option<(String, std::time::Instant)> = None;
+
     loop {
         tokio::select! {
             biased;
@@ -295,6 +309,7 @@ async fn render_loop(
                         let editor_snap = editor.read().await.clone();
                         paint_status_and_input(
                             &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                            overlay_text(&transient_overlay),
                         )?;
                         last_rendered = Some(status.snapshot());
                     }
@@ -306,10 +321,12 @@ async fn render_loop(
                             apply_layout(&mut guard, &mut out, cols, rows, input_height)?;
                             paint_full(
                                 &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                                overlay_text(&transient_overlay),
                             )?;
                         } else {
                             paint_status_and_input(
                                 &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                                overlay_text(&transient_overlay),
                             )?;
                         }
                         last_rendered = Some(status.snapshot());
@@ -321,21 +338,6 @@ async fn render_loop(
                         slots.reset();
                         let editor_snap = editor.read().await.clone();
                         input_height = compute_input_height(&editor_snap, rows);
-                        // Re-apply the scroll region for the new geometry,
-                        // then clear the entire visible screen. The clear is
-                        // still necessary because the old status-bar and
-                        // input-area pixels live at their previous (row,
-                        // col) positions — when geometry changes, those
-                        // characters would otherwise linger outside the new
-                        // bar/input rows. Clearing wipes them along with
-                        // the chat region.
-                        //
-                        // To avoid losing the user's visible chat history
-                        // (the original "resize wipes scrollback" bug), we
-                        // replay the tail of the in-memory history buffer
-                        // into the new scroll region after clearing,
-                        // positioned so the newest line sits at the bottom
-                        // row of the region (matching steady-state layout).
                         apply_layout(&mut guard, &mut out, cols, rows, input_height)?;
                         crossterm::queue!(
                             out,
@@ -345,8 +347,30 @@ async fn render_loop(
                         replay_history(&mut out, &history, rows, input_height)?;
                         paint_full(
                             &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                            overlay_text(&transient_overlay),
                         )?;
                         last_rendered = Some(status.snapshot());
+                    }
+                    UiOp::ShowTransientOverlay { text, duration } => {
+                        transient_overlay = Some((text, std::time::Instant::now() + duration));
+                        let editor_snap = editor.read().await.clone();
+                        paint_status_and_input(
+                            &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                            overlay_text(&transient_overlay),
+                        )?;
+                        // Don't touch last_rendered — the next status-based
+                        // tick should still trigger a real paint if the bar
+                        // would otherwise differ.
+                    }
+                    UiOp::ClearTransientOverlay => {
+                        if transient_overlay.is_some() {
+                            transient_overlay = None;
+                            let editor_snap = editor.read().await.clone();
+                            paint_status_and_input(
+                                &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                                None,
+                            )?;
+                        }
                     }
                 }
             }
@@ -354,10 +378,26 @@ async fn render_loop(
                 let editor_snap = editor.read().await.clone();
                 paint_status_and_input(
                     &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                    overlay_text(&transient_overlay),
                 )?;
                 last_rendered = Some(status.snapshot());
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                // Auto-expire the transient overlay if its deadline has
+                // passed. Triggers a repaint of the normal bar.
+                if let Some((_, expires_at)) = transient_overlay
+                    && std::time::Instant::now() >= expires_at
+                {
+                    transient_overlay = None;
+                    let editor_snap = editor.read().await.clone();
+                    paint_status_and_input(
+                        &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                        None,
+                    )?;
+                    last_rendered = Some(status.snapshot());
+                    continue;
+                }
+
                 // Idle tick: if the snapshot would now render differently
                 // from the last paint (e.g. the recv_active flash just
                 // decayed), repaint. Skipping the paint when nothing
@@ -367,6 +407,7 @@ async fn render_loop(
                     let editor_snap = editor.read().await.clone();
                     paint_status_and_input(
                         &mut out, &status, cols, rows, input_height, &editor_snap, &mut slots,
+                        overlay_text(&transient_overlay),
                     )?;
                     last_rendered = Some(snap);
                 }
@@ -409,7 +450,19 @@ fn apply_layout(
     Ok(())
 }
 
+/// Project an `Option<(String, Instant)>` to an `Option<&str>` for the
+/// paint helpers. Returns `None` if the overlay has already expired so the
+/// callers paint the normal bar even if the auto-expire tick hasn't fired
+/// yet (defensive — the tick should clear it within ~100 ms anyway).
+fn overlay_text(overlay: &Option<(String, std::time::Instant)>) -> Option<&str> {
+    overlay
+        .as_ref()
+        .filter(|(_, expires_at)| std::time::Instant::now() < *expires_at)
+        .map(|(text, _)| text.as_str())
+}
+
 /// Full repaint: clears the bar + input rows then paints both.
+#[allow(clippy::too_many_arguments)]
 fn paint_full(
     out: &mut Stdout,
     status: &StatusState,
@@ -418,11 +471,13 @@ fn paint_full(
     input_height: u16,
     editor: &EditorSnapshot,
     slots: &mut SlotWidths,
+    overlay: Option<&str>,
 ) -> std::io::Result<()> {
     // Clear status + input rows (just paint them fresh).
-    paint_status_and_input(out, status, cols, rows, input_height, editor, slots)
+    paint_status_and_input(out, status, cols, rows, input_height, editor, slots, overlay)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_status_and_input(
     out: &mut Stdout,
     status: &StatusState,
@@ -431,8 +486,9 @@ fn paint_status_and_input(
     input_height: u16,
     editor: &EditorSnapshot,
     slots: &mut SlotWidths,
+    overlay: Option<&str>,
 ) -> std::io::Result<()> {
-    paint_status_bar(out, status, cols, rows, input_height, slots)?;
+    paint_status_bar(out, status, cols, rows, input_height, slots, overlay)?;
     paint_input_area(out, cols, rows, input_height, editor)?;
     Ok(())
 }
@@ -444,33 +500,69 @@ fn paint_status_bar(
     rows: u16,
     input_height: u16,
     slots: &mut SlotWidths,
+    overlay: Option<&str>,
 ) -> std::io::Result<()> {
-    let snap = status.snapshot();
-    let level = status::pick_level(&snap, cols as usize);
-    let bar = status::render_bar(&snap, level, cols as usize, slots);
-
     // Row index (1-based for DECSTBM, 0-based for crossterm). The bar lives
     // at `rows - input_height - 1` in 0-based coords.
     let bar_row = rows.saturating_sub(input_height + 1);
     // Clear the row before painting so that on a terminal resize (when the
     // previous bar was wider, in different columns, or at a different row
-    // index) no leftover bytes remain past the new bar's right edge. We
-    // then reset background to default — the grey bar paint that follows
-    // will set its own background; the cleared area outside `cols` becomes
-    // terminal-default rather than stale grey.
+    // index) no leftover bytes remain past the new bar's right edge.
     queue!(
         out,
         cursor::Hide,
         cursor::MoveTo(0, bar_row),
         ResetColor,
         Clear(ClearType::CurrentLine),
-        SetBackgroundColor(Color::Grey),
-        SetForegroundColor(Color::Black),
     )?;
-    // Write directly; `bar` is already `cols` wide.
-    out.write_all(bar.as_bytes())?;
+
+    if let Some(text) = overlay {
+        // Transient overlay: yellow background, black foreground. Pad/
+        // truncate to exactly `cols` so the row is fully covered.
+        let body = fit_overlay(text, cols as usize);
+        queue!(
+            out,
+            SetBackgroundColor(Color::Yellow),
+            SetForegroundColor(Color::Black),
+        )?;
+        out.write_all(body.as_bytes())?;
+    } else {
+        // Normal status bar (grey).
+        let snap = status.snapshot();
+        let level = status::pick_level(&snap, cols as usize);
+        let bar = status::render_bar(&snap, level, cols as usize, slots);
+        queue!(
+            out,
+            SetBackgroundColor(Color::Grey),
+            SetForegroundColor(Color::Black),
+        )?;
+        out.write_all(bar.as_bytes())?;
+    }
     queue!(out, ResetColor)?;
     Ok(())
+}
+
+/// Pure helper: format a transient overlay text to exactly `cols` cells
+/// (truncate if too long, right-pad with spaces if too short). One space
+/// of left padding for visual breathing room when there's room.
+fn fit_overlay(text: &str, cols: usize) -> String {
+    if cols == 0 {
+        return String::new();
+    }
+    // Truncate by char count, then pad with spaces. We don't have a true
+    // visible-width crate in scope; chat content is ASCII-dominant so
+    // chars().count() approximates well for our overlay text.
+    let with_pad = format!(" {text} ");
+    let n = with_pad.chars().count();
+    if n >= cols {
+        with_pad.chars().take(cols).collect()
+    } else {
+        let mut s = with_pad;
+        for _ in 0..(cols - n) {
+            s.push(' ');
+        }
+        s
+    }
 }
 
 fn paint_input_area(
@@ -616,6 +708,45 @@ fn replay_count(history_len: usize, region_height: usize) -> usize {
 
 // ===== Keyboard task =====
 
+/// Text shown when the user presses Ctrl-C on an empty input buffer, arming
+/// the 2-second force-quit window.
+const CTRL_C_ARM_OVERLAY: &str =
+    "*** press Ctrl-C again within 2 seconds to force quit — press Ctrl-D for graceful exit";
+
+/// How long the force-quit arming stays hot after the first empty-input
+/// Ctrl-C. A second Ctrl-C inside this window triggers `UiInput::Interrupt`;
+/// after expiry a fresh double-press is required.
+const CTRL_C_ARM_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Decision for a Ctrl-C press given the current editor / arming state.
+/// Pure-function output so the logic is unit-testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CtrlCAction {
+    /// Editor had unsent text — clear it and disarm any pending window.
+    ClearBuffer,
+    /// Editor was empty and the arming window is hot — force-quit.
+    ForceQuit,
+    /// Editor was empty and no hot arming — show the prompt overlay and
+    /// arm the window.
+    ArmAndPrompt,
+}
+
+/// Classify the current Ctrl-C press given editor emptiness, whether the
+/// force-quit window is armed, and the time elapsed since arming.
+fn classify_ctrl_c(
+    editor_empty: bool,
+    armed_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> CtrlCAction {
+    if !editor_empty {
+        return CtrlCAction::ClearBuffer;
+    }
+    match armed_at {
+        Some(t) if now.duration_since(t) < CTRL_C_ARM_WINDOW => CtrlCAction::ForceQuit,
+        _ => CtrlCAction::ArmAndPrompt,
+    }
+}
+
 async fn keyboard_loop(
     input_tx: mpsc::UnboundedSender<UiInput>,
     ops_tx: mpsc::UnboundedSender<UiOp>,
@@ -623,6 +754,12 @@ async fn keyboard_loop(
 ) {
     let mut editor = InputEditor::new();
     let mut events = EventStream::new();
+    // Hot-timestamp for the double-Ctrl-C force-quit window. `Some(t)` means
+    // the user pressed Ctrl-C at `t` on an empty buffer; another Ctrl-C
+    // within `CTRL_C_ARM_WINDOW` confirms the exit. Cleared on any other
+    // editing action (typing, paste, submit, Ctrl-D, etc.) so the prompt
+    // disappears as soon as the user shows they're still active.
+    let mut ctrl_c_armed_at: Option<std::time::Instant> = None;
     while let Some(event) = events.next().await {
         let event = match event {
             Ok(e) => e,
@@ -633,6 +770,11 @@ async fn keyboard_loop(
                 let outcome = editor.handle_key(k);
                 match outcome {
                     EditOutcome::Submit(text) => {
+                        // Any active force-quit arming is cancelled — user
+                        // clearly didn't mean to quit.
+                        if ctrl_c_armed_at.take().is_some() {
+                            let _ = ops_tx.send(UiOp::ClearTransientOverlay);
+                        }
                         // Snapshot the cleared editor and trigger a redraw
                         // so the input area visibly empties before the
                         // server round-trip.
@@ -652,18 +794,55 @@ async fn keyboard_loop(
                         }
                     }
                     EditOutcome::Interrupt => {
-                        let _ = input_tx.send(UiInput::Interrupt);
-                        return;
+                        let action = classify_ctrl_c(
+                            editor.is_empty(),
+                            ctrl_c_armed_at,
+                            std::time::Instant::now(),
+                        );
+                        match action {
+                            CtrlCAction::ClearBuffer => {
+                                editor.clear();
+                                if ctrl_c_armed_at.take().is_some() {
+                                    let _ = ops_tx.send(UiOp::ClearTransientOverlay);
+                                }
+                                publish_view(&editor_view, &editor).await;
+                                let _ = ops_tx.send(UiOp::InputRedraw);
+                            }
+                            CtrlCAction::ForceQuit => {
+                                let _ = input_tx.send(UiInput::Interrupt);
+                                return;
+                            }
+                            CtrlCAction::ArmAndPrompt => {
+                                ctrl_c_armed_at = Some(std::time::Instant::now());
+                                let _ = ops_tx.send(UiOp::ShowTransientOverlay {
+                                    text: CTRL_C_ARM_OVERLAY.to_string(),
+                                    duration: CTRL_C_ARM_WINDOW,
+                                });
+                            }
+                        }
                     }
                     EditOutcome::Eof => {
+                        // User chose graceful exit while armed — drop the
+                        // overlay so the prompt doesn't linger past EOF.
+                        if ctrl_c_armed_at.take().is_some() {
+                            let _ = ops_tx.send(UiOp::ClearTransientOverlay);
+                        }
                         let _ = input_tx.send(UiInput::Eof);
                         // Don't return — user may continue if --stay-after-eof.
                     }
                     EditOutcome::Redraw => {
+                        // Any active arming is invalidated — the user is
+                        // editing again, so the prompt should disappear.
+                        if ctrl_c_armed_at.take().is_some() {
+                            let _ = ops_tx.send(UiOp::ClearTransientOverlay);
+                        }
                         publish_view(&editor_view, &editor).await;
                         let _ = ops_tx.send(UiOp::InputRedraw);
                     }
                     EditOutcome::ForceRepaint => {
+                        if ctrl_c_armed_at.take().is_some() {
+                            let _ = ops_tx.send(UiOp::ClearTransientOverlay);
+                        }
                         publish_view(&editor_view, &editor).await;
                         let _ = ops_tx.send(UiOp::FullRepaint);
                     }
@@ -671,6 +850,9 @@ async fn keyboard_loop(
                 }
             }
             Event::Paste(s) => {
+                if ctrl_c_armed_at.take().is_some() {
+                    let _ = ops_tx.send(UiOp::ClearTransientOverlay);
+                }
                 editor.insert_str(&s);
                 publish_view(&editor_view, &editor).await;
                 let _ = ops_tx.send(UiOp::InputRedraw);
@@ -745,5 +927,115 @@ mod tests {
         push_history(&mut h, "c".to_string());
         assert_eq!(h.len(), 3);
         assert_eq!(h.iter().collect::<Vec<_>>(), vec!["a", "b", "c"]);
+    }
+
+    // ── classify_ctrl_c ────────────────────────────────────────────────
+
+    #[test]
+    fn classify_ctrl_c_clears_when_buffer_nonempty() {
+        let now = std::time::Instant::now();
+        // Even with a hot arming, non-empty buffer means "clear".
+        assert_eq!(
+            classify_ctrl_c(false, Some(now), now),
+            CtrlCAction::ClearBuffer
+        );
+        // Without arming too.
+        assert_eq!(
+            classify_ctrl_c(false, None, now),
+            CtrlCAction::ClearBuffer
+        );
+    }
+
+    #[test]
+    fn classify_ctrl_c_arms_when_empty_and_cold() {
+        let now = std::time::Instant::now();
+        assert_eq!(
+            classify_ctrl_c(true, None, now),
+            CtrlCAction::ArmAndPrompt
+        );
+    }
+
+    #[test]
+    fn classify_ctrl_c_quits_when_empty_and_hot() {
+        let armed = std::time::Instant::now();
+        let now = armed + std::time::Duration::from_millis(500);
+        assert_eq!(
+            classify_ctrl_c(true, Some(armed), now),
+            CtrlCAction::ForceQuit
+        );
+    }
+
+    #[test]
+    fn classify_ctrl_c_re_arms_after_window_expires() {
+        let armed = std::time::Instant::now();
+        let now = armed + CTRL_C_ARM_WINDOW + std::time::Duration::from_millis(1);
+        assert_eq!(
+            classify_ctrl_c(true, Some(armed), now),
+            CtrlCAction::ArmAndPrompt
+        );
+    }
+
+    #[test]
+    fn classify_ctrl_c_quits_at_exactly_one_ms_before_window_end() {
+        // Boundary check: within the window means strictly less than.
+        let armed = std::time::Instant::now();
+        let now = armed + CTRL_C_ARM_WINDOW - std::time::Duration::from_millis(1);
+        assert_eq!(
+            classify_ctrl_c(true, Some(armed), now),
+            CtrlCAction::ForceQuit
+        );
+    }
+
+    // ── fit_overlay ────────────────────────────────────────────────────
+
+    #[test]
+    fn fit_overlay_zero_cols_returns_empty() {
+        assert_eq!(fit_overlay("hello", 0), "");
+    }
+
+    #[test]
+    fn fit_overlay_pads_short_text() {
+        // " hi " padded to 10 cells -> " hi       ".
+        let out = fit_overlay("hi", 10);
+        assert_eq!(out.chars().count(), 10);
+        assert!(out.starts_with(" hi "));
+        assert!(out.ends_with("       ") || out.ends_with(" ")); // padding trail
+    }
+
+    #[test]
+    fn fit_overlay_truncates_long_text() {
+        let text = "this overlay is longer than the available room";
+        let out = fit_overlay(text, 12);
+        assert_eq!(out.chars().count(), 12);
+    }
+
+    #[test]
+    fn fit_overlay_exact_fit() {
+        let out = fit_overlay("hi", 4); // " hi " is exactly 4
+        assert_eq!(out, " hi ");
+    }
+
+    // ── overlay_text helper ────────────────────────────────────────────
+
+    #[test]
+    fn overlay_text_returns_none_when_expired() {
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        let o = Some(("x".to_string(), past));
+        assert!(overlay_text(&o).is_none());
+    }
+
+    #[test]
+    fn overlay_text_returns_some_when_active() {
+        let future = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let o = Some(("hello".to_string(), future));
+        assert_eq!(overlay_text(&o), Some("hello"));
+    }
+
+    #[test]
+    fn overlay_text_none_when_absent() {
+        let o: Option<(String, std::time::Instant)> = None;
+        assert!(overlay_text(&o).is_none());
     }
 }

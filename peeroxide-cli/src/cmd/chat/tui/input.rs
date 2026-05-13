@@ -70,6 +70,15 @@ impl InputEditor {
         self.lines.len() == 1 && self.lines[0].is_empty()
     }
 
+    /// Reset the buffer to an empty editor (one empty line, cursor at 0,0).
+    /// Used by the Ctrl-C "clear input line" path when there's unsent text.
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.lines.push(String::new());
+        self.row = 0;
+        self.col = 0;
+    }
+
     /// Insert a literal character at the cursor (e.g. for pasted content).
     pub fn insert_char(&mut self, ch: char) {
         if ch == '\n' {
@@ -463,6 +472,19 @@ mod tests {
             EditOutcome::Redraw
         );
         assert_eq!(ed.lines(), &["b".to_string()]);
+    }
+
+    #[test]
+    fn clear_resets_to_single_empty_line() {
+        let mut ed = InputEditor::new();
+        ed.insert_str("line one\nline two\nline three");
+        assert!(!ed.is_empty());
+        assert!(ed.line_count() > 1);
+        ed.clear();
+        assert!(ed.is_empty());
+        assert_eq!(ed.line_count(), 1);
+        assert_eq!(ed.cursor(), (0, 0));
+        assert_eq!(ed.lines(), &[String::new()]);
     }
 
     #[test]
