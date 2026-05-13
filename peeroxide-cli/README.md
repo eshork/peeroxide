@@ -63,7 +63,7 @@ If `~/.local/share/man` is not in your `MANPATH`, add it:
 export MANPATH="$HOME/.local/share/man:$MANPATH"
 ```
 
-This produces a manpage for every (sub)command in the CLI — currently 23 pages including nested chat subcommands (`peeroxide-chat-join`, `peeroxide-chat-profiles-create`, `peeroxide-chat-friends-add`, etc.):
+This produces 9 pages:
 
 ```
 peeroxide(1)          — main command and global options
@@ -73,12 +73,8 @@ peeroxide-lookup(1)   — DHT topic lookup
 peeroxide-announce(1) — DHT topic announcement
 peeroxide-ping(1)     — connectivity diagnostics
 peeroxide-cp(1)       — file transfer (send + recv)
-peeroxide-dd(1)       — dead drop messaging (put + get)
-peeroxide-chat(1)     — interactive chat (channels, DMs, inbox)
-peeroxide-chat-join(1), peeroxide-chat-dm(1), peeroxide-chat-inbox(1),
-peeroxide-chat-whoami(1), peeroxide-chat-profiles(1) + list/create/delete,
-peeroxide-chat-friends(1) + list/add/remove/refresh,
-peeroxide-chat-nexus(1)
+peeroxide-dd(1)       — dead drop messaging (put + get, v1 + v2)
+peeroxide-chat(1)     — interactive chat (join, dm, inbox, profiles, friends, nexus, whoami)
 ```
 
 ## Configuration

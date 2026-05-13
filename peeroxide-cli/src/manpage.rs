@@ -3,7 +3,7 @@
 use clap::CommandFactory;
 use std::io::Write;
 
-const CONSOLIDATED: &[&str] = &["peeroxide-cp", "peeroxide-dd"];
+const CONSOLIDATED: &[&str] = &["peeroxide-cp", "peeroxide-dd", "peeroxide-chat"];
 
 /// Generate all man pages and return them as (filename_stem, content) pairs.
 pub fn generate_all() -> Vec<(String, Vec<u8>)> {
@@ -91,6 +91,17 @@ fn render_consolidated_page(cmd: clap::Command, name: &str) -> Vec<u8> {
 
     write_consolidated_synopsis(&mut buf, &cmd, name);
     man.render_description_section(&mut buf).unwrap();
+
+    // If the parent command has its own non-global, non-hidden args
+    // (e.g. peeroxide chat carries --debug / --probe / --line-mode),
+    // surface them in an OPTIONS section before listing subcommands.
+    let parent_has_own_args = cmd
+        .get_arguments()
+        .any(|a| !a.is_hide_set() && !is_global_arg(a) && !a.is_positional());
+    if parent_has_own_args {
+        man.render_options_section(&mut buf).unwrap();
+    }
+
     write_consolidated_commands(&mut buf, &cmd, name);
 
     if let Some(examples) = examples_for(name) {
@@ -111,11 +122,24 @@ fn render_consolidated_page(cmd: clap::Command, name: &str) -> Vec<u8> {
 fn write_consolidated_synopsis(buf: &mut Vec<u8>, cmd: &clap::Command, parent_name: &str) {
     buf.write_all(b".SH SYNOPSIS\n").unwrap();
     let invocation_base = parent_name.replace('-', " ");
+    write_synopsis_recursive(buf, cmd, &invocation_base);
+}
+
+fn write_synopsis_recursive(buf: &mut Vec<u8>, cmd: &clap::Command, invocation: &str) {
     for sub in cmd.get_subcommands() {
         if sub.is_hide_set() || sub.get_name() == "help" {
             continue;
         }
-        writeln!(buf, ".B {invocation_base} {}", sub.get_name()).unwrap();
+        let sub_invocation = format!("{invocation} {}", sub.get_name());
+
+        if sub.get_subcommands().next().is_some() {
+            // Subgroup: recurse to enumerate its leaves; do not emit a
+            // synopsis line for the group itself.
+            write_synopsis_recursive(buf, sub, &sub_invocation);
+            continue;
+        }
+
+        writeln!(buf, ".B {sub_invocation}").unwrap();
         let mut opts = Vec::new();
         for arg in sub.get_arguments().filter(|a| !a.is_hide_set() && !is_global_arg(a)) {
             if arg.is_positional() {
@@ -141,13 +165,32 @@ fn write_consolidated_synopsis(buf: &mut Vec<u8>, cmd: &clap::Command, parent_na
 
 fn write_consolidated_commands(buf: &mut Vec<u8>, cmd: &clap::Command, parent_name: &str) {
     buf.write_all(b".SH COMMANDS\n").unwrap();
+    write_commands_recursive(buf, cmd, parent_name, "");
+}
+
+fn write_commands_recursive(
+    buf: &mut Vec<u8>,
+    cmd: &clap::Command,
+    parent_name: &str,
+    path: &str,
+) {
     for sub in cmd.get_subcommands() {
         if sub.is_hide_set() || sub.get_name() == "help" {
             continue;
         }
         let sub_key = format!("{parent_name}-{}", sub.get_name());
-        writeln!(buf, ".SS {}", sub.get_name()).unwrap();
+        let display_path = if path.is_empty() {
+            sub.get_name().to_string()
+        } else {
+            format!("{path} {}", sub.get_name())
+        };
 
+        let is_group = sub.get_subcommands().next().is_some();
+
+        writeln!(buf, ".SS {display_path}").unwrap();
+
+        // Render a description for this command/group. Prefer the
+        // long_about_for override; fall back to the clap short about.
         if let Some(long) = long_about_for(&sub_key) {
             for line in long.lines() {
                 if line.trim().is_empty() {
@@ -160,15 +203,21 @@ fn write_consolidated_commands(buf: &mut Vec<u8>, cmd: &clap::Command, parent_na
             writeln!(buf, "{about}").unwrap();
         }
 
-        let args: Vec<_> = sub
-            .get_arguments()
-            .filter(|a| !a.is_hide_set() && !is_global_arg(a))
-            .collect();
-        if !args.is_empty() {
-            buf.write_all(b".PP\n").unwrap();
-            for arg in args {
-                write_arg_tp(buf, arg);
+        // For leaves, emit the argument list. Groups don't have their
+        // own args (their leaves do), so skip.
+        if !is_group {
+            let args: Vec<_> = sub
+                .get_arguments()
+                .filter(|a| !a.is_hide_set() && !is_global_arg(a))
+                .collect();
+            if !args.is_empty() {
+                buf.write_all(b".PP\n").unwrap();
+                for arg in args {
+                    write_arg_tp(buf, arg);
+                }
             }
+        } else {
+            write_commands_recursive(buf, sub, &sub_key, &display_path);
         }
     }
 }
@@ -349,12 +398,26 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              is validated.",
         ),
         "peeroxide-dd" => Some(
-            "Dead Drop: anonymous store-and-forward messaging via the DHT's mutable record \
-             storage. Messages are encrypted with a passphrase-derived key and stored as mutable \
-             DHT records that any peer can retrieve without knowing the sender's identity.\n\n\
-             The dead drop uses a chunked binary format with CRC32c integrity checks. \
-             Messages are limited to approximately 1000 bytes per chunk (with multi-chunk \
-             support for larger payloads).",
+            "Dead Drop: anonymous store-and-forward messaging via the DHT. Two wire protocols \
+             ship in this binary, distinguished by their leading version byte.\n\n\
+             Version 1 (0x01) is the original single-chain format: chunks form a \
+             linked list of mutable DHT records (~1 KB each), each pointing to the next. \
+             Simple, capped near 60 MB of payload, suitable for short messages. Still used \
+             when the sender passes --v1 on dd put.\n\n\
+             Version 2 (0x02) is a tree-indexed protocol: data chunks are stored \
+             content-addressed via immutable_put, and a tree of mutable index records \
+             names them. The receiver fetches the index tree breadth-first in parallel \
+             and reconstructs the file in DFS order. Default protocol for dd put. \
+             The soft depth cap of 4 supports up to about 27 GB at the current 998-byte \
+             chunk size; depth 5+ would extend that further but is rejected at PUT time \
+             to keep tree-walk latency bounded.\n\n\
+             dd get detects the protocol from the first byte of the root record \
+             and runs the matching v1 or v2 fetch path automatically; there is no --v1 \
+             flag on the get side.\n\n\
+             Both protocols periodically refresh their records to keep them alive in the \
+             DHT (records age out of node storage after about 20 minutes by default). \
+             A passphrase-derived keypair can be used so both sender and receiver agree \
+             on the pickup key without exchanging it directly.",
         ),
         "peeroxide-dd-put" => Some(
             "Store an anonymous message at a dead drop location in the DHT. The message \
@@ -393,6 +456,137 @@ fn long_about_for(name: &str) -> Option<&'static str> {
              Man page mode (--man-pages): Generates and installs roff man pages into the \
              specified directory (default: /usr/local/share/man/man1/). No config is touched \
              in this mode.",
+        ),
+        "peeroxide-chat" => Some(
+            "End-to-end-encrypted peer-to-peer chat over the Hyperswarm DHT. No central \
+             server, no account signup, no message storage beyond the ephemeral DHT.\n\n\
+             Identity is a local Ed25519 keypair stored per profile under \
+             ~/.config/peeroxide/chat/profiles/. A separate process-wide \
+             ~/.config/peeroxide/chat/known_users cache records the most-recent \
+             screen name observed for each pubkey, shared across all profiles on the \
+             machine.\n\n\
+             Two conversation shapes are supported. Channels are public or private \
+             group rooms keyed by a channel name (plus an optional group salt for \
+             privacy). Direct messages are 1:1 between two identity public keys; the \
+             DM channel key is derived deterministically from the pair, so both sides \
+             arrive at the same key without prior coordination.\n\n\
+             Discovery uses the DHT announce/lookup rendezvous pattern across rotating \
+             epoch+bucket topics, so an observer cannot trivially correlate one feed \
+             across long time windows. Message records are encrypted with \
+             XSalsa20-Poly1305 and signed with the author's Ed25519 key; readers verify \
+             both the chain-of-prev-hashes and the per-message signature before \
+             releasing a message to the UI.\n\n\
+             The TUI auto-activates when both stdin and stdout are terminals; otherwise \
+             chat runs in line mode (one message per line on stdout). Force line mode \
+             with --line-mode or PEEROXIDE_LINE_MODE=1.",
+        ),
+        "peeroxide-chat-join" => Some(
+            "Join a channel. Interactive TUI by default on a terminal; line mode \
+             otherwise (one message per line on stdout).\n\n\
+             Channel name is positional. Pass \\fB--group <SALT>\\fR (or read the salt \
+             from a file with \\fB--keyfile <PATH>\\fR) to join a private channel \
+             whose discovery topic is derived from both the channel name and the \
+             salt -- two people who don't share the salt cannot find each other or \
+             decrypt each other's messages.\n\n\
+             By default the session also publishes the local profile's Nexus record \
+             and refreshes friend Nexus data in the background; suppress with \
+             \\fB--no-nexus\\fR / \\fB--no-friends\\fR, or use \\fB--stealth\\fR for both \
+             plus \\fB--read-only\\fR.\n\n\
+             Stdin EOF exits the session by default. Pass \\fB--stay-after-eof\\fR to \
+             keep the session listening after the input stream closes -- useful when \
+             piping a transcript and then watching for replies.",
+        ),
+        "peeroxide-chat-dm" => Some(
+            "Open a direct-message session with another identity. Interactive TUI by \
+             default; line mode otherwise.\n\n\
+             The recipient is resolved in this order: a 64-char hex public key, \
+             \\fB@SHORTKEY\\fR (the first 8 hex characters of a pubkey), \
+             \\fBNAME@SHORTKEY\\fR (validates the screen name against the known_users \
+             cache), a bare 8-char shortkey, a friend alias from the current profile, \
+             or a screen name from the shared known_users cache. The DM channel key \
+             is derived deterministically from your identity pubkey and theirs, so \
+             you both arrive at the same key without coordination.\n\n\
+             Pass \\fB--message <TEXT>\\fR to seed an initial inbox-invite lure for the \
+             recipient -- their inbox monitor surfaces a notification with this text \
+             so they know who is reaching out and on what topic.\n\n\
+             Other session flags mirror \\fBchat join\\fR (\\fB--no-nexus\\fR, \
+             \\fB--no-friends\\fR, \\fB--read-only\\fR, \\fB--stealth\\fR, \
+             \\fB--feed-lifetime\\fR, \\fB--batch-size\\fR, \\fB--batch-wait-ms\\fR, \
+             \\fB--stay-after-eof\\fR, \\fB--no-inbox\\fR, \\fB--inbox-poll-interval\\fR). \
+             \\fB--group\\fR / \\fB--keyfile\\fR do NOT apply to DMs (the channel key \
+             is derived from the participants).",
+        ),
+        "peeroxide-chat-inbox" => Some(
+            "Monitor the local profile's inbox for new invites (DMs from new senders \
+             and private-channel invites). Prints each new invite to stdout as it \
+             arrives; does NOT enter the interactive chat -- use \\fBchat dm\\fR or \
+             \\fBchat join\\fR to act on an invite.\n\n\
+             Each poll scans the current and previous inbox epochs across all 4 \
+             buckets in parallel (8 DHT lookups). \\fB--poll-interval\\fR sets the \
+             cycle length in seconds; values below 1 are clamped to 1.\n\n\
+             \\fB--no-nexus\\fR and \\fB--no-friends\\fR are accepted for flag-surface \
+             parity with \\fBchat join\\fR / \\fBchat dm\\fR but have no effect here -- \
+             the inbox CLI does not run nexus publish or friend refresh tasks.",
+        ),
+        "peeroxide-chat-whoami" => Some(
+            "Print the current profile's identity: profile name, full 64-char identity \
+             public key, screen name (if set), and the topic hash other peers would \
+             use to discover this identity's Nexus record.",
+        ),
+        "peeroxide-chat-profiles" => Some(
+            "Manage local identity profiles. Each profile is a directory under \
+             \\fB~/.config/peeroxide/chat/profiles/<NAME>/\\fR containing the Ed25519 \
+             seed, an optional screen name and bio, and a friend list. The \\fBdefault\\fR \
+             profile is auto-created on first run and cannot be deleted.",
+        ),
+        "peeroxide-chat-profiles-list" => Some(
+            "List all locally-known profile names.",
+        ),
+        "peeroxide-chat-profiles-create" => Some(
+            "Create a new profile with a freshly generated Ed25519 keypair. If \
+             \\fB--screen-name\\fR is omitted, a vendor name is generated deterministically \
+             from the public key and stored in the profile.",
+        ),
+        "peeroxide-chat-profiles-delete" => Some(
+            "Delete a profile and all of its local state (seed, screen name, bio, \
+             friend list). The \\fBdefault\\fR profile is rejected.",
+        ),
+        "peeroxide-chat-friends" => Some(
+            "Manage the current profile's friend list. Friends are saved by identity \
+             public key with an optional local alias and the last-seen screen name / \
+             bio fetched from their Nexus. Friend Nexus data is refreshed periodically \
+             during chat sessions.",
+        ),
+        "peeroxide-chat-friends-list" => Some(
+            "List the friends recorded under the current profile, with their aliases, \
+             screen names, and shortened public keys.",
+        ),
+        "peeroxide-chat-friends-add" => Some(
+            "Add a friend to the current profile. The key argument follows the same \
+             resolution rules as \\fBchat dm\\fR's recipient. If \\fB--alias\\fR is omitted, \
+             the alias is auto-filled from the known_users cache (or a generated vendor \
+             name if no cached screen name is available).",
+        ),
+        "peeroxide-chat-friends-remove" => Some(
+            "Remove a friend from the current profile's friend list. The key argument \
+             follows the same resolution rules as \\fBchat friends add\\fR.",
+        ),
+        "peeroxide-chat-friends-refresh" => Some(
+            "Perform a one-shot DHT refresh of the friend Nexus records for the \
+             \\fBdefault\\fR profile. Does not accept \\fB--profile\\fR.",
+        ),
+        "peeroxide-chat-nexus" => Some(
+            "Manage the current profile's Nexus record (a public-key-addressed mutable \
+             DHT record carrying your screen name and bio).\n\n\
+             By default \\fBchat nexus\\fR performs a one-shot publish of the current \
+             profile's Nexus. With \\fB--set-name\\fR or \\fB--set-bio\\fR (or both), \
+             the new values are written to the profile first; if neither \\fB--publish\\fR \
+             nor \\fB--daemon\\fR is supplied with the setters, the command exits after \
+             writing without publishing. \\fB--publish\\fR forces a one-shot publish. \
+             \\fB--daemon\\fR runs continuously, publishing your own Nexus every 480 \
+             seconds and refreshing all friend Nexus records every 600 seconds.\n\n\
+             \\fB--lookup <PUBKEY>\\fR short-circuits all other modes: fetch and print \
+             the named identity's Nexus record (screen name + bio).",
         ),
         _ => None,
     }
@@ -527,23 +721,74 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
         "peeroxide-dd" => Some(&[
             (
                 "echo 'secret message' | peeroxide dd put - --passphrase s3cret",
-                "Put a message at a dead drop with an inline passphrase (read from stdin):",
+                "Put a v2 message at a dead drop with an inline passphrase (read from stdin):",
             ),
             (
                 "peeroxide dd put ./msg.txt --interactive-passphrase",
                 "Put a file at a dead drop with a prompted passphrase (hidden input):",
             ),
             (
+                "peeroxide dd put ./large.tar --passphrase s3cret --v1",
+                "Force the legacy v1 single-chain protocol on put:",
+            ),
+            (
+                "peeroxide dd put ./file.bin --passphrase s3cret --no-progress",
+                "Suppress the progress bar (useful in scripts or when stderr is not a TTY):",
+            ),
+            (
+                "peeroxide dd put ./file.bin --passphrase s3cret --json",
+                "Emit JSON-Lines progress events on stdout (suitable for scripting):",
+            ),
+            (
                 "peeroxide dd get --passphrase s3cret",
-                "Get a message from a dead drop using the same passphrase:",
+                "Get a message from a dead drop using the same passphrase (auto-detects v1/v2):",
             ),
             (
                 "peeroxide dd get --interactive-passphrase --output ./msg.txt",
                 "Get with prompted passphrase, write to file:",
             ),
             (
-                "peeroxide dd get a1b2c3...64chars",
-                "Get using a raw hex public key:",
+                "peeroxide dd get a1b2c3...64chars --output ./out.bin --json",
+                "Get using a raw hex public key and emit JSON progress (requires --output):",
+            ),
+        ]),
+
+        "peeroxide-chat" => Some(&[
+            (
+                "peeroxide chat join general",
+                "Join a public channel named \"general\":",
+            ),
+            (
+                "peeroxide chat join dev-room --group s3cret-salt",
+                "Join a private channel (only peers with the same salt can find each other):",
+            ),
+            (
+                "peeroxide chat dm @a1b2c3d4 --message 'hey, got a minute?'",
+                "Open a DM to a peer by 8-char shortkey, leaving an inbox lure:",
+            ),
+            (
+                "peeroxide chat inbox --poll-interval 30",
+                "Watch the local inbox for new invites, polling every 30 seconds:",
+            ),
+            (
+                "peeroxide chat nexus --set-name 'Alice' --set-bio 'building stuff'",
+                "Update your screen name and bio in your profile (no DHT publish):",
+            ),
+            (
+                "peeroxide chat nexus --set-name 'Alice' --publish",
+                "Update your screen name and immediately publish to the DHT:",
+            ),
+            (
+                "peeroxide chat nexus --daemon",
+                "Run a background Nexus refresher (publish self every 480s, refresh friends every 600s):",
+            ),
+            (
+                "peeroxide chat profiles create work --screen-name 'Alice (work)'",
+                "Create a second profile with its own identity keypair:",
+            ),
+            (
+                "peeroxide chat friends add @a1b2c3d4 --alias bob",
+                "Add a friend to the current profile under a local alias:",
             ),
         ]),
 
@@ -580,7 +825,7 @@ fn examples_for(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
 fn exit_status_for(name: &str) -> Option<&'static str> {
     match name {
         "peeroxide" | "peeroxide-init" | "peeroxide-node" | "peeroxide-lookup"
-        | "peeroxide-announce" | "peeroxide-cp" | "peeroxide-dd" => Some(
+        | "peeroxide-announce" | "peeroxide-cp" | "peeroxide-dd" | "peeroxide-chat" => Some(
             ".TP\n\\fB0\\fR\nSuccess.\n\
              .TP\n\\fB1\\fR\nFailure or partial failure.\n\
              .TP\n\\fB2\\fR\nUsage error (invalid arguments).\n\
@@ -606,6 +851,7 @@ fn see_also_for(name: &str) -> Option<&'static [&'static str]> {
             "peeroxide-ping",
             "peeroxide-cp",
             "peeroxide-dd",
+            "peeroxide-chat",
         ]),
         "peeroxide-init" => Some(&["peeroxide"]),
         "peeroxide-node" => Some(&["peeroxide"]),
@@ -620,6 +866,7 @@ fn see_also_for(name: &str) -> Option<&'static [&'static str]> {
         "peeroxide-cp" => Some(&["peeroxide-dd", "peeroxide"]),
 
         "peeroxide-dd" => Some(&["peeroxide-cp", "peeroxide"]),
+        "peeroxide-chat" => Some(&["peeroxide", "peeroxide-init"]),
         _ => None,
     }
 }
