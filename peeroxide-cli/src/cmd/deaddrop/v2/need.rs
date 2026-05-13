@@ -1,4 +1,4 @@
-//! v3 need-list channel.
+//! v2 need-list channel.
 //!
 //! Spec: see *Need-List Feedback Channel* in `DEADDROP_V2.md (and `docs/src/dd/`)`.
 //!

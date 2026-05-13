@@ -1,4 +1,4 @@
-//! v3 tree-shape rules.
+//! v2 tree-shape rules.
 //!
 //! The shape of the index tree is fully determined by `file_size`. Both
 //! senders and receivers compute it deterministically via `canonical_depth`.

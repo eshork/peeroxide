@@ -1,4 +1,4 @@
-//! Shared, dedup'd, priority work queue for the v3 sender.
+//! Shared, dedup'd, priority work queue for the v2 sender.
 //!
 //! A single dispatcher pulls `(ChunkId, PublishUnit, subscribers)` triples
 //! out of the queue, acquires a permit from the shared `ConcurrencyState`,

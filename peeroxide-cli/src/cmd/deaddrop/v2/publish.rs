@@ -1,4 +1,4 @@
-//! v3 sender: tree build + dependency-ordered publish + refresh + need-watch.
+//! v2 sender: tree build + dependency-ordered publish + refresh + need-watch.
 
 #![allow(dead_code)]
 
@@ -933,7 +933,7 @@ pub async fn run_put(args: &PutArgs, cfg: &ResolvedConfig) -> i32 {
 
     // Initial publish: non-root chunks first (data + index layers), then
     // the root last. The "root last" rule is the only ordering constraint
-    // in v3: until the root is published, no other pubkey is derivable.
+    // in v2: until the root is published, no other pubkey is derivable.
     //
     // Everything below the initial publish runs inside a labeled block so
     // any cancel-aware await can `break 'main 0` straight to cleanup.

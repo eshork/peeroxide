@@ -1,4 +1,4 @@
-//! v3 key derivation.
+//! v2 key derivation.
 //!
 //! Spec: see *Key Derivation* section of `DEADDROP_V2.md (and `docs/src/dd/`)`.
 //!

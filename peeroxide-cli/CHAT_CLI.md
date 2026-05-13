@@ -1,5 +1,7 @@
 # peeroxide-chat CLI Design
 
+> **Status**: working / historical design document. **Not synchronized with shipped behavior.** This file is proposed for removal — see the PR description's Working Files table. The canonical, current CLI documentation lives in [`docs/src/chat/`](../docs/src/chat/) (overview, user-guide, interactive-tui, wire-format, protocol, reference). Some sections below (notably the `nexus --daemon` description) describe earlier round-robin friend-refresh behavior; the shipped implementation now refreshes the entire friends list every 600 s.
+
 > Command-line interface for peeroxide-chat. Each command is a long-running
 > process managing its own DHT connection, feed, and polling loop. Users run
 > multiple instances for multiple conversations.

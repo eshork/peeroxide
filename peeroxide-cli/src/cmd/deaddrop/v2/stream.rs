@@ -1,4 +1,4 @@
-//! v3 streaming-stdout reorder buffer.
+//! v2 streaming-stdout reorder buffer.
 //!
 //! Spec: see *Output Strategies* in `DEADDROP_V2.md (and `docs/src/dd/`)` (stdout case).
 //!

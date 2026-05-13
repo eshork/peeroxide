@@ -1,4 +1,4 @@
-//! v3 sender-side tree construction.
+//! v2 sender-side tree construction.
 //!
 //! Bottom-up greedy. Spec: see *Tree Shape (normative)* section of
 //! `DEADDROP_V2.md (and `docs/src/dd/`)`. The construction is fully determined by `file_size`;
@@ -41,7 +41,7 @@ pub struct DataChunk {
     pub encoded: Vec<u8>,
 }
 
-/// The fully built v3 tree, ready to publish.
+/// The fully built v2 tree, ready to publish.
 pub struct BuiltTree {
     /// Encoded root chunk bytes.
     pub root_encoded: Vec<u8>,
@@ -80,7 +80,7 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
-/// Build the v3 tree for a file.
+/// Build the v2 tree for a file.
 ///
 /// `data_payloads` is an iterator over the file's data-chunk payloads in
 /// file order. Each payload must be ≤ `DATA_PAYLOAD_MAX` bytes and (apart

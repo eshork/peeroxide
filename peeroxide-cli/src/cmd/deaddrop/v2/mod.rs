@@ -1,9 +1,11 @@
-//! Dead Drop v3 (ships under wire-byte 0x02).
+//! Dead Drop v2 (wire-byte 0x02). The internal module names and an earlier
+//! spec draft carried the working name "v3"; the shipped wire byte and
+//! user-facing documentation are v2.
 //!
 //! Tree-indexed storage protocol: the index layer is a tree of mutable
-//! signed records (instead of v2-original's linked list); the data layer
-//! is a flat collection of immutable, content-addressed records, each
-//! carrying a per-deaddrop salt for DHT address-space isolation.
+//! signed records (instead of the original v2 draft's linked list); the
+//! data layer is a flat collection of immutable, content-addressed records,
+//! each carrying a per-deaddrop salt slot for DHT address-space isolation.
 //!
 //! See `peeroxide-cli/DEADDROP_V2.md` (and `docs/src/dd/`)
 //! for the wire-format specification.

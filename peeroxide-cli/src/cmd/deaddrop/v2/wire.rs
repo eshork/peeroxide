@@ -1,4 +1,4 @@
-//! v3 wire-format encoders and decoders.
+//! v2 wire-format encoders and decoders.
 //!
 //! Spec: see *Frame Formats* section of `DEADDROP_V2.md (and `docs/src/dd/`)`.
 //!
@@ -13,7 +13,7 @@
 
 #![allow(dead_code)]
 
-/// All v3 frames begin with this version byte.
+/// All v2 frames begin with this version byte.
 pub const VERSION: u8 = 0x02;
 
 /// DHT max-record size (set by hyperdht). Every encoded chunk must fit.
@@ -50,7 +50,7 @@ pub const NEED_LIST_ENTRY_CAP: usize =
 /// SHA/BLAKE-256 size in bytes (for slot entries).
 pub const HASH_LEN: usize = 32;
 
-/// Errors that can arise when decoding v3 chunks.
+/// Errors that can arise when decoding v2 chunks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
     Empty,

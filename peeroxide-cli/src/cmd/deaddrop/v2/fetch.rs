@@ -1,4 +1,4 @@
-//! v3 receiver: BFS fetch over the index tree with mmap output (`--output`)
+//! v2 receiver: BFS fetch over the index tree with mmap output (`--output`)
 //! or streaming stdout output.
 //!
 //! Spec: see *Fetch Protocol (Receiver)* in `DEADDROP_V2.md (and `docs/src/dd/`)`.

@@ -1,5 +1,7 @@
 # Dead Drop v2: Tree-Indexed Storage Protocol
 
+> **Status**: working / historical design document. The wire format described below matches the shipped v2 protocol structurally, but some implementation-level details have diverged. Notably, the per-deaddrop salt described below as `root_seed[0]` is currently **forced to `0x00`** in the shipped implementation (`peeroxide-cli/src/cmd/deaddrop/v2/keys.rs::salt`); the salt slot in the data-chunk header is reserved for future per-deaddrop randomization but is not derived per-deaddrop yet. The canonical, current `dd` documentation lives in [`docs/src/dd/`](../docs/src/dd/) (overview, architecture, format, operations). This file is proposed for removal — see the PR description's Working Files table.
+
 This document describes the v2 dead-drop wire protocol shipped in `peeroxide-cli`. v2 uses version byte `0x02` and supersedes the simpler v1 single-chain design (`0x01`), which is retained as a minimal reference implementation.
 
 > **Lineage note.** An earlier draft of v2 used a singly linked list of index records over a separately content-addressed data layer. That draft was never published to the public DHT; the current spec replaces it in place under the same wire byte. Where references to "linked-list v2", "v2-original", or "the earlier v2 draft" appear below, they describe that retired draft and exist only to motivate design choices in the current spec.
