@@ -43,7 +43,7 @@ Technical reference tables for constants, flags, and filesystem layouts in the P
 - `--read-only`: Listen only mode.
 - `--stealth`: Shorthand for `--no-nexus --read-only --no-friends`.
 - `--feed-lifetime <min>`: Feed rotation interval (default: `60`).
-- `--batch-size <n>`: Max messages per batch (default: `16`).
+- `--batch-size <n>`: Max messages per batch (default: `16`). Values below `1` are clamped to `1`.
 - `--batch-wait-ms <ms>`: Batch window (default: `50`).
 - `--stay-after-eof`: Enter listener mode on EOF.
 - `--no-inbox`: Disable inbox monitor.

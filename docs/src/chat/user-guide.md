@@ -34,7 +34,7 @@ peeroxide chat join <channel> [flags]
 | `--read-only` | | Listen only; do not post messages or announce feeds. |
 | `--stealth` | | Shorthand for `--no-nexus --read-only --no-friends`. |
 | `--feed-lifetime <min>` | `60` | Rotation lifetime for your feed keypair. |
-| `--batch-size <n>` | `16` | Maximum messages per publish batch. |
+| `--batch-size <n>` | `16` | Maximum messages per publish batch. Values below `1` are clamped to `1`. |
 | `--batch-wait-ms <ms>` | `50` | Maximum time to wait for a batch to fill before publishing. |
 | `--stay-after-eof` | | Enter read-only mode on stdin EOF instead of exiting. |
 | `--no-inbox` | | Disable background inbox monitoring. |
