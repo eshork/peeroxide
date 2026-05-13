@@ -156,7 +156,12 @@ Manage your public profile information (Nexus) published on the DHT.
 peeroxide chat nexus [flags]
 ```
 
-If `--lookup` is supplied, the command short-circuits to lookup mode. Otherwise, if any of `--set-name` / `--set-bio` are present they are written to the profile (with no DHT publish). If neither setter is present AND neither `--publish` nor `--daemon` is set, the command still performs a single Nexus publish and exits.
+If `--lookup` is supplied, the command short-circuits to lookup mode. Otherwise, `--set-name` and `--set-bio` are written to the profile first (both are applied in one run). After the setters, behavior is:
+
+- `--publish`: perform a one-shot Nexus publish and exit.
+- `--daemon`: enter the background loop (publish every 480 s, refresh one friend every 600 s).
+- No `--publish` / `--daemon`, but at least one setter was supplied: exit without publishing.
+- No flags at all (or only `--profile`): perform a one-shot Nexus publish and exit.
 
 ### Flags
 
