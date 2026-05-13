@@ -105,7 +105,7 @@ These tables are currently empty and reserved for future use.
 
 ## Bootstrap Resolution
 
-Peeroxide resolves the bootstrap-node list in two stages: a config/CLI merge, then a public-default adjustment.
+Peeroxide resolves the bootstrap-node list in two stages: a base-list selection from CLI/config (CLI overrides), then a public-default adjustment.
 
 **Stage 1 — pick the base list (in `peeroxide-cli/src/config.rs`):**
 
@@ -121,7 +121,7 @@ Peeroxide resolves the bootstrap-node list in two stages: a config/CLI merge, th
 
 This ensures the node is never isolated unless specifically requested by combining `--no-public` with an empty bootstrap list. The `--no-public` flag replaces the legacy `--firewalled` flag behavior.
 
-Note: this resolution happens at runtime in subcommands that do DHT work (lookup, announce, ping, cp, dd, chat, node). `peeroxide init` uses its own local `--public` and `--bootstrap` flags to populate the generated/updated config file; the merge and public-default adjustment do not run during `init`.
+Note: this resolution happens at runtime in subcommands that do DHT work (lookup, announce, ping, cp, dd, chat, node). `peeroxide init` uses its own local `--public` and `--bootstrap` flags to populate the generated/updated config file; the base-list selection and public-default adjustment do not run during `init`.
 
 ## Man-page Installation
 

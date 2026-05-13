@@ -36,7 +36,7 @@ src/
 ## Key Shared Helpers (cmd/mod.rs)
 
 - `parse_topic(s)`: 64-char hex → raw 32-byte key; anything else → `discovery_key(s.as_bytes())` (BLAKE2b-256).
-- `resolve_bootstrap(...)`: Additive bootstrap resolution (config + CLI + `--public` defaults; `--no-public` removes defaults).
+- `resolve_bootstrap(...)`: bootstrap-list resolution. CLI `--bootstrap` overrides the config file's `network.bootstrap` (it does not combine). After the base list is selected, `--public` adds the default public HyperDHT bootstrap nodes; an empty list auto-fills with the defaults; `--no-public` removes the defaults.
 - `to_hex(bytes)`: Lowercase hex encoding.
 - `discovery_key(data)`: BLAKE2b-256 hash, returns `[u8; 32]`.
 
