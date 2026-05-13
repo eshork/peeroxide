@@ -1,22 +1,13 @@
 use clap::Parser;
 
 use crate::cmd::chat::crypto;
-use crate::cmd::chat::debug;
-use crate::cmd::chat::display;
-use crate::cmd::chat::known_users::SharedKnownUsers;
-use crate::cmd::chat::feed;
-use crate::cmd::chat::inbox;
-use crate::cmd::chat::post;
+use crate::cmd::chat::known_users;
+use crate::cmd::chat::name_resolver::NameResolver;
 use crate::cmd::chat::profile;
-use crate::cmd::chat::reader;
-use crate::cmd::{build_dht_config, sigterm_recv};
+use crate::cmd::chat::session::{self, DmExtras, SessionConfig};
 use crate::config::ResolvedConfig;
 
-use libudx::UdxRuntime;
-use peeroxide_dht::hyperdht::{self, KeyPair};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use peeroxide_dht::hyperdht::KeyPair;
 
 #[derive(Parser)]
 pub struct DmArgs {
@@ -50,14 +41,38 @@ pub struct DmArgs {
     /// Max feed keypair lifetime before rotation (minutes)
     #[arg(long, default_value = "60")]
     pub feed_lifetime: u64,
+
+    /// Max messages to publish in a single batch.
+    #[arg(long, default_value = "16")]
+    pub batch_size: usize,
+
+    /// Idle time (ms) the publisher waits to accumulate additional
+    /// messages into the current batch before flushing.
+    #[arg(long, default_value = "50")]
+    pub batch_wait_ms: u64,
+
+    /// After stdin closes (EOF), remain joined to the channel in
+    /// read-only mode instead of exiting. Default is to exit cleanly
+    /// once stdin is exhausted.
+    #[arg(long)]
+    pub stay_after_eof: bool,
+
+    /// Disable the background inbox monitor + INBOX status bar segment
+    /// + /inbox slash command. Default is enabled.
+    #[arg(long)]
+    pub no_inbox: bool,
+
+    /// Inbox polling interval in seconds.
+    #[arg(long, default_value = "15")]
+    pub inbox_poll_interval: u64,
 }
 
-pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
+pub async fn run(args: DmArgs, cfg: &ResolvedConfig, line_mode: bool) -> i32 {
     let read_only = args.read_only || args.stealth;
     let no_nexus = args.no_nexus || args.stealth;
     let no_friends = args.no_friends || args.stealth;
 
-    let recipient_bytes = match super::resolve_recipient(&args.profile, &args.recipient) {
+    let recipient_pubkey = match super::resolve_recipient(&args.profile, &args.recipient) {
         Ok(pk) => pk,
         Err(e) => {
             eprintln!("error: {e}");
@@ -74,342 +89,57 @@ pub async fn run(args: DmArgs, cfg: &ResolvedConfig) -> i32 {
     };
 
     let id_keypair = KeyPair::from_seed(prof.seed);
-    let channel_key = crypto::dm_channel_key(&id_keypair.public_key, &recipient_bytes);
 
+    // Channel + message keys for a DM are derived deterministically from
+    // the two identity pubkeys (channel) plus the X25519-ECDH shared
+    // secret (message). The session is then a normal "private channel"
+    // with these specialized keys; everything downstream
+    // (announce topics, feed records, encryption, ordering) treats them
+    // identically to a non-DM private channel.
+    let channel_key = crypto::dm_channel_key(&id_keypair.public_key, &recipient_pubkey);
     let ecdh_secret = {
         let my_x25519 = crypto::ed25519_secret_to_x25519(&id_keypair.secret_key);
-        let their_x25519 = match crypto::ed25519_pubkey_to_x25519(&recipient_bytes) {
-            Some(pk) => pk,
-            None => {
-                eprintln!("error: invalid recipient public key (cannot convert to X25519)");
-                return 1;
-            }
+        let Some(their_x25519) = crypto::ed25519_pubkey_to_x25519(&recipient_pubkey) else {
+            eprintln!("error: invalid recipient public key (cannot convert to X25519)");
+            return 1;
         };
         crypto::x25519_ecdh(&my_x25519, &their_x25519)
     };
     let message_key = crypto::dm_msg_key(&ecdh_secret, &channel_key);
 
-    let dht_config = build_dht_config(cfg);
-    let runtime = match UdxRuntime::new() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: failed to create UDP runtime: {e}");
-            return 1;
-        }
-    };
-
-    let (task, handle, _server_rx) = match hyperdht::spawn(&runtime, dht_config).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: failed to start DHT: {e}");
-            return 1;
-        }
-    };
-
-    if let Err(e) = handle.bootstrapped().await {
-        eprintln!("error: bootstrap failed: {e}");
-        return 1;
-    }
-
-    let table_size = handle.table_size().await.unwrap_or(0);
-    eprintln!("*** connection established with DHT ({table_size} peers in routing table)");
-
-    let feed_keypair = if !read_only {
-        Some(KeyPair::generate())
-    } else {
-        None
-    };
-
-    let ownership_proof = feed_keypair.as_ref().map(|fkp| {
-        crypto::ownership_proof(&id_keypair.secret_key, &fkp.public_key, &channel_key)
-    });
-
-    let mut feed_state = feed_keypair.as_ref().map(|fkp| {
-        feed::FeedState::new(
-            fkp.clone(),
-            id_keypair.clone(),
-            channel_key,
-            ownership_proof.unwrap(),
-            args.feed_lifetime,
-        )
-    });
-
-    let invite_feed_keypair = if !read_only {
-        Some(KeyPair::generate())
-    } else {
-        None
-    };
-
-    if !read_only {
-        if let Some(ref fs) = feed_state {
-            let feed_record_data = fs.serialize_feed_record();
-            if let Err(e) = handle
-                .mutable_put(&fs.feed_keypair, &feed_record_data, fs.seq)
-                .await
-            {
-                eprintln!("warning: initial feed publish failed: {e}");
-            }
-        }
-    }
-
-    if !read_only {
-        if let Some(ref msg_text) = args.message {
-            if let (Some(inv_kp), Some(fs)) = (&invite_feed_keypair, &feed_state) {
-                if let Err(e) = inbox::send_dm_invite(
-                    &handle,
-                    inv_kp,
-                    &id_keypair,
-                    &recipient_bytes,
-                    &channel_key,
-                    &fs.feed_keypair.public_key,
-                    msg_text,
-                )
-                .await
-                {
-                    eprintln!("warning: invite nudge failed: {e}");
-                }
-            }
-        }
-    }
-
-    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<display::DisplayMessage>();
-
+    // Resolve the recipient's display name for the bar / greeting via
+    // the canonical name resolver (friend alias > known screen name >
+    // vendor name fallback).
     let friends = profile::load_friends(&args.profile).unwrap_or_default();
-    let mut display_state = display::DisplayState::new(friends, SharedKnownUsers::load_from_shared());
+    let known = known_users::load_shared_users().unwrap_or_default();
+    let resolved = NameResolver::new(&friends, &known).resolve(&recipient_pubkey);
 
-    let short_recipient = &hex::encode(recipient_bytes)[..8];
-    eprintln!("*** DM with {short_recipient}");
+    let bar_name = format!("DM:{}", resolved.bar_label());
+    let greeting = format!("*** DM with {}", resolved.formal());
 
-    let reader_handle = {
-        let handle = handle.clone();
-        let msg_tx = msg_tx.clone();
-        let profile_name = args.profile.clone();
-        let self_feed_pubkey = feed_keypair.as_ref().map(|fkp| fkp.public_key);
-        let self_id = id_keypair.public_key;
-        // DM is out of scope for TUI mode in this change. A throwaway
-        // StatusState satisfies run_reader's signature; the bar is never
-        // observed in line-only mode.
-        let status = crate::cmd::chat::tui::StatusState::new(format!("DM:{short_recipient}"));
-        tokio::spawn(async move {
-            reader::run_reader(
-                handle,
-                channel_key,
-                message_key,
-                msg_tx,
-                profile_name,
-                self_feed_pubkey,
-                self_id,
-                status,
-            )
-            .await;
-        })
+    let config = SessionConfig {
+        bar_name,
+        greeting,
+        channel_key,
+        message_key,
+        profile: args.profile,
+        prof,
+        id_keypair,
+        read_only,
+        no_nexus,
+        no_friends,
+        no_inbox: args.no_inbox,
+        feed_lifetime: args.feed_lifetime,
+        batch_size: args.batch_size,
+        batch_wait_ms: args.batch_wait_ms,
+        inbox_poll_interval: args.inbox_poll_interval,
+        stay_after_eof: args.stay_after_eof,
+        line_mode,
+        dm: Some(DmExtras {
+            recipient_pubkey,
+            initial_message: args.message,
+        }),
     };
 
-    let mut feed_state_tx: Option<watch::Sender<(Vec<u8>, u64)>> = None;
-    let mut feed_refresh_handle: Option<JoinHandle<()>> = None;
-
-    if let Some(ref fs) = feed_state {
-        let initial_data = fs.serialize_feed_record();
-        let (tx, rx) = watch::channel((initial_data, fs.seq));
-        feed_state_tx = Some(tx);
-
-        let h = handle.clone();
-        let kp = fs.feed_keypair.clone();
-        feed_refresh_handle = Some(tokio::spawn(async move {
-                                    feed::run_feed_refresh(h, kp, rx).await;
-        }));
-    }
-
-    let nexus_handle: Option<JoinHandle<()>> = if !no_nexus {
-        let handle = handle.clone();
-        let id_kp = id_keypair.clone();
-        let profile_name = args.profile.clone();
-        Some(tokio::spawn(async move {
-            // DM uses a throwaway NoticeSink (DM is out of scope for the TUI).
-            let (sink, _rx) = crate::cmd::chat::tui::NoticeSink::new();
-            crate::cmd::chat::nexus::run_nexus_refresh(handle, id_kp, profile_name, sink).await;
-        }))
-    } else {
-        None
-    };
-
-    let friend_refresh_handle: Option<JoinHandle<()>> = if !no_friends {
-        let handle = handle.clone();
-        let profile_name = args.profile.clone();
-        Some(tokio::spawn(async move {
-            // DM is line-mode only; use a throwaway NoticeSink whose
-            // receiver we drop. Sends become silent — fine because line-mode
-            // DM still uses direct eprintln paths.
-            let (sink, _rx) = crate::cmd::chat::tui::NoticeSink::new();
-            crate::cmd::chat::nexus::run_friend_refresh(handle, profile_name, sink).await;
-        }))
-    } else {
-        None
-    };
-
-    let mut stdin_reader = BufReader::new(tokio::io::stdin()).lines();
-    let mut stdin_closed = false;
-    let mut last_nudge_epoch = 0u64;
-    let mut backlog_done = false;
-
-    let rotation_interval = tokio::time::Duration::from_secs(30);
-    let mut rotation_check = tokio::time::interval(rotation_interval);
-
-    loop {
-        tokio::select! {
-            line = stdin_reader.next_line(), if !stdin_closed && !read_only => {
-                match line {
-                    Ok(Some(text)) => {
-                        let text = text.trim().to_string();
-                        if text.is_empty() {
-                            continue;
-                        }
-                        if let Some(ref mut fs) = feed_state {
-                            let screen_name = prof.screen_name.clone().unwrap_or_default();
-                            if let Err(e) = post::post_message(
-                                &handle,
-                                fs,
-                                &id_keypair,
-                                &message_key,
-                                &channel_key,
-                                &screen_name,
-                                &text,
-                            ) {
-                                eprintln!("error: failed to post: {e}");
-                            } else {
-                                if let Some(ref tx) = feed_state_tx {
-                                    let _ = tx.send((fs.serialize_feed_record(), fs.seq));
-                                }
-
-                                let current_ep = crypto::current_epoch();
-                                if current_ep != last_nudge_epoch {
-                                    if let Some(ref inv_kp) = invite_feed_keypair {
-                                        let _ = inbox::send_dm_nudge(
-                                            &handle,
-                                            inv_kp,
-                                            &id_keypair,
-                                            &recipient_bytes,
-                                            &channel_key,
-                                            &fs.feed_keypair.public_key,
-                                            &text,
-                                            fs.seq,
-                                        ).await;
-                                        last_nudge_epoch = current_ep;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        stdin_closed = true;
-                        eprintln!("*** stdin closed, entering read-only mode");
-                    }
-                    Err(e) => {
-                        eprintln!("error reading stdin: {e}");
-                        stdin_closed = true;
-                    }
-                }
-            }
-            Some(msg) = msg_rx.recv() => {
-                if !backlog_done && msg.content.is_empty() && msg.id_pubkey == [0u8; 32] && msg.timestamp == 0 {
-                    backlog_done = true;
-                    eprintln!("*** — live —");
-                    continue;
-                }
-                display_state.render(&msg);
-            }
-            _ = rotation_check.tick(), if feed_state.is_some() => {
-                if let Some(ref mut fs) = feed_state {
-                    if fs.needs_rotation() {
-                        let mut new_fs = fs.rotate();
-
-                        let new_data = new_fs.serialize_feed_record();
-                        match handle.mutable_put(&new_fs.feed_keypair, &new_data, new_fs.seq).await {
-                            Ok(_) => {
-                                debug::log_event(
-                                    "Feed rotation (new)",
-                                    "mutable_put",
-                                    &format!(
-                                        "new_feed_pubkey={}, old_feed_pubkey={}",
-                                        debug::short_key(&new_fs.feed_keypair.public_key),
-                                        debug::short_key(&fs.feed_keypair.public_key),
-                                    ),
-                                );
-
-                                let old_record = fs.serialize_feed_record();
-                                fs.seq += 1;
-                                if let Err(e) = handle.mutable_put(&fs.feed_keypair, &old_record, fs.seq).await {
-                                    tracing::warn!("rotation: old feed update failed (non-fatal): {e}");
-                                } else {
-                                    debug::log_event(
-                                        "Feed rotation (old ptr)",
-                                        "mutable_put",
-                                        &format!(
-                                            "old_feed_pubkey={}, seq={}, next_feed={}",
-                                            debug::short_key(&fs.feed_keypair.public_key),
-                                            fs.seq,
-                                            debug::short_key(&new_fs.feed_keypair.public_key),
-                                        ),
-                                    );
-                                }
-
-                                if let Some(h) = feed_refresh_handle.take() {
-                                    h.abort();
-                                }
-
-                                let overlap_h = handle.clone();
-                                let overlap_kp = fs.feed_keypair.clone();
-                                let overlap_data = old_record.clone();
-                                let overlap_seq = fs.seq;
-                                tokio::spawn(async move {
-                                    feed::run_rotation_overlap_refresh(
-                                        overlap_h, overlap_kp, overlap_data, overlap_seq,
-                                    ).await;
-                                });
-
-                                let (tx, rx) = watch::channel((new_data, new_fs.seq));
-                                feed_state_tx = Some(tx);
-
-                                let h = handle.clone();
-                                let kp = new_fs.feed_keypair.clone();
-                                feed_refresh_handle = Some(tokio::spawn(async move {
-            feed::run_feed_refresh(h, kp, rx).await;
-        }));
-
-
-                                std::mem::swap(fs, &mut new_fs);
-                                eprintln!("*** feed keypair rotated");
-                            }
-                            Err(e) => {
-                                eprintln!("warning: feed rotation failed, will retry: {e}");
-                                fs.next_feed_pubkey = [0u8; 32];
-                            }
-                        }
-                    }
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("\n*** shutting down");
-                break;
-            }
-            _ = sigterm_recv() => {
-                eprintln!("\n*** shutting down (SIGTERM)");
-                break;
-            }
-        }
-    }
-
-    reader_handle.abort();
-    if let Some(h) = feed_refresh_handle {
-        h.abort();
-    }
-    if let Some(h) = nexus_handle {
-        h.abort();
-    }
-    if let Some(h) = friend_refresh_handle {
-        h.abort();
-    }
-    let _ = handle.destroy().await;
-    let _ = task.await;
-    0
+    session::run(config, cfg).await
 }
