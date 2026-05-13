@@ -19,7 +19,8 @@ Profiles allow you to manage multiple identities on one machine. Each profile in
 - A permanent secret seed.
 - An optional screen name.
 - An optional biography.
-- A list of friends and known users.
+- A list of friends (per profile).
+- The shared known-users name cache (`~/.config/peeroxide/chat/known_users`) — process-wide, not per profile.
 
 ## Channels
 
@@ -47,8 +48,8 @@ Your client periodically monitors these topics. When a new invite appears, it no
 
 ## Profiles and the Nexus
 
-The "Nexus" is your personal landing page on the DHT. It contains your screen name and biography. When you are active, your client publishes your Nexus record to a topic derived from your public key. 
+The "Nexus" is your personal landing page on the DHT. It contains your screen name and biography. When you are active, your client publishes your Nexus record directly under your identity public key (via `mutable_put` on that key, with no extra topic derivation).
 
-Your friends monitor your Nexus topic to see when you change your name or update your bio. This ensures that your identity remains consistent across different channels and sessions.
+Your friends fetch your Nexus by `mutable_get`-ing your identity public key, picking up name and bio updates. This keeps your identity consistent across different channels and sessions.
 
 For more details on the technical implementation, see [Wire Format](./wire-format.md) and [Protocol](./protocol.md).

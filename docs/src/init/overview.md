@@ -37,16 +37,21 @@ When invoked with `--man-pages`, the command skips configuration and instead gen
 
 ## Global CLI Flags
 
-These flags apply to all peeroxide subcommands, including `init`.
+The `peeroxide` binary defines several global flags that apply to most subcommands. `peeroxide init` itself only consumes two of them:
+
+- `--config <FILE>` — used as the target write path (and as the source path for `--update`).
+- `-v` / `--verbose` — controls tracing verbosity.
+
+The remaining global flags listed below are accepted by the parser but **do not affect** `init` (which has its own local `--public` and `--bootstrap` flags applied to the generated/updated config). They take effect on subcommands that do DHT work (lookup, announce, ping, cp, dd, chat, node).
 
 | Flag | Type | Description |
 |---|---|---|
-| `-v`, `--verbose` | `u8` count | Increases logging level. `-v` for info, `-vv` for debug. `RUST_LOG` overrides this. |
+| `-v`, `--verbose` | `u8` count | Increases logging level. `-v` for info, `-vv` for debug. `RUST_LOG` overrides this. (Used by init.) |
 | `--config <FILE>` | `String` | Specifies a custom path for the config file. For `init`, this is the write target. |
-| `--no-default-config` | `bool` | Skips loading the default configuration file. |
-| `--public` | `bool` | Includes default public HyperDHT bootstrap nodes. |
-| `--no-public` | `bool` | Excludes default public HyperDHT bootstrap nodes. Conflicts with `--public`. |
-| `--bootstrap <ADDR>` | `Vec<String>` | Adds a bootstrap node address (`host:port`). Repeatable. |
+| `--no-default-config` | `bool` | Skips loading the default configuration file. (Not consumed by `init`.) |
+| `--public` | `bool` | Includes default public HyperDHT bootstrap nodes. (Not consumed by `init`; `init` has its own local `--public` for the generated config.) |
+| `--no-public` | `bool` | Excludes default public HyperDHT bootstrap nodes. Conflicts with `--public`. (Not consumed by `init`.) |
+| `--bootstrap <ADDR>` | `Vec<String>` | Adds a bootstrap node address (`host:port`). Repeatable. (Not consumed by `init`; `init` has its own local `--bootstrap` for the generated config.) |
 
 ## Config File Locations
 
