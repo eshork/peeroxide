@@ -34,13 +34,41 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      actions: write
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: release-plz/action@v0.5
+        id: release-plz
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tag pushes made by GITHUB_TOKEN do not trigger downstream workflows
+      # (GitHub's anti-recursion rule). `workflow_dispatch`, however, IS an
+      # exception and DOES start new runs even when invoked with GITHUB_TOKEN.
+      # So when release-plz cuts a `peeroxide-cli-v*` tag, dispatch the
+      # binary-release workflow explicitly here instead of relying on the
+      # `on: push: tags:` trigger.
+      - name: Dispatch binary-release for new peeroxide-cli tag
+        if: ${{ steps.release-plz.outputs.releases_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASES_JSON: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          set -euo pipefail
+          # `releases` is a JSON array; each entry has a `tag` field.
+          # Filter for peeroxide-cli tags only — other workspace crates
+          # (peeroxide, peeroxide-dht, libudx) don't produce binaries.
+          tags=$(printf '%s' "$RELEASES_JSON" | jq -r '.[].tag | select(startswith("peeroxide-cli-v"))')
+          if [ -z "$tags" ]; then
+            echo "No peeroxide-cli-v* tag in this release; nothing to dispatch."
+            exit 0
+          fi
+          while IFS= read -r tag; do
+            echo "Dispatching binary-release.yml for tag: $tag"
+            gh workflow run binary-release.yml --ref "$tag" -f tag="$tag"
+          done <<< "$tags"

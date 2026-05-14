@@ -22,6 +22,12 @@ Command-line interface for the peeroxide P2P networking stack. Wire-compatible w
 cargo install peeroxide-cli
 ```
 
+### From Homebrew (macOS/Linux)
+
+```sh
+brew install rightbracket/peeroxide/peeroxide
+```
+
 ### From source
 
 ```sh
