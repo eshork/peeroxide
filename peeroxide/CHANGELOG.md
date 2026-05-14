@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/Rightbracket/peeroxide/compare/peeroxide-v1.2.0...peeroxide-v1.3.0) - 2026-05-14
+
+### Other
+
+- peeroxide-cli 0.2.0: chat subsystem, init command, dd v2 tree protocol, progress UX ([#15](https://github.com/Rightbracket/peeroxide/pull/15))
+
 ### Changed
 
 - Bumped `peeroxide-dht` dependency from 1.2.0 to 1.3.0. This update adds new public wire-byte counter accessors to `HyperDhtHandle` and `DhtHandle`. See `peeroxide-dht/CHANGELOG.md` for the full list of new additive symbols.
