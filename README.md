@@ -10,12 +10,48 @@ This project is a faithful port targeting full interoperability with the existin
 ## Architecture
 
 ```
-peeroxide          — topic-based peer discovery + connection management (Hyperswarm)
-└── peeroxide-dht  — Kademlia DHT, Noise handshakes, hole-punching, relay (HyperDHT)
-    └── libudx     — reliable UDP transport with BBR congestion control (libudx)
+peeroxide-cli          — command-line toolkit (lookup, announce, ping, cp, dd, chat, init)
+└── peeroxide          — topic-based peer discovery + connection management (Hyperswarm)
+    └── peeroxide-dht  — Kademlia DHT, Noise handshakes, hole-punching, relay (HyperDHT)
+        └── libudx     — reliable UDP transport with BBR congestion control (libudx)
 ```
 
-## Quick Start
+## Install the CLI
+
+The `peeroxide` CLI bundles several subcommands (`lookup`, `announce`, `ping`, `cp`, `dd`, `chat`, `node`, `init`).
+The CLI was built as an example of how to use the library, and also serves as a convenient toolkit for interacting with the network from the terminal to test connectivity, share files, or chat with peers.
+No Rust toolchain is needed for the prebuilt CLI route.
+
+**Homebrew (macOS / Linux):**
+
+```bash
+brew install rightbracket/peeroxide/peeroxide
+```
+
+Homebrew will auto-tap `rightbracket/peeroxide` on first use. Prebuilt binaries are published for macOS (universal Apple Silicon + Intel), Linux x86_64 (glibc), and Linux aarch64 (glibc).
+
+**Cargo:**
+
+```bash
+cargo install peeroxide-cli
+```
+
+**Build from upstream `main`:**
+
+```bash
+brew install --HEAD rightbracket/peeroxide/peeroxide
+```
+
+After install:
+
+```bash
+peeroxide --help
+peeroxide chat --help
+```
+
+Tap details and upgrade / uninstall instructions: <https://github.com/Rightbracket/homebrew-peeroxide>.
+
+## Quick Start (library)
 
 ```rust
 use peeroxide::{spawn, discovery_key, JoinOpts, SwarmConfig};
@@ -43,6 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   HyperDHT implementation including Kademlia, hole-punching, and Noise handshakes.
 - **libudx** [![Crates.io](https://img.shields.io/crates/v/libudx.svg)](https://crates.io/crates/libudx)  
   Pure Rust implementation of the UDX protocol with BBR congestion control.
+- **peeroxide-cli** [![Crates.io](https://img.shields.io/crates/v/peeroxide-cli.svg)](https://crates.io/crates/peeroxide-cli)  
+  Command-line toolkit (`peeroxide` binary): `lookup`, `announce`, `ping`, `cp`, `dd`, `chat`, `init`.
 
 ## Interoperability
 

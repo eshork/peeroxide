@@ -9,9 +9,9 @@ This is the root of the peeroxide workspace — a Rust implementation of the Hyp
 | `peeroxide` | High-level swarm management and topic-based peer discovery | crates.io |
 | `peeroxide-dht` | HyperDHT: Kademlia routing, Noise handshakes, hole-punching, relay | crates.io |
 | `libudx` | UDX reliable UDP transport with BBR congestion control | crates.io |
-| `peeroxide-cli` | CLI toolkit: lookup, announce, ping, cp, dd | binary only |
+| `peeroxide-cli` | CLI toolkit (`peeroxide` binary): lookup, announce, ping, cp, dd, chat, init | crates.io + homebrew tap (`rightbracket/peeroxide`) |
 
-The three library crates are published to crates.io and have external users. `peeroxide-cli` is a consumer of those libraries, not a library itself.
+All four crates are published to crates.io; the `peeroxide` binary is additionally distributed as a prebuilt via the [`rightbracket/peeroxide` homebrew tap](https://github.com/Rightbracket/homebrew-peeroxide).
 
 ## Key Files
 
