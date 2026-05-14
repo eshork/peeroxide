@@ -1,5 +1,17 @@
 # peeroxide-cli
 
+```text
+,____  _____ _____ ____   _____  _____ ___  ,______ 
+|  _ \| ____| ____|  _ \ / _ \ \/ /_ _|  _ \| ____|
+| |_) |  _| |  _| | |_) | | | \  / | || | | |  _|  
+|  __/| |___| |___|  _ <| |_| /  \ | || |_| | |___ 
+|_|   |_____|_____|_| \_\\___/_/\_\___|____/|_____|
+
+ENCRYPTED BY DEFAULT. PSEUDONYMOUS BY DESIGN.
+NO SERVERS. NO ACCOUNTS. NO GATEKEEPERS.
+TRUST NO ONE. TALK TO ANYONE.
+```
+
 Command-line interface for the peeroxide P2P networking stack. Wire-compatible with the existing Hyperswarm/HyperDHT network.
 
 ## Install
@@ -24,11 +36,11 @@ The binary is named `peeroxide`.
 ## Quick Start
 
 ```sh
-# 1. Generate a config file (optional but recommended)
-peeroxide config init --output ~/.config/peeroxide/config.toml
+# 1. Initialize a config file (optional but recommended)
+peeroxide init
 
 # 2. Install man pages
-peeroxide --generate-man ~/.local/share/man/man1/
+peeroxide init --man-pages ~/.local/share/man/
 
 # 3. Verify network connectivity and discover your public address
 peeroxide --public ping
@@ -38,13 +50,14 @@ peeroxide --public ping
 
 | Command | Description |
 |---------|-------------|
+| `init` | Initialize config file or install man pages |
 | `node` | Run a long-running DHT coordination (bootstrap) node |
 | `lookup` | Query the DHT for peers announcing a topic |
 | `announce` | Announce presence on a topic |
 | `ping` | Diagnose reachability; bootstrap check, NAT classification, or targeted ping |
 | `cp` | Copy files between peers over the swarm |
-| `deaddrop` | Anonymous store-and-forward via the DHT |
-| `config` | Configuration management (`config init`) |
+| `dd` | Dead Drop: anonymous store-and-forward via the DHT (v1 + v2 protocols) |
+| `chat` | End-to-end-encrypted P2P chat: channels, DMs, inbox, and TUI |
 
 Run `peeroxide <command> --help` for detailed usage of each command.
 
@@ -53,7 +66,7 @@ Run `peeroxide <command> --help` for detailed usage of each command.
 Generate and install man pages:
 
 ```sh
-peeroxide --generate-man ~/.local/share/man/man1/
+peeroxide init --man-pages ~/.local/share/man/
 ```
 
 If `~/.local/share/man` is not in your `MANPATH`, add it:
@@ -62,17 +75,18 @@ If `~/.local/share/man` is not in your `MANPATH`, add it:
 export MANPATH="$HOME/.local/share/man:$MANPATH"
 ```
 
-This produces 8 pages:
+This produces 9 pages:
 
 ```
 peeroxide(1)          — main command and global options
+peeroxide-init(1)     — config initialization and man page installation
 peeroxide-node(1)     — bootstrap node operation
 peeroxide-lookup(1)   — DHT topic lookup
 peeroxide-announce(1) — DHT topic announcement
 peeroxide-ping(1)     — connectivity diagnostics
 peeroxide-cp(1)       — file transfer (send + recv)
-peeroxide-config(1)   — configuration management
-peeroxide-deaddrop(1) — anonymous messaging (leave + pickup)
+peeroxide-dd(1)       — dead drop messaging (put + get, v1 + v2)
+peeroxide-chat(1)     — interactive chat (join, dm, inbox, profiles, friends, nexus, whoami)
 ```
 
 ## Configuration
@@ -80,11 +94,20 @@ peeroxide-deaddrop(1) — anonymous messaging (leave + pickup)
 ### Generating a config file
 
 ```sh
-# Print to stdout (inspect before saving)
-peeroxide config init
+# Create config at default location (~/.config/peeroxide/config.toml)
+peeroxide init
 
-# Write to default location
-peeroxide config init --output ~/.config/peeroxide/config.toml
+# Create config with public mode enabled
+peeroxide init --public
+
+# Create config with custom bootstrap nodes
+peeroxide init --bootstrap node1.example.com:49737
+
+# Overwrite existing config
+peeroxide init --force
+
+# Update specific fields in existing config
+peeroxide init --update --public
 ```
 
 ### Config file location
@@ -93,7 +116,9 @@ peeroxide looks for configuration at (in order):
 
 1. Path given by `--config <FILE>`
 2. `$PEEROXIDE_CONFIG` environment variable
-3. `~/.config/peeroxide/config.toml`
+3. `$XDG_CONFIG_HOME/peeroxide/config.toml`
+4. Platform-specific config directory (`dirs::config_dir()`, e.g. `~/Library/Application Support/peeroxide/config.toml` on macOS)
+5. `~/.config/peeroxide/config.toml`
 
 Use `--no-default-config` to skip config file loading entirely.
 
@@ -117,9 +142,9 @@ These flags apply to all subcommands:
 | `--config <FILE>` | Use a specific config file |
 | `--no-default-config` | Ignore the default config entirely |
 | `--bootstrap <ADDR>` | Add bootstrap nodes (repeatable) |
-| `--public` | Mark this node as publicly reachable |
-| `--no-public` | Force NAT mode (override config) |
-| `--firewalled` | Force firewalled status for testing |
+| `--public` | Use the public HyperDHT bootstrap network |
+| `--no-public` | Do not use the public HyperDHT bootstrap network |
+| `-v`, `--verbose` | Increase output verbosity (-v info, -vv debug) |
 
 ## Examples
 
@@ -154,11 +179,11 @@ peeroxide cp recv my-transfer-topic ./downloads/
 # Stream from stdin
 cat data.bin | peeroxide cp send - my-transfer-topic
 
-# Leave a dead drop message
-echo 'secret' | peeroxide deaddrop leave - --passphrase s3cret
+# Put a message at a dead drop
+echo 'secret' | peeroxide dd put - --passphrase s3cret
 
-# Pick up a dead drop message
-peeroxide deaddrop pickup --passphrase s3cret
+# Get a message from a dead drop
+peeroxide dd get --passphrase s3cret
 
 # Run a public bootstrap node
 peeroxide node --public --port 49737

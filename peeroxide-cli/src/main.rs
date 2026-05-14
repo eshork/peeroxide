@@ -1,14 +1,25 @@
 #![deny(clippy::all)]
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 mod cmd;
 mod config;
 mod manpage;
 
+// Shown by `peeroxide --version` (long form). `-V` keeps showing just
+// the bare semver, which is what scripts expect. Clap automatically
+// prefixes `--version` output with the binary name, so starting this
+// const with the version number yields the standard `peeroxide X.Y.Z`
+// header followed by the banner.
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\n\n",
+    include_str!("../../docs/ascii_art.txt"),
+);
+
 #[derive(Parser)]
-#[command(name = "peeroxide", version, about = "P2P networking CLI for the Hyperswarm-compatible network")]
+#[command(name = "peeroxide", version, long_version = LONG_VERSION, about = "P2P networking CLI for the Hyperswarm-compatible network")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -21,30 +32,27 @@ struct Cli {
     #[arg(long, global = true)]
     no_default_config: bool,
 
-    /// Mark this node as publicly reachable
+    /// Use the public HyperDHT bootstrap network
     #[arg(long, global = true, conflicts_with = "no_public")]
     public: bool,
 
-    /// Mark this node as NOT publicly reachable (override config)
+    /// Do not use the public HyperDHT bootstrap network
     #[arg(long, global = true, conflicts_with = "public")]
     no_public: bool,
-
-    /// Force this node to report as firewalled (FIREWALL_CONSISTENT).
-    /// Useful for testing firewall-specific connection paths.
-    #[arg(long, global = true, conflicts_with = "public")]
-    firewalled: bool,
 
     /// Bootstrap node addresses (host:port or ip:port), repeatable
     #[arg(long, global = true, action = clap::ArgAction::Append)]
     bootstrap: Vec<String>,
 
-    /// Generate man pages to the specified directory
-    #[arg(long, value_name = "DIR")]
-    generate_man: Option<std::path::PathBuf>,
+    /// Increase output verbosity (-v info, -vv debug)
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize config file or install man pages
+    Init(cmd::init::InitArgs),
     /// Run a long-running DHT coordination (bootstrap) node
     Node(cmd::node::NodeArgs),
     /// Query the DHT for peers announcing a topic
@@ -58,32 +66,56 @@ enum Commands {
         #[command(subcommand)]
         command: cmd::cp::CpCommands,
     },
-    /// Configuration management
-    Config {
+    /// Dead Drop: anonymous store-and-forward via the DHT
+    #[command(name = "dd")]
+    Dd {
         #[command(subcommand)]
-        command: cmd::config::ConfigCommands,
+        command: cmd::deaddrop::DdCommands,
     },
-    /// Anonymous store-and-forward via the DHT
-    Deaddrop {
-        #[command(subcommand)]
-        command: cmd::deaddrop::DeaddropCommands,
-    },
+    /// Anonymous verifiable P2P chat
+    Chat(cmd::chat::ChatArgs),
+}
+
+fn apply_config_footer(cmd: clap::Command, footer: &str) -> clap::Command {
+    let sub_names: Vec<String> = cmd
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    let mut cmd = cmd;
+    for name in sub_names {
+        let f = footer.to_string();
+        cmd = cmd.mut_subcommand(name, |sub| apply_config_footer(sub, &f));
+    }
+    cmd.after_help(footer.to_string())
+}
+
+fn init_tracing(verbose: u8) {
+    let filter = if std::env::var("RUST_LOG").is_ok() {
+        EnvFilter::from_default_env()
+    } else {
+        match verbose {
+            0 => EnvFilter::new("warn"),
+            1 => EnvFilter::new("peeroxide=info,warn"),
+            _ => EnvFilter::new("peeroxide=debug,info"),
+        }
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
-        .init();
+    let footer = config::config_path_footer();
+    let cmd = apply_config_footer(Cli::command(), &footer);
+    let mut help_cmd = cmd.clone();
+    let matches = cmd.get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e: clap::Error| e.exit());
 
-    let cli = Cli::parse();
-
-    if let Some(dir) = cli.generate_man {
-        std::process::exit(generate_manpages(&dir));
-    }
+    init_tracing(cli.verbose);
 
     let Some(command) = cli.command else {
-        Cli::command().print_help().ok();
+        help_cmd.print_help().ok();
         eprintln!();
         std::process::exit(2);
     };
@@ -91,7 +123,12 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let exit_code = rt.block_on(async {
         match command {
-            Commands::Config { command } => cmd::config::run(command).await,
+            Commands::Init(args) => {
+                let ctx = cmd::init::InitContext {
+                    config_path: cli.config,
+                };
+                cmd::init::run(args, ctx)
+            }
             command => {
                 let global = config::GlobalFlags {
                     config_path: cli.config,
@@ -103,7 +140,6 @@ fn main() {
                     } else {
                         None
                     },
-                    firewalled: cli.firewalled,
                     bootstrap: if cli.bootstrap.is_empty() {
                         None
                     } else {
@@ -125,31 +161,12 @@ fn main() {
                     Commands::Announce(args) => cmd::announce::run(args, &cfg).await,
                     Commands::Ping(args) => cmd::ping::run(args, &cfg).await,
                     Commands::Cp { command } => cmd::cp::run(command, &cfg).await,
-                    Commands::Deaddrop { command } => cmd::deaddrop::run(command, &cfg).await,
-                    Commands::Config { .. } => unreachable!(),
+                    Commands::Dd { command } => cmd::deaddrop::run(command, &cfg).await,
+                    Commands::Chat(args) => cmd::chat::run(args, &cfg).await,
+                    Commands::Init(_) => unreachable!(),
                 }
             }
         }
     });
     std::process::exit(exit_code);
-}
-
-fn generate_manpages(dir: &std::path::Path) -> i32 {
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        eprintln!("error: cannot create directory {}: {e}", dir.display());
-        return 1;
-    }
-
-    let pages = manpage::generate_all();
-    for (name, content) in &pages {
-        let path = dir.join(format!("{name}.1"));
-        if let Err(e) = std::fs::write(&path, content) {
-            eprintln!("error: failed to write {}: {e}", path.display());
-            return 1;
-        }
-        eprintln!("{}", path.display());
-    }
-
-    eprintln!("Generated {} man page(s) in {}", pages.len(), dir.display());
-    0
 }

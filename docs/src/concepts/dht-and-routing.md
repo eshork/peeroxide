@@ -16,9 +16,10 @@ Peeroxide relies on the [`pkarr`](https://docs.rs/pkarr) and [`mainline`](https:
 
 A DHT is a decentralized network, but new nodes need an entry point to join. These entry points are called **bootstrap nodes**.
 
-- **Public Network**: By default, `peeroxide` uses a set of stable public bootstrap nodes to connect to the global HyperDHT network.
-- **Configuration**: You can specify custom bootstrap nodes using the `--bootstrap` flag or the `network.bootstrap` setting in your config file.
-- **Isolated Mode**: If no bootstrap nodes are provided and the `--public` flag is not set, the node runs in isolated mode. In this mode, discovery is only possible if peers connect to each other directly by address.
+- **Public Network**: By default, `peeroxide` uses a set of stable public bootstrap nodes to connect to the global HyperDHT network. If neither the config file's `network.bootstrap` nor the command-line `--bootstrap` flag supplies any nodes, the runtime auto-fills the public bootstrap set so a fresh install still connects.
+- **Configuration**: You can supply custom bootstrap nodes via the `--bootstrap` flag or the `network.bootstrap` setting in your config file. **Note:** CLI `--bootstrap` overrides the config file's `network.bootstrap` rather than combining with it.
+- **Public Default Adjustments**: `--public` explicitly adds the default public bootstrap nodes (useful when you have custom bootstraps but also want public connectivity). `--no-public` explicitly removes them from the resolved list.
+- **Isolated Mode**: Combining `--no-public` with no custom bootstraps (and no `network.bootstrap` in the config) yields an empty bootstrap list. In that state, the node has no entry point and can only be reached by peers who already know its address.
 
 ## Connectivity
 

@@ -278,6 +278,23 @@ struct DeferredReply {
 #[derive(Clone)]
 pub struct DhtHandle {
     cmd_tx: mpsc::UnboundedSender<DhtCommand>,
+    wire: crate::io::WireCounters,
+}
+
+impl DhtHandle {
+    /// Snapshot of cumulative wire bytes (sent, received) since the DHT
+    /// started. Counts every UDP datagram exchanged by this node, including
+    /// retries, queries, replies, and relays.
+    pub fn wire_stats(&self) -> (u64, u64) {
+        self.wire.snapshot()
+    }
+
+    /// Borrow the shared wire-counter handle. Useful when you want a long-
+    /// lived reference (e.g. for periodic sampling from a UI thread) without
+    /// going through `wire_stats()` repeatedly.
+    pub fn wire_counters(&self) -> crate::io::WireCounters {
+        self.wire.clone()
+    }
 }
 
 impl DhtHandle {
@@ -1546,8 +1563,9 @@ pub async fn spawn(
         addr_samples: Vec::new(),
     };
 
+    let wire = node.io.wire_counters();
     let handle = tokio::spawn(node.run());
-    let dht_handle = DhtHandle { cmd_tx };
+    let dht_handle = DhtHandle { cmd_tx, wire };
 
     Ok((handle, dht_handle))
 }

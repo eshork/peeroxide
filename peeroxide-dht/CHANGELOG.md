@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/Rightbracket/peeroxide/compare/peeroxide-dht-v1.2.0...peeroxide-dht-v1.3.0) - 2026-05-13
+
+### Added
+
+- `WireCounters` struct — provides atomic, shareable counters for tracking total bytes sent and received. Includes `new()` for initialization and `snapshot()` for retrieving current totals.
+- `Io::wire` field — public access to the IO layer's `WireCounters`.
+- `Io::wire_counters()` — returns a handle to the IO layer's wire byte counters.
+- `DhtHandle::wire_stats()` — returns a snapshot of cumulative wire bytes `(sent, received)` for the DHT node.
+- `DhtHandle::wire_counters()` — returns a handle to the node-wide `WireCounters`.
+- `HyperDhtHandle::wire_stats()` — returns a snapshot of total wire bytes processed by the DHT.
+- `HyperDhtHandle::wire_counters()` — returns a handle to the shared wire byte counters for the running instance.
+
 ## [1.2.0](https://github.com/Rightbracket/peeroxide/compare/peeroxide-dht-v1.1.0...peeroxide-dht-v1.2.0) - 2026-04-30
 
 ### Added

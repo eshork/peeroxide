@@ -2,9 +2,14 @@
 
 [Introduction](./introduction.md)
 
+# Setup
+
+- [init](./init/overview.md)
+
 # Concepts
 
 - [DHT and Routing](./concepts/dht-and-routing.md)
+- [DHT Primitives](./concepts/dht-primitives.md)
 - [Keys and Identity](./concepts/keys-and-identity.md)
 - [Topics and Discovery](./concepts/topics-and-discovery.md)
 
@@ -21,11 +26,17 @@
 - [cp](./cp/overview.md)
   - [Protocol](./cp/protocol.md)
   - [Reliability](./cp/reliability.md)
-- [deaddrop](./deaddrop/overview.md)
-  - [Architecture](./deaddrop/architecture.md)
-  - [Wire Format](./deaddrop/format.md)
-  - [Operations](./deaddrop/operations.md)
-  - [Future Direction](./deaddrop/future-direction.md)
+- [dd (Dead Drop)](./dd/overview.md)
+  - [Architecture](./dd/architecture.md)
+  - [Wire Format](./dd/format.md)
+  - [Operations](./dd/operations.md)
+  - [Future Direction](./dd/future-direction.md)
+- [chat](./chat/overview.md)
+  - [User Guide](./chat/user-guide.md)
+  - [Interactive TUI](./chat/interactive-tui.md)
+  - [Wire Format](./chat/wire-format.md)
+  - [Protocol](./chat/protocol.md)
+  - [Reference](./chat/reference.md)
 
 # Appendices
 

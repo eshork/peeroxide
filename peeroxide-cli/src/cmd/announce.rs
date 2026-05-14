@@ -69,11 +69,6 @@ pub async fn run(args: AnnounceArgs, cfg: &ResolvedConfig) -> i32 {
     let mut swarm_config = SwarmConfig::default();
     swarm_config.key_pair = Some(key_pair.clone());
     swarm_config.dht = dht_config;
-    if cfg.public {
-        swarm_config.firewall = super::FIREWALL_OPEN;
-    } else if cfg.firewalled {
-        swarm_config.firewall = super::FIREWALL_CONSISTENT;
-    }
 
     let (task, handle, mut conn_rx) = match spawn(swarm_config).await {
         Ok(v) => v,

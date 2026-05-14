@@ -6,7 +6,7 @@ The following versions are currently supported with security updates:
 
 | Version | Supported |
 | ------- | --------- |
-| 1.0.x   | Yes       |
+| 1.3.x   | Yes       |
 
 ## Reporting a Vulnerability
 
@@ -16,7 +16,7 @@ We use GitHub's private vulnerability reporting system. To report a security iss
 2. Click "New draft advisory"
 3. Fill in the details of the vulnerability
 
-We will acknowledge your report within 48 hours and aim to provide a resolution within 90 days.
+We will acknowledge your report and aim to provide a resolution within 90 days.
 
 ## Scope
 

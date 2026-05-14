@@ -7,6 +7,7 @@ use tokio::signal;
 use std::time::Duration;
 
 use crate::config::ResolvedConfig;
+use super::resolve_bootstrap;
 
 #[derive(Args)]
 pub struct NodeArgs {
@@ -70,16 +71,9 @@ pub async fn run(args: NodeArgs, cfg: &ResolvedConfig) -> i32 {
         persistent.max_lru_age = Duration::from_secs(v);
     }
 
-    let bootstrap: Vec<String> = if cfg.bootstrap.is_empty() && cfg.public {
-        peeroxide::DEFAULT_BOOTSTRAP
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
-    } else {
-        cfg.bootstrap.clone()
-    };
+    let bootstrap = resolve_bootstrap(cfg);
 
-    let is_networked = cfg.public || !bootstrap.is_empty();
+    let is_networked = cfg.public == Some(true) || !bootstrap.is_empty();
 
     let mut dht_cfg = DhtConfig::default();
     dht_cfg.bootstrap = bootstrap;

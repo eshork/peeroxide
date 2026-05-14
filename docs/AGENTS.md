@@ -10,12 +10,14 @@ docs/
 └── src/
     ├── SUMMARY.md     — Chapter outline and navigation tree
     ├── introduction.md
+    ├── init/          — peeroxide init (config + man-page install) documentation
     ├── concepts/      — Shared conceptual background
     ├── lookup/        — lookup command documentation
     ├── announce/      — announce command documentation (echo protocol defined here)
     ├── ping/          — ping command documentation (cross-refs echo protocol)
     ├── cp/            — cp command documentation
-    ├── deaddrop/      — deaddrop command documentation
+    ├── dd/            — dd (Dead Drop) command documentation (v1 + v2 protocols)
+    ├── chat/          — chat subsystem (user guide, TUI, wire format, protocol, reference)
     └── appendices/    — Security model, limits & performance
 ```
 
@@ -40,7 +42,7 @@ Output goes to `docs/book/` (gitignored).
 - Cross-references use relative `[text](../path/to/file.md)` links (mdBook requirement).
 - Human output examples go on **stderr**; structured JSON output goes on **stdout**.
 - The Echo Protocol is defined exactly once in `src/announce/echo-protocol.md`. All other chapters that reference it must link there rather than re-documenting it.
-- `deaddrop/future-direction.md` describes v2 (not yet implemented) — keep clearly labeled.
+- Both `dd` v1 (`0x01`, single linked chain) and v2 (`0x02`, tree-indexed) protocols are shipped; `dd/future-direction.md` is a short pointer noting that there is no current speculative roadmap.
 
 ## Deployment
 

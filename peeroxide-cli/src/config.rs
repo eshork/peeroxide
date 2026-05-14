@@ -7,7 +7,6 @@ pub struct GlobalFlags {
     pub config_path: Option<String>,
     pub no_default_config: bool,
     pub public: Option<bool>,
-    pub firewalled: bool,
     pub bootstrap: Option<Vec<String>>,
 }
 
@@ -50,8 +49,7 @@ pub struct CpConfig {}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedConfig {
-    pub public: bool,
-    pub firewalled: bool,
+    pub public: Option<bool>,
     pub bootstrap: Vec<String>,
     pub node: NodeConfig,
 }
@@ -60,6 +58,7 @@ pub fn load_config(flags: &GlobalFlags) -> Result<ResolvedConfig, String> {
     let file_config = if let Some(ref path) = flags.config_path {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read config file {path}: {e}"))?;
+        tracing::info!(path, "config loaded");
         Some(
             toml::from_str::<ConfigFile>(&contents)
                 .map_err(|e| format!("invalid config file {path}: {e}"))?,
@@ -67,30 +66,39 @@ pub fn load_config(flags: &GlobalFlags) -> Result<ResolvedConfig, String> {
     } else if let Some(path) = env_config_path() {
         let contents = std::fs::read_to_string(&path)
             .map_err(|e| format!("cannot read config file {}: {e}", path.display()))?;
+        tracing::info!(path = %path.display(), "config loaded via $PEEROXIDE_CONFIG");
         Some(
             toml::from_str::<ConfigFile>(&contents)
                 .map_err(|e| format!("invalid config file {}: {e}", path.display()))?,
         )
     } else if !flags.no_default_config {
-        default_config_path()
-            .and_then(|p| std::fs::read_to_string(&p).ok())
-            .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        match default_config_path() {
+            Some(p) => {
+                let contents = std::fs::read_to_string(&p).ok();
+                if let Some(ref contents) = contents {
+                    tracing::info!(path = %p.display(), "config loaded");
+                    Some(
+                        toml::from_str::<ConfigFile>(contents)
+                            .map_err(|e| format!("invalid config file {}: {e}", p.display()))?,
+                    )
+                } else {
+                    tracing::debug!("no config file found at default location");
+                    None
+                }
+            }
+            None => {
+                tracing::debug!("no default config path available");
+                None
+            }
+        }
     } else {
+        tracing::debug!("config file loading skipped (--no-default-config)");
         None
     };
 
     let file_config = file_config.unwrap_or_default();
 
-    let mut public = flags
-        .public
-        .or(file_config.network.public)
-        .unwrap_or(false);
-
-    // --firewalled explicitly overrides any config-derived public=true.
-    // You cannot be both public and firewalled simultaneously.
-    if flags.firewalled {
-        public = false;
-    }
+    let public = flags.public.or(file_config.network.public);
 
     let bootstrap = flags
         .bootstrap
@@ -100,7 +108,6 @@ pub fn load_config(flags: &GlobalFlags) -> Result<ResolvedConfig, String> {
 
     Ok(ResolvedConfig {
         public,
-        firewalled: flags.firewalled,
         bootstrap,
         node: file_config.node,
     })
@@ -108,6 +115,46 @@ pub fn load_config(flags: &GlobalFlags) -> Result<ResolvedConfig, String> {
 
 fn env_config_path() -> Option<PathBuf> {
     std::env::var("PEEROXIDE_CONFIG").ok().map(PathBuf::from)
+}
+
+/// Returns a footer string for help output showing the active or expected config path.
+pub fn config_path_footer() -> String {
+    if let Some(env_path) = env_config_path() {
+        return if env_path.exists() {
+            format!("Config: {} (via $PEEROXIDE_CONFIG)", env_path.display())
+        } else {
+            format!(
+                "Config: {} (via $PEEROXIDE_CONFIG, not found)",
+                env_path.display()
+            )
+        };
+    }
+
+    if let Some(path) = default_config_path() {
+        return format!("Config: {}", path.display());
+    }
+
+    match expected_default_path() {
+        Some(path) => format!(
+            "Config: {} (not found; create with 'peeroxide init')",
+            path.display()
+        ),
+        None => "Config: not found (create with 'peeroxide init')".to_string(),
+    }
+}
+
+/// Returns the default config path without checking if the file exists.
+fn expected_default_path() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg).join("peeroxide").join("config.toml"));
+    }
+    if let Some(config_dir) = dirs::config_dir() {
+        return Some(config_dir.join("peeroxide").join("config.toml"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        return Some(home.join(".config").join("peeroxide").join("config.toml"));
+    }
+    None
 }
 
 fn default_config_path() -> Option<PathBuf> {
@@ -181,11 +228,10 @@ max_lru_age = 1200
             config_path: None,
             no_default_config: true,
             public: Some(true),
-            firewalled: false,
             bootstrap: Some(vec!["1.2.3.4:49737".to_string()]),
         };
         let cfg = load_config(&flags).unwrap();
-        assert!(cfg.public);
+        assert_eq!(cfg.public, Some(true));
         assert_eq!(cfg.bootstrap, vec!["1.2.3.4:49737"]);
     }
 
@@ -195,29 +241,10 @@ max_lru_age = 1200
             config_path: None,
             no_default_config: true,
             public: None,
-            firewalled: false,
             bootstrap: None,
         };
         let cfg = load_config(&flags).unwrap();
-        assert!(!cfg.public);
+        assert_eq!(cfg.public, None);
         assert!(cfg.bootstrap.is_empty());
-    }
-
-    #[test]
-    fn firewalled_flag_overrides_config_public() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.toml");
-        std::fs::write(&config_path, "[network]\npublic = true\n").unwrap();
-
-        let flags = GlobalFlags {
-            config_path: Some(config_path.to_str().unwrap().to_string()),
-            no_default_config: false,
-            public: None,
-            firewalled: true,
-            bootstrap: None,
-        };
-        let cfg = load_config(&flags).unwrap();
-        assert!(!cfg.public, "--firewalled must force public=false even when config says public=true");
-        assert!(cfg.firewalled);
     }
 }
