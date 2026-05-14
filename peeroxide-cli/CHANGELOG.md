@@ -11,19 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `peeroxide chat` — pseudonymous end-to-end-encrypted P2P chat over the DHT. Subcommands: `join`, `dm`, `inbox`, `whoami`, `profiles {list, create, delete}`, `friends {list, add, remove, refresh}`, `nexus`. Features channels with optional `--group` salt for privacy, direct messages, an interactive TUI with a status bar and slash commands, line mode, an inbox monitor that surfaces invites, and profile management with multiple identities. See `docs/src/chat/`.
+- `peeroxide chat` — pseudonymous end-to-end-encrypted P2P chat over the DHT. Subcommands: `join`, `dm`, `inbox`, `whoami`, `profiles {list, create, delete}`, `friends {list, add, remove, refresh}`, `nexus`. Public channels by name, private channels via `--group <salt>` or `--keyfile`; DMs derived from both participants' identity pubkeys plus an ECDH-augmented message key. Interactive TUI with a pinned status bar, multi-line input, slash commands, and a background inbox monitor; line mode is selected automatically when either stdio side is piped. Full reference and protocol spec: `docs/src/chat/`.
 - `peeroxide init` — config bootstrap (default mode) and man-page installation (`--man-pages [PATH]`). New flags: `--force`, `--update`, `--public`, `--bootstrap <ADDR>` (repeatable), `--man-pages [PATH]`.
 - Tree-indexed `dd` protocol v2 shipped under wire byte `0x02`. Receiver fetches the index tree breadth-first in parallel. Soft depth cap of 4 supports up to ~27 GB at the default 998-byte chunk size.
 - `dd put` and `dd get` now display a progress bar by default when stderr is a TTY (indicatif-driven). New flags:
   - `--no-progress` — suppress the progress bar
   - `--json` — emit structured `start`/`progress`/`result`/`ack`/`done` events as JSON Lines on stdout (schema documented in `docs/src/dd/operations.md`)
+
   `dd get --json` requires `--output FILE`; without it, flag parsing fails with a clear error (stdout would otherwise conflict with the JSON event stream).
+- `dd` progress display includes cumulative DHT wire bytes (sent / received) via the new `peeroxide-dht` 1.3.0 `HyperDhtHandle::wire_stats()` / `wire_counters()` API (additive — see `peeroxide-dht/CHANGELOG.md` for the full new symbol set). Shown in the bar, periodic log, and JSON events.
 - New global `-v` / `--verbose` count flag (warn / info / debug; `RUST_LOG` overrides).
 - New global `--no-public` flag that excludes the default public HyperDHT bootstrap nodes.
 - Per-`mutable_put` timeout of 30 seconds in the `dd` v2 sender. Stall watchdog kicks AIMD concurrency off the floor if no put resolves for 30 seconds.
 - `peeroxide-init(1)` and `peeroxide-chat(1)` man pages.
 - New mdBook chapters: `docs/src/chat/` (overview, user-guide, interactive-tui, wire-format, protocol, reference), `docs/src/init/overview.md`, `docs/src/concepts/dht-primitives.md` (covers `immutable_put`/`mutable_put`/`announce`/`lookup`, rendezvous pattern, TTL, and 1002-byte size budget).
 - `docs/ascii_art.txt` banner asset embedded into `peeroxide --version` via clap `long_version`, into the crate README, and into the mdBook introduction. `-V` continues to print the bare semver for scripts.
+- Prebuilt `peeroxide` binaries distributed via the [`rightbracket/peeroxide` Homebrew tap](https://github.com/Rightbracket/homebrew-peeroxide) for macOS (universal Apple Silicon + Intel), Linux x86_64 (glibc), and Linux aarch64 (glibc). No Rust toolchain required; `brew install rightbracket/peeroxide/peeroxide` auto-taps and installs.
 
 ### Changed
 
