@@ -52,3 +52,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
+
+  publish-check:
+    name: cargo package workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `cargo package --workspace` packs every member into target/package/ in
+      # topological order and verifies each one against a tmp-registry built
+      # from the sibling tarballs. This catches:
+      #   * `include_str!`/asset paths that escape the crate root
+      #   * Cargo.toml manifest issues (missing license/description, oversized
+      #     tarball, files outside [package].include, etc.)
+      #   * cross-crate API mismatches (verify-compile sees the new sibling
+      #     version locally instead of falling back to the published one)
+      # This is the same verification step release-plz runs at publish time;
+      # running it on every PR catches publish-only failures before merge.
+      - run: cargo package --workspace
