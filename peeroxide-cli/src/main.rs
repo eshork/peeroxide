@@ -15,7 +15,7 @@ mod manpage;
 const LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "\n\n",
-    include_str!("../../docs/ascii_art.txt"),
+    include_str!("ascii_art.txt"),
 );
 
 #[derive(Parser)]
