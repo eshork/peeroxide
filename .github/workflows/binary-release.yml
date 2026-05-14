@@ -42,7 +42,7 @@ jobs:
     name: Generate man pages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - uses: dtolnay/rust-toolchain@stable
@@ -68,7 +68,7 @@ jobs:
           fi
           ls -la man/man1/
       - name: Upload man pages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: manpages
           path: man/
@@ -79,7 +79,7 @@ jobs:
     needs: manpages
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
@@ -117,7 +117,7 @@ jobs:
           file    target/universal-apple-darwin/release/peeroxide
 
       - name: Download man pages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: manpages
           path: _man
@@ -145,7 +145,7 @@ jobs:
           echo "STAGE_NAME=${STAGE}" >> "$GITHUB_ENV"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.STAGE_NAME }}
           path: |
@@ -166,7 +166,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             cross: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
@@ -193,7 +193,7 @@ jobs:
         run: cross build --release --locked --bin peeroxide -p peeroxide-cli --target ${{ matrix.target }}
 
       - name: Download man pages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: manpages
           path: _man
@@ -221,7 +221,7 @@ jobs:
           echo "STAGE_NAME=${STAGE}" >> "$GITHUB_ENV"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.STAGE_NAME }}
           path: |
@@ -237,7 +237,7 @@ jobs:
       contents: write
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: 'peeroxide-*'
@@ -252,7 +252,7 @@ jobs:
           test "$(ls dist/*.tar.gz.sha256 | wc -l)" -eq 3
 
       - name: Attach assets to Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
